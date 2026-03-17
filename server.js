@@ -1,0 +1,1268 @@
+const express = require('express');
+const mysql = require('mysql2');
+const mqtt = require('mqtt');
+const cors = require('cors');
+const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const fs = require('fs');
+const config = require('./config');
+
+// 记录操作日志
+function logAction(action, target, details) {
+  db.query("INSERT INTO operation_logs (action, target, details) VALUES (?, ?, ?)",
+    [action, target, JSON.stringify(details)],
+    (err) => { if (err) console.error('日志记录失败:', err.message); }
+  );
+}
+
+const app = express();
+const PORT = config.port;
+
+// API 认证中间件
+function requireAuth(req, res, next) {
+  const apiKey = req.headers['x-api-key'] || req.query.apiKey;
+  if (!apiKey || apiKey !== config.apiKey) {
+    return res.status(401).json({ error: '未授权', message: '无效的 API 密钥' });
+  }
+  next();
+}
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Serve static files (index.html)
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/index.html');
+});
+
+// 获取服务器配置 (供设备使用)
+app.get('/api/config', (req, res) => {
+  res.json({
+    serverUrl: config.serverUrl,
+    mqttHost: config.mqtt.host,
+    mqttPort: config.mqtt.port
+  });
+});
+
+// MySQL 连接配置
+const db = mysql.createPool({
+  host: config.database.host,
+  user: config.database.user,
+  password: config.database.password,
+  database: config.database.name,
+  charset: 'utf8mb4',
+  waitForConnections: true,
+  connectionLimit: 10
+});
+
+// MQTT 配置
+const mqttBroker = `mqtt://${config.mqtt.host}:${config.mqtt.port}`;
+const mqttPassword = process.env.MQTT_PASSWORD || '';
+
+const mqttOptions = {
+  clientId: 'xvj_server_' + Math.random().toString(16).substr(2, 8),
+  cleanSession: true
+};
+if (config.mqtt.username) {
+  mqttOptions.username = config.mqtt.username;
+  mqttOptions.password = config.mqtt.password;
+}
+
+const mqttClient = mqtt.connect(mqttBroker, mqttOptions);
+
+mqttClient.on('connect', () => {
+  console.log('✅ MQTT 连接成功');
+  mqttClient.subscribe('xvj/device/#');
+  mqttClient.subscribe('xvj/auth/response');
+  mqttClient.subscribe('xvj/auth/request');
+});
+
+mqttClient.on('message', (topic, message) => {
+  const msg = message.toString();
+  console.log(`收到消息 [${topic}]: ${msg}`);
+  // 打印所有消息类型帮助debug
+  if (topic.includes('/status')) {
+    console.log('📡 心跳消息收到！');
+  }
+  handleMqttMessage(topic, msg);
+});
+
+// 处理 MQTT 消息
+function handleMqttMessage(topic, message) {
+  const parts = topic.split('/');
+  
+  if (parts[0] === 'xvj' && parts[1] === 'device') {
+    const deviceId = parts[2];
+    const msgType = parts[3];
+    
+    try {
+      const data = JSON.parse(message);
+      
+      switch (msgType) {
+        case 'register':
+          // 设备注册 - 带硬件指纹
+          handleDeviceRegister(deviceId, data);
+          break;
+          
+        case 'status':
+          // 状态上报 - 心跳不需要授权，未注册设备也能上报
+          const isOnline = data.status === 'online';
+          const fingerprint = data.fingerprint || deviceId;
+          
+          console.log('📡 处理心跳: deviceId=' + deviceId + ', fingerprint=' + fingerprint);
+          
+          // 先尝试按各种方式匹配设备
+          const searchId = deviceId.substring(0, 32); // 32位短ID
+          db.query(
+            'UPDATE devices SET status = ?, status_data = ?, online_time = NOW() WHERE id = ? OR fingerprint = ? OR id LIKE ? OR id LIKE ?',
+            [isOnline ? 'online' : 'offline', message, deviceId, fingerprint, deviceId + '%', searchId + '%'],
+            (err, result) => {
+              if (err) console.error('更新设备状态失败:', err.message);
+              // 如果没有更新到任何设备（未注册），自动创建记录
+              if (result && result.affectedRows === 0 && isOnline) {
+                console.log('📱 创建新设备记录: ' + deviceId);
+                db.query(
+                  `INSERT INTO devices (id, name, fingerprint, model, hardware, mac, status, authorized, online_time, first_seen) 
+                   VALUES (?, ?, ?, ?, ?, ?, 'online', 0, NOW(), NOW())
+                   ON DUPLICATE KEY UPDATE status='online', online_time=NOW(), fingerprint=COALESCE(fingerprint, VALUES(fingerprint))`,
+                  [deviceId, '未命名设备', fingerprint, data.model || '', data.hardware || '', data.mac || '']
+                );
+              } else if (result && result.affectedRows > 0) {
+                console.log('✅ 设备状态已更新: ' + deviceId);
+                // 心跳时自动发送授权状态
+                db.query(
+                  'SELECT authorized, room_id FROM devices WHERE id = ?',
+                  [deviceId],
+                  (err2, rows2) => {
+                    if (!err2 && rows2 && rows2.length > 0) {
+                      const authorized = rows2[0].authorized === 1;
+                      sendAuthResponse(deviceId, authorized, authorized ? '在线' : '未授权', rows2[0].room_id);
+                    }
+                  }
+                );
+              }
+            }
+          );
+          break;
+        
+        case 'request':
+          // 设备请求授权状态
+          console.log('🔐 设备请求授权状态: ' + deviceId);
+          db.query(
+            'SELECT authorized, room_id FROM devices WHERE id = ?',
+            [deviceId],
+            (err, rows) => {
+              if (err || !rows || rows.length === 0) {
+                sendAuthResponse(deviceId, false, '设备未注册', '');
+              } else {
+                const authorized = rows[0].authorized === 1;
+                sendAuthResponse(deviceId, authorized, authorized ? '已授权' : '未授权', rows[0].room_id);
+              }
+            }
+          );
+          break;
+      }
+    } catch (e) {
+      console.error('消息解析失败:', e);
+    }
+  }
+}
+
+// 设备注册处理 - 带授权检查
+function handleDeviceRegister(deviceId, data) {
+  const fingerprint = data.fingerprint || deviceId;
+  
+  // 查询设备是否已授权
+  db.query(
+    'SELECT * FROM devices WHERE id = ? OR fingerprint = ?',
+    [deviceId, fingerprint],
+    (err, results) => {
+      if (err) {
+        console.error('查询设备失败:', err);
+        return;
+      }
+      
+      if (results.length === 0) {
+        // 新设备 - 默认不自动授权，需要后台手动审核
+        console.log(`⚠️ 新设备尝试注册: ${deviceId}, 指纹: ${fingerprint}`);
+        
+        // 默认不授权，等待后台审核
+        db.query(
+          `INSERT INTO devices (id, name, fingerprint, model, hardware, mac, status, authorized, online_time) 
+           VALUES (?, ?, ?, ?, ?, ?, 'online', 0, NOW()) 
+           ON DUPLICATE KEY UPDATE status='online', online_time=NOW(), authorized=0`,
+          [deviceId, data.device_id || deviceId, fingerprint, data.model, data.hardware, data.mac]
+        );
+        
+        // 发送未授权响应
+        sendAuthResponse(deviceId, false, '等待审核授权', '');
+        
+      } else {
+        const device = results[0];
+        
+        if (device.authorized === 0 || device.authorized === false) {
+          // 设备未授权
+          console.log(`❌ 设备被拒绝: ${deviceId}, 原因: 未授权`);
+          sendAuthResponse(deviceId, false, '设备未授权，请联系管理员', '');
+        } else {
+          // 已授权设备
+          console.log(`✅ 设备授权通过: ${deviceId}`);
+          
+          // 更新设备信息
+          db.query(
+            `UPDATE devices SET status='online', online_time=NOW(), 
+             fingerprint=?, model=?, hardware=?, mac=? 
+             WHERE id = ?`,
+            [fingerprint, data.model, data.hardware, data.mac, deviceId]
+          );
+          
+          sendAuthResponse(deviceId, true, '欢迎回来', device.room_id || '');
+          
+          // 已授权设备上线，推送预设素材
+          sendPresetMaterialsToDevice(deviceId);
+        }
+      }
+    }
+  );
+}
+
+// 发送授权响应
+function sendAuthResponse(deviceId, authorized, message, roomId) {
+  const topic = 'xvj/auth/response';
+  const payload = JSON.stringify({
+    action: 'auth_result',
+    device_id: deviceId,
+    authorized: authorized,
+    message: message,
+    room_id: roomId || '',
+    timestamp: Date.now()
+  });
+  mqttClient.publish(topic, payload);
+}
+
+// 远程废止设备
+function deauthorizeDevice(deviceId) {
+  db.query(
+    'UPDATE devices SET authorized = 0 WHERE id = ?',
+    [deviceId],
+    (err) => {
+      if (err) {
+        console.error('废止设备失败:', err);
+        return false;
+      }
+      
+      // 发送废止命令到设备
+      const topic = 'xvj/auth/response';
+      const payload = JSON.stringify({
+        action: 'deauthorize',
+        device_id: deviceId,
+        message: '设备已被废止',
+        timestamp: Date.now()
+      });
+      mqttClient.publish(topic, payload);
+      
+      // 同时通过设备特定主题发送
+      mqttClient.publish(`xvj/device/${deviceId}/command`, JSON.stringify({
+        action: 'stop',
+        reason: 'device_deauthorized'
+      }));
+      
+      console.log(`🚫 设备已废止: ${deviceId}`);
+      return true;
+    }
+  );
+}
+
+// ==================== API 接口 ====================
+
+// 1. 获取设备列表
+app.get('/api/devices', (req, res) => {
+  db.query('SELECT * FROM devices ORDER BY online_time DESC', (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(results);
+  });
+});
+
+// 2. 添加设备（白名单）
+app.post('/api/devices', (req, res) => {
+  const { name, location, fingerprint, model, mac } = req.body;
+  const id = uuidv4();
+  db.query(
+    'INSERT INTO devices (id, name, location, fingerprint, model, mac, status, authorized) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
+    [id, name, location || '', fingerprint || '', model || '', mac || '', 'offline'],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id, name, location, status: 'offline', authorized: true });
+    }
+  );
+});
+
+// 3. 删除设备
+app.delete('/api/devices/:id', (req, res) => {
+  db.query('DELETE FROM devices WHERE id = ?', [req.params.id], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true });
+  });
+});
+
+// 4. 发送指令到设备
+app.post('/api/devices/:id/command', (req, res) => {
+  const { command } = req.body;
+  
+  // 转换相对URL为完整URL
+  let cmd = { ...command };
+  if (cmd.url && cmd.url.startsWith('/')) {
+    cmd.url = 'http://47.102.106.237' + cmd.url;
+  }
+  
+  const topic = `xvj/device/${req.params.id}/command`;
+  mqttClient.publish(topic, JSON.stringify(cmd));
+  res.json({ success: true, command: cmd });
+});
+
+// 5. 废止设备（远程禁用）
+app.post('/api/devices/:id/deauthorize', (req, res) => {
+  const deviceId = req.params.id;
+  
+  db.query(
+    'UPDATE devices SET authorized = 0, status = "deauthorized" WHERE id = ?',
+    [deviceId],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      
+      // 发送废止命令
+      const topic = 'xvj/auth/response';
+      const payload = JSON.stringify({
+        action: 'deauthorize',
+        device_id: deviceId,
+        message: '设备已被废止'
+      });
+      mqttClient.publish(topic, payload);
+      
+      res.json({ success: true, message: '设备已废止' });
+    }
+  );
+});
+
+// 6. 重新授权设备
+app.post('/api/devices/:id/authorize', (req, res) => {
+  const deviceId = req.params.id;
+  const store = decodeURIComponent(req.query.store || req.body.store || '默认店');
+  const roomId = req.query.room_id || req.body.room_id || null;
+  console.log('授权到店铺:', store, '房间:', roomId);
+  
+  db.query(
+    'UPDATE devices SET authorized = 1, status = "online", store = ?, room_id = ? WHERE id = ?',
+    [store, roomId, deviceId],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      
+      // 发送授权消息给设备（包含room_id）
+      sendAuthResponse(deviceId, true, '已授权', roomId || '');
+      
+      res.json({ success: true, message: '设备已授权到: ' + store + (roomId ? '，房间: ' + roomId : '') });
+    }
+  );
+});
+
+// 7. 获取素材列表
+app.get('/api/materials', (req, res) => {
+  db.query('SELECT * FROM materials ORDER BY id DESC', (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(results);
+  });
+});
+
+// 8. 上传素材（简化版）
+app.post('/api/materials', (req, res) => {
+  const { name, url, type } = req.body;
+  const id = uuidv4();
+  db.query(
+    'INSERT INTO materials (id, name, url, type) VALUES (?, ?, ?, ?)',
+    [id, name, url, type || 'video'],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id, name, url, type });
+    }
+  );
+});
+
+// 9. 获取配置
+app.get('/api/config/:deviceId', (req, res) => {
+  db.query('SELECT config FROM devices WHERE id = ?', [req.params.deviceId], (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (results.length === 0) return res.status(404).json({ error: '设备不存在' });
+    res.json(JSON.parse(results[0].config || '{}'));
+  });
+});
+
+// 10. 设置设备配置
+app.post('/api/config/:deviceId', (req, res) => {
+  const config = JSON.stringify(req.body);
+  db.query('UPDATE devices SET config = ? WHERE id = ?', [config, req.params.deviceId], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    const topic = `xvj/device/${req.params.deviceId}/config`;
+    mqttClient.publish(topic, config);
+    res.json({ success: true });
+  });
+});
+
+// ==================== 预设素材管理 ====================
+
+// 预设素材文件夹配置（等用户发送具体文件夹后修改）
+const PRESET_FOLDERS = [
+  { id: 'ad', name: '广告', path: '/storage/emulated/0/videos/ad' },
+  { id: 'intro', name: '开场', path: '/storage/emulated/0/videos/intro' },
+  { id: 'loop', name: '循环', path: '/storage/emulated/0/videos/loop' }
+  // TODO: 等用户发送文件夹列表后补充
+];
+
+// 初始化预设素材表
+function initPresetMaterialsTable() {
+  db.query(`
+    CREATE TABLE IF NOT EXISTS preset_materials (
+      id VARCHAR(36) PRIMARY KEY,
+      folder_id VARCHAR(50) NOT NULL,
+      folder_name VARCHAR(100),
+      filename VARCHAR(255) NOT NULL,
+      url VARCHAR(512) NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_folder_id (folder_id)
+    )
+  `);
+  
+  // 初始化预设素材文件夹配置表
+  db.query(`
+    CREATE TABLE IF NOT EXISTS preset_folders (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      path VARCHAR(255) NOT NULL,
+      sort_order INT DEFAULT 0,
+      enabled TINYINT(1) DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  
+  // 如果配置表为空，插入默认配置
+  db.query('SELECT COUNT(*) as cnt FROM preset_folders', (err, results) => {
+    if (results[0].cnt === 0) {
+      PRESET_FOLDERS.forEach((folder, index) => {
+        db.query(
+          'INSERT INTO preset_folders (id, name, path, sort_order) VALUES (?, ?, ?, ?)',
+          [folder.id, folder.name, folder.path, index]
+        );
+      });
+      console.log('✅ 预设素材文件夹已初始化');
+    }
+  });
+}
+
+// 获取预设素材列表（按文件夹分组）
+function getPresetMaterials(callback) {
+  db.query('SELECT * FROM preset_folders WHERE enabled = 1 ORDER BY sort_order', (err, folders) => {
+    if (err) return callback(err, null);
+    
+    db.query('SELECT * FROM preset_materials ORDER BY folder_id, filename', (err, materials) => {
+      if (err) return callback(err, null);
+      
+      // 按文件夹分组
+      const result = folders.map(folder => ({
+        id: folder.id,
+        name: folder.name,
+        path: folder.path,
+        materials: materials.filter(m => m.folder_id === folder.id).map(m => ({
+          id: m.id,
+          filename: m.filename,
+          url: m.url
+        }))
+      }));
+      
+      callback(null, result);
+    });
+  });
+}
+
+// 设备注册成功后，推送预设素材
+function sendPresetMaterialsToDevice(deviceId) {
+  getPresetMaterials((err, folders) => {
+    if (err) {
+      console.error('获取预设素材失败:', err);
+      return;
+    }
+    
+    // 通过 MQTT 推送预设素材列表
+    const topic = `xvj/device/${deviceId}/preset`;
+    const payload = JSON.stringify({
+      action: 'preset_sync',
+      folders: folders,
+      timestamp: Date.now()
+    });
+    
+    mqttClient.publish(topic, payload);
+    console.log(`📦 已推送预设素材到设备 ${deviceId}, ${folders.length} 个文件夹`);
+  });
+}
+
+// ==================== 预设素材 API ====================
+
+// 获取预设素材列表
+app.get('/api/preset/folders', (req, res) => {
+  getPresetMaterials((err, folders) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(folders);
+  });
+});
+
+// 添加预设素材文件夹
+app.post('/api/preset/folders', (req, res) => {
+  const { id, name, path } = req.body;
+  db.query(
+    'INSERT INTO preset_folders (id, name, path) VALUES (?, ?, ?)',
+    [id, name, path],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ success: true, id, name, path });
+    }
+  );
+});
+
+// 删除预设素材文件夹
+app.delete('/api/preset/folders/:id', (req, res) => {
+  const folderId = req.params.id;
+  db.query('DELETE FROM preset_materials WHERE folder_id = ?', [folderId], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    db.query('DELETE FROM preset_folders WHERE id = ?', [folderId], (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ success: true });
+    });
+  });
+});
+
+// 添加预设素材
+// 删除预设素材
+app.delete('/api/preset/materials/:id', (req, res) => {
+  db.query('DELETE FROM preset_materials WHERE id = ?', [req.params.id], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true });
+  });
+});
+
+// 手动触发推送到设备
+app.post('/api/preset/push/:deviceId', (req, res) => {
+  sendPresetMaterialsToDevice(req.params.deviceId);
+  res.json({ success: true, message: '推送已发送' });
+});
+
+
+// 素材管理API
+app.get("/api/folders", (req, res) => {
+  db.query("SELECT DISTINCT folder FROM materials", (err, rows) => {
+    let folders = [];
+    if (!err && rows) folders = rows.map(r => r.folder).filter(Boolean);
+    try {
+      const dirs = require('fs').readdirSync(__dirname + "/public/uploads").filter(f => {
+        try { return require('fs').statSync(__dirname + "/public/uploads/"+f).isDirectory(); } catch(e) { return false; }
+      });
+      folders = [...new Set([...folders, ...dirs])];
+    } catch(e) {}
+    res.json(folders);
+  });
+});
+
+app.post("/api/folders", (req, res) => {
+  const name = req.body.name;
+  if (!name) return res.status(400).json({error:"need name"});
+  const dir = __dirname + "/public/uploads/"+name;
+  if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, {recursive:true});
+  res.json({success:true, name:name});
+});
+
+app.delete("/api/folders/:name", (req, res) => {
+  const name = req.params.name;
+  if (!name || name==="default") return res.status(400).json({error:"cannot delete"});
+  const dir = __dirname + "/public/uploads/"+name;
+  if (require('fs').existsSync(dir)) require('fs').rmSync(dir, {recursive:true});
+  db.query("DELETE FROM materials WHERE folder=?", [name], ()=>{});
+  res.json({success:true});
+});
+
+app.get("/api/materials", (req, res) => {
+  db.query("SELECT * FROM materials", (err, rows) => res.json(err ? [] : rows));
+});
+
+app.delete("/api/materials/:id", (req, res) => {
+  const id = req.params.id;
+  db.query("SELECT * FROM materials WHERE id=?", [id], (err, rows) => {
+    if (rows && rows[0]) {
+      logAction('delete', 'material', rows[0]);
+    }
+    db.query("DELETE FROM materials WHERE id=?", [id], ()=>{});
+    res.json({success:true});
+  });
+});
+
+const multer = require('multer');
+app.post("/api/upload", (req, res) => {
+  const folder = req.query.folder || req.body.folder || "default";
+  // 确保文件夹存在
+  const fs = require("fs");
+  const uploadDir = __dirname + "/public/uploads/" + folder;
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+  const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, __dirname + "/public/uploads/" + folder),
+    filename: (req, file, cb) => {
+      // 处理中文文件名编码问题
+      let filename = file.originalname;
+      if (filename) {
+        try {
+          // 将乱码字符串的每个字符作为字节处理，转换为正确的UTF-8
+          const bytes = [];
+          for (let i = 0; i < filename.length; i++) {
+            bytes.push(filename.charCodeAt(i) & 0xFF);
+          }
+          const fixed = Buffer.from(bytes).toString('utf8');
+          if (/[\u4e00-\u9fa5]/.test(fixed)) {
+            filename = fixed;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      cb(null, filename);
+    }
+  });
+  const upload = multer({storage}).single("file");
+  upload(req, res, (err) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (!req.file) return res.status(400).json({error:"no file"});
+    const id = uuidv4();
+    let fname = req.file.originalname;
+    // 应用同样的编码修复
+    if (fname) {
+      try {
+        const bytes = [];
+        for (let i = 0; i < fname.length; i++) {
+          bytes.push(fname.charCodeAt(i) & 0xFF);
+        }
+        const fixed = Buffer.from(bytes).toString('utf8');
+        if (/[\u4e00-\u9fa5]/.test(fixed)) {
+          fname = fixed;
+        }
+      } catch (e) {}
+    }
+    const type = fname.endsWith(".mp4") || req.file.mimetype.startsWith("video") ? "video" : 
+                 fname.endsWith(".gif") ? "gif" : 
+                 req.file.mimetype.startsWith("image") ? "image" : "other";
+    let thumbnail = null;
+    let resolution = null;
+    if (type === "video") {
+      const thumbPath = __dirname + "/public/uploads/" + folder + "/" + fname.replace(".mp4",".jpg");
+      try { 
+        require('child_process').execSync("ffmpeg -i '" + __dirname + "/public/uploads/"+folder+"/"+fname + "' -ss 00:00:01 -vframes 1 -q:v 2 -y '" + thumbPath + "'", {stdio:"ignore"});
+        thumbnail = "/uploads/"+folder+"/"+fname.replace(".mp4",".jpg");
+        const ffprobe = require('child_process').execSync("ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 '" + __dirname + "/public/uploads/"+folder+"/"+fname + "'", {encoding:"utf8"});
+        resolution = ffprobe.trim();
+      } catch(e) {}
+    }
+    const url = "/uploads/" + folder + "/" + fname;
+    db.query("INSERT INTO materials (id,name,url,type,folder,thumbnail,resolution) VALUES (?,?,?,?,?,?,?)",
+      [id, fname, url, type, folder, thumbnail, resolution],
+      e => {
+        if (e) return res.status(500).json({error:e.message});
+        logAction('upload', 'material', {id, name: fname, folder, type});
+        res.json({id, name: fname, url, type, folder, thumbnail, resolution});
+      }
+    );
+  });
+});
+
+
+// 重命名文件夹
+app.post("/api/folders/rename", (req, res) => {
+    const { oldName, newName } = req.body;
+    if (!oldName || !newName) return res.status(400).json({error: "need oldName and newName"});
+    
+    const fs = require("fs");
+    const oldDir = __dirname + "/public/uploads/" + oldName;
+    const newDir = __dirname + "/public/uploads/" + newName;
+    
+    // 重命名文件夹
+    if (fs.existsSync(oldDir)) {
+        fs.renameSync(oldDir, newDir);
+    }
+    
+    // 更新数据库
+    db.query("UPDATE materials SET folder=? WHERE folder=?", [newName, oldName], (err) => {
+        if (err) return res.status(500).json({error: err.message});
+        res.json({success: true});
+    });
+});
+
+
+// 保存文件夹备注
+app.post("/api/folders/note", (req, res) => {
+    const { folder, note } = req.body;
+    if (!folder) return res.status(400).json({error:"need folder"});
+    
+    // 保存到数据库
+    db.query("INSERT INTO folder_notes (folder, note) VALUES (?, ?) ON DUPLICATE KEY UPDATE note = ?",
+      [folder, note, note],
+      (err) => {
+        if (err) return res.status(500).json({error:err.message});
+        logAction('update', 'folder_note', {folder, note});
+        res.json({success:true});
+      }
+    );
+});
+
+// 获取文件夹备注
+app.get("/api/folders/notes", (req, res) => {
+    db.query("SELECT folder, note FROM folder_notes", (err, rows) => {
+        if (err) return res.status(500).json({error:err.message});
+        const notes = {};
+        rows.forEach(r => notes[r.folder] = r.note);
+        res.json(notes);
+    });
+});
+
+
+
+// ==================== 操作日志 API ====================
+
+
+app.post("/api/folders/notes", (req, res) => {
+    const { folder, note } = req.body;
+    if (!folder) return res.status(400).json({error:'folder required'});
+    db.query("INSERT INTO folder_notes (folder, note) VALUES (?, ?) ON DUPLICATE KEY UPDATE note = ?", [folder, note, note], (err) => {
+        if (err) return res.status(500).json({error:err.message});
+        res.json({success:true});
+    });
+});
+
+app.get('/api/logs', (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+  db.query("SELECT * FROM operation_logs ORDER BY id DESC LIMIT ?", [limit], (err, rows) => {
+    if (err) return res.status(500).json({error:err.message});
+    res.json(rows);
+  });
+});
+
+// ==================== 店铺管理 API ====================
+app.get('/api/stores', (req, res) => {
+  db.query('SELECT name FROM stores ORDER BY id', (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const stores = results.map(r => r.name);
+    if (stores.length === 0) stores.push('默认店');
+    res.json(stores);
+  });
+});
+
+app.post('/api/stores', (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: '店铺名称不能为空' });
+  db.query('INSERT INTO stores (name) VALUES (?) ON DUPLICATE KEY UPDATE name=name', [name], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, name });
+  });
+});
+
+app.delete('/api/stores/:name', (req, res) => {
+  const storeName = decodeURIComponent(req.params.name);
+  db.query('DELETE FROM stores WHERE name = ?', [storeName], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true });
+  });
+});
+
+db.query(`CREATE TABLE IF NOT EXISTS stores (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL UNIQUE,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+
+
+
+// ==================== 房间管理 API ====================
+db.query(`CREATE TABLE IF NOT EXISTS rooms (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  store_name VARCHAR(100) NOT NULL,
+  name VARCHAR(100) NOT NULL,
+  folder_mappings TEXT DEFAULT '{}',
+  config TEXT DEFAULT '{}',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_store_room (store_name, name)
+)`);
+
+// 获取房间列表
+app.get('/api/rooms', (req, res) => {
+  const store = req.query.store;
+  if (!store) return res.status(400).json({error:'store required'});
+  db.query('SELECT * FROM rooms WHERE store_name = ? ORDER BY id', [store], (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    res.json(results || []);
+  });
+});
+
+// 获取单个房间
+app.get('/api/rooms/:id', (req, res) => {
+  const id = req.params.id;
+  db.query('SELECT * FROM rooms WHERE id = ?', [id], (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (results.length === 0) return res.status(404).json({error:'Room not found'});
+    res.json(results[0]);
+  });
+});
+
+// 创建房间
+app.post('/api/rooms', (req, res) => {
+  const { store_name, name, folder_mappings, config } = req.body;
+  if (!store_name || !name) return res.status(400).json({error:'store_name and name required'});
+  const id = 'room_' + Date.now();
+  db.query('INSERT INTO rooms (id, store_name, name, folder_mappings, config) VALUES (?, ?, ?, ?, ?)', 
+    [id, store_name, name, folder_mappings || '{}', config || '{}'], (err, result) => {
+    if (err) return res.status(500).json({error:err.message});
+    res.json({success:true, id});
+  });
+});
+
+// 更新房间
+app.put('/api/rooms/:id', (req, res) => {
+  const { name, folder_mappings, config } = req.body;
+  const id = req.params.id;
+  // 构建动态更新
+  var updates = [];
+  var values = [];
+  if (name !== undefined) { updates.push('name=?'); values.push(name); }
+  if (folder_mappings !== undefined) { updates.push('folder_mappings=?'); values.push(folder_mappings); }
+  if (config !== undefined) { updates.push('config=?'); values.push(config); }
+  if (updates.length === 0) return res.json({success:true});
+  values.push(id);
+  db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
+    if (err) return res.status(500).json({error:err.message});
+    res.json({success:true});
+  });
+});
+
+// 删除房间
+app.delete('/api/rooms/:id', (req, res) => {
+  const id = req.params.id;
+  db.query('DELETE FROM rooms WHERE id = ?', [id], (err) => {
+    if (err) return res.status(500).json({error:err.message});
+    res.json({success:true});
+  });
+});
+
+// 获取房间素材
+app.get('/api/rooms/:id/materials', (req, res) => {
+  const id = req.params.id;
+  db.query('SELECT folder_mappings FROM rooms WHERE id = ?', [id], (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (!results[0]) return res.status(404).json({error:'room not found'});
+    const mappings = JSON.parse(results[0].folder_mappings || '{}');
+    res.json(mappings);
+  });
+});
+
+// 添加素材到房间
+app.post('/api/rooms/:id/folder/:folder', (req, res) => {
+  const { id } = req.params;
+  const { folder } = req.params;
+  const { material_ids } = req.body;
+  db.query('SELECT folder_mappings FROM rooms WHERE id = ?', [id], (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    let mappings = results[0] ? JSON.parse(results[0].folder_mappings || '{}') : {};
+    mappings[folder] = material_ids || [];
+    db.query('UPDATE rooms SET folder_mappings = ? WHERE id = ?', [JSON.stringify(mappings), id], (err) => {
+      if (err) return res.status(500).json({error:err.message});
+      res.json({success:true});
+    });
+  });
+});
+
+// 获取设备的房间素材
+app.get('/api/devices/:id/room-materials', (req, res) => {
+  const id = req.params.id;
+  db.query('SELECT room_id FROM devices WHERE id = ?', [id], (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (!results[0] || !results[0].room_id) return res.json({});
+    db.query('SELECT folder_mappings FROM rooms WHERE id = ?', [results[0].room_id], (err, rows) => {
+      if (err) return res.status(500).json({error:err.message});
+      res.json(rows[0] ? JSON.parse(rows[0].folder_mappings || '{}') : {});
+    });
+  });
+});
+
+// 绑定设备到房间
+app.post('/api/devices/:id/bind-room', (req, res) => {
+  const { room_id } = req.body;
+  const id = req.params.id;
+  db.query('UPDATE devices SET room_id = ? WHERE id = ?', [room_id, id], (err) => {
+    if (err) return res.status(500).json({error:err.message});
+    res.json({success:true});
+  });
+});
+
+// 获取未注册/未授权设备
+app.get('/api/unregistered', (req, res) => {
+  db.query('SELECT id, name, fingerprint, model, hardware, mac, location, status, first_seen, online_time FROM devices WHERE authorized = 0 ORDER BY online_time DESC', (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(results || []);
+  });
+});
+
+
+// ==================== 默认素材 API ====================
+app.get('/api/default-materials', (req, res) => {
+  db.query('SELECT * FROM default_materials ORDER BY id DESC', (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(results || []);
+  });
+});
+
+app.post('/api/default-materials', (req, res) => {
+  const { name, url, type, thumbnail } = req.body;
+  const id = 'def_' + Date.now();
+  db.query(
+    'INSERT INTO default_materials (id, name, url, type, thumbnail) VALUES (?, ?, ?, ?, ?)',
+    [id, name, url, type, thumbnail || null],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id, name, url, type, thumbnail });
+    }
+  );
+});
+
+app.delete('/api/default-materials/:id', (req, res) => {
+  db.query('DELETE FROM default_materials WHERE id = ?', [req.params.id], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true });
+  });
+});
+
+db.query(`CREATE TABLE IF NOT EXISTS stores (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL UNIQUE,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+
+db.query(`CREATE TABLE IF NOT EXISTS default_materials (
+  id VARCHAR(64) PRIMARY KEY,
+  name VARCHAR(255),
+  url VARCHAR(512),
+  type VARCHAR(50),
+  thumbnail VARCHAR(512),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+
+
+
+
+// ==================== 预设素材 API ====================
+app.get('/api/preset/folders', (req, res) => {
+  db.query('SELECT * FROM preset_folders ORDER BY sort_order', (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(results || []);
+  });
+});
+
+app.post('/api/preset/folders', (req, res) => {
+  const { name, path, sort_order } = req.body;
+  const id = 'preset_' + Date.now();
+  db.query(
+    'INSERT INTO preset_folders (id, name, path, sort_order) VALUES (?, ?, ?, ?)',
+    [id, name, path || '', sort_order || 0],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id, name, path, sort_order });
+    }
+  );
+});
+
+app.delete('/api/preset/folders/:id', (req, res) => {
+  db.query('DELETE FROM preset_materials WHERE folder_id = ?', [req.params.id], (err) => {
+    db.query('DELETE FROM preset_folders WHERE id = ?', [req.params.id], (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ success: true });
+    });
+  });
+});
+
+app.get('/api/preset/materials', (req, res) => {
+  db.query('SELECT * FROM preset_materials ORDER BY folder_id, filename', (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(results || []);
+  });
+});
+
+app.post('/api/preset/materials', (req, res) => {
+  const { folder_id, filename, url, type, thumbnail } = req.body;
+  const id = 'pm_' + Date.now();
+  const fileType = type || (filename.endsWith('.mp4') || filename.endsWith('.avi') ? 'video' : 'image');
+  db.query(
+    'INSERT INTO preset_materials (id, folder_id, filename, url, type, thumbnail) VALUES (?, ?, ?, ?, ?, ?)',
+    [id, folder_id, filename, url, fileType, thumbnail || null],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id, folder_id, filename, url, type: fileType, thumbnail });
+    }
+  );
+});
+
+
+// 设备心跳超时检测（默认 60 秒）
+const DEVICE_TIMEOUT_SECONDS = process.env.DEVICE_TIMEOUT || 60;
+
+// 定期检查设备在线状态
+setInterval(() => {
+  db.query(
+    `UPDATE devices SET status = 'offline' 
+     WHERE status = 'online' 
+     AND online_time < DATE_SUB(NOW(), INTERVAL ? SECOND)`,
+    [DEVICE_TIMEOUT_SECONDS],
+    (err, result) => {
+      if (err) {
+        console.error('检查设备在线状态失败:', err.message);
+      } else if (result.affectedRows > 0) {
+        console.log(`📴 ${result.affectedRows} 个设备已离线`);
+      }
+    }
+  );
+}, 10000); // 每 10 秒检查一次
+
+app.listen(PORT, () => {
+  console.log(`🚀 XVJ 云后台服务启动: http://localhost:${PORT}`);
+  initDatabase();
+  initPresetMaterialsTable();
+});
+
+function initDatabase() {
+  db.query(`
+    CREATE TABLE IF NOT EXISTS devices (
+      id VARCHAR(64) PRIMARY KEY,
+      name VARCHAR(255),
+      location VARCHAR(255),
+      fingerprint VARCHAR(255),
+      model VARCHAR(100),
+      hardware VARCHAR(100),
+      mac VARCHAR(50),
+      status VARCHAR(50) DEFAULT 'offline',
+      authorized TINYINT(1) DEFAULT 1,
+      config TEXT,
+      status_data TEXT,
+      online_time DATETIME
+    )
+  `);
+  
+  db.query(`
+    CREATE TABLE IF NOT EXISTS materials (
+      id VARCHAR(36) PRIMARY KEY,
+      name VARCHAR(255),
+      url VARCHAR(512),
+      type VARCHAR(50),
+      folder VARCHAR(10),
+      thumbnail VARCHAR(512),
+      resolution VARCHAR(50),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 文件夹备注表
+  db.query(`
+    CREATE TABLE IF NOT EXISTS folder_notes (
+      folder VARCHAR(10) PRIMARY KEY,
+      note VARCHAR(255)
+    )
+  `);
+
+  // 操作日志表
+  db.query(`
+    CREATE TABLE IF NOT EXISTS operation_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      action VARCHAR(50),
+      target VARCHAR(50),
+      details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // APK版本表
+  db.query(`
+    CREATE TABLE IF NOT EXISTS apk_versions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      version VARCHAR(50) NOT NULL,
+      version_code INT NOT NULL,
+      filename VARCHAR(255) NOT NULL,
+      filepath VARCHAR(512) NOT NULL,
+      size INT DEFAULT 0,
+      changelog TEXT,
+      is_latest TINYINT(1) DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 设备版本记录表
+  db.query(`
+    CREATE TABLE IF NOT EXISTS device_versions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      device_id VARCHAR(64) NOT NULL,
+      version VARCHAR(50) DEFAULT '',
+      version_code INT DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY unique_device (device_id)
+    )
+  `);
+  
+  console.log('✅ 数据库初始化完成');
+}
+
+// ==================== 版本管理 API ====================
+
+// 获取版本列表
+app.get('/api/versions', (req, res) => {
+  db.query('SELECT * FROM apk_versions ORDER BY version_code DESC', (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    res.json(results || []);
+  });
+});
+
+// 获取最新版本
+app.get('/api/version/latest', (req, res) => {
+  db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (results.length === 0) return res.json({});
+    res.json(results[0]);
+  });
+});
+
+// 上传APK
+const uploadDir = path.join(__dirname, 'public/apk');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, {recursive:true});
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => cb(null, 'xvj-' + Date.now() + '.apk')
+});
+const upload = multer({storage, limits:{fileSize:200*1024*1024}});
+
+app.post('/api/versions/upload', upload.single('apk'), (req, res) => {
+  if (!req.file) return res.status(400).json({error:'No file uploaded'});
+  
+  const {version, version_code, changelog} = req.body;
+  if (!version || !version_code) return res.status(400).json({error:'version and version_code required'});
+  
+  // 取消之前的latest标记
+  db.query('UPDATE apk_versions SET is_latest = 0', (err) => {
+    const filepath = '/apk/' + req.file.filename;
+    db.query(
+      'INSERT INTO apk_versions (version, version_code, filename, filepath, size, changelog, is_latest) VALUES (?, ?, ?, ?, ?, ?, 1)',
+      [version, parseInt(version_code), req.file.filename, filepath, req.file.size, changelog || ''],
+      (err2, result) => {
+        if (err2) return res.status(500).json({error:err2.message});
+        res.json({success:true, id:result.insertId, filepath});
+      }
+    );
+  });
+});
+
+// 删除版本
+app.delete('/api/versions/:id', (req, res) => {
+  const id = req.params.id;
+  db.query('SELECT filepath FROM apk_versions WHERE id = ?', [id], (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (results.length > 0) {
+      const fullPath = path.join(__dirname, 'public', results[0].filepath);
+      if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+    }
+    db.query('DELETE FROM apk_versions WHERE id = ?', [id], (err2) => {
+      if (err2) return res.status(500).json({error:err2.message});
+      res.json({success:true});
+    });
+  });
+});
+
+// 设备上报版本
+app.post('/api/device/version', (req, res) => {
+  const {device_id, version, version_code} = req.body;
+  if (!device_id) return res.status(400).json({error:'device_id required'});
+  
+  db.query(
+    'INSERT INTO device_versions (device_id, version, version_code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE version = ?, version_code = ?',
+    [device_id, version || '', version_code || 0, version || '', version_code || 0],
+    (err) => {
+      if (err) return res.status(500).json({error:err.message});
+      res.json({success:true});
+    }
+  );
+});
+
+// 获取设备版本列表
+app.get('/api/device/versions', (req, res) => {
+  db.query(`
+    SELECT d.id, d.name, d.store, d.room_id, d.status, dv.version, dv.version_code, dv.updated_at
+    FROM devices d 
+    LEFT JOIN device_versions dv ON d.id = dv.device_id
+    ORDER BY dv.updated_at DESC
+  `, (err, results) => {
+    if (err) return res.status(500).json({error:err.message});
+    res.json(results || []);
+  });
+});
+
+// 推送更新到设备
+app.post('/api/devices/:id/push-update', (req, res) => {
+  const deviceId = req.params.id;
+  
+  db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', (err, versions) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (versions.length === 0) return res.status(404).json({error:'No APK available'});
+    
+    const apk = versions[0];
+    const topic = `xvj/device/${deviceId}/command`;
+    
+    const cmd = {
+      action: 'update',
+      version: apk.version,
+      version_code: apk.version_code,
+      url: 'http://47.102.106.237' + apk.filepath
+    };
+    
+    client.publish(topic, JSON.stringify(cmd), {qos:1}, (err2) => {
+      if (err2) return res.status(500).json({error:err2.message});
+      res.json({success:true, message:'Update pushed'});
+    });
+  });
+});
+
+// 批量推送更新
+app.post('/api/devices/push-update-all', (req, res) => {
+  db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', (err, versions) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (versions.length === 0) return res.status(404).json({error:'No APK available'});
+    
+    const apk = versions[0];
+    
+    db.query("SELECT id FROM devices WHERE authorized = 1", (err2, devices) => {
+      if (err2) return res.status(500).json({error:err2.message});
+      
+      let pushed = 0;
+      devices.forEach(device => {
+        const topic = `xvj/device/${device.id}/command`;
+        const cmd = {
+          action: 'update',
+          version: apk.version,
+          version_code: apk.version_code,
+          url: 'http://47.102.106.237' + apk.filepath
+        };
+        client.publish(topic, JSON.stringify(cmd), {qos:1});
+        pushed++;
+      });
+      
+      res.json({success:true, pushed});
+    });
+  });
+});

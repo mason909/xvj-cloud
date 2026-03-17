@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XVJ 云后台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1a1a1a;color:#e0e0e0;min-height:100vh}
+.layout{display:flex;min-height:100vh}
+.sidebar{width:220px;background:#242424;border-right:1px solid #333;position:fixed;height:100vh}
+.brand{padding:20px;font-size:18px;font-weight:bold;border-bottom:1px solid #333}
+.brand span{color:#e94560}
+.menu{list-style:none;padding:10px 0}
+.menu li{padding:12px 20px;cursor:pointer;color:#999;transition:all 0.2s}
+.menu li:hover{background:#2a2a2a;color:#fff}
+.menu li.active{background:#e94560;color:#fff}
+.main{margin-left:220px;flex:1}
+.header{background:#242424;padding:15px 24px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:18px}
+.btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:14px}
+.btn-primary{background:#e94560;color:#fff}
+.btn-secondary{background:#3a3a3a;color:#aaa}
+.content{padding:24px}
+.folder-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
+.tabs{display:flex;flex-wrap:wrap;gap:8px;padding:10px}
+.tab{display:flex;align-items:center;gap:10px;padding:10px 20px;min-width:100px}
+.tab-n{font-size:14px;font-weight:bold}
+.tab-d{font-size:14px;font-weight:bold;color:#888;cursor:pointer}
+.tab{padding:8px 16px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:6px;cursor:pointer}
+.tab.active{background:#e94560;color:#fff;border-color:#e94560}
+.tab{display:flex;flex-direction:column;align-items:center;padding:8px 12px;min-width:50px}
+.tab-n{font-size:14px;font-weight:bold}
+.folder-name{padding:10px 20px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:8px;cursor:pointer}
+.folder-del{position:absolute;right:-8px;top:-8px;background:#dc3545;color:#fff;border:none;width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:12px;line-height:1;display:none}
+.tab{position:relative;display:inline-flex;flex-direction:column;align-items:center;padding:8px 12px;min-width:50px}
+.tab:hover .folder-del{display:flex;align-items:center;justify-content:center}
+.folder-btn{padding:10px 20px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:8px;cursor:pointer}
+.folder-btn.active{background:#e94560;color:#fff}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:16px}
+.card{background:#242424;border-radius:10px;overflow:hidden;cursor:pointer;border:1px solid #333;position:relative}
+.card.selected{border:2px solid #e94560}
+.card:hover{transform:translateY(-4px);box-shadow:0 8px 20px rgba(233,69,96,0.15)}
+.card img{width:100%;aspect-ratio:1;object-fit:cover}
+.card-thumb{width:100%;aspect-ratio:1;background:#2a2a2a;display:flex;align-items:center;justify-content:center}
+.card-res{font-size:10px;color:#888;text-align:center;padding:2px;background:#222}
+.card-name{padding:12px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-check{position:absolute;top:8px;left:8px;z-index:5;width:20px;height:20px;cursor:pointer}
+.card-del{position:absolute;top:8px;right:8px;width:24px;height:24px;background:#dc3545;border:none;border-radius:4px;color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:12px}
+.card:hover .card-del{display:flex}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,0.85);display:none;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(5px)}
+.modal.show{display:flex}
+.modal-content{position:relative;max-width:95%;max-height:95%;background:#1a1a1a;border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.5)}
+.modal img,.modal video{width:100%;height:auto;max-height:90vh;display:block}
+.modal-close{position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.5);color:#fff;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:18px;z-index:10}
+.modal-close:hover{background:#e94560}
+.empty{text-align:center;padding:60px;color:#666}
+.device-card{background:#242424;border-radius:10px;padding:16px;border:1px solid #333;margin-bottom:16px}
+.device-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.device-status{padding:4px 10px;border-radius:12px;font-size:12px}
+.on{background:#28a745;color:#fff}
+.off{background:#666;color:#fff}
+@media(max-width:768px){.sidebar{display:none}.main{margin-left:0}}
+
+.progress-bar{height:6px;background:#333;border-radius:3px;overflow:hidden;margin-top:10px}
+.progress-fill{height:100%;background:linear-gradient(90deg,#e94560,#ff6b8a);width:0%;transition:width 0.2s}
+.progress-text{font-size:12px;color:#888;margin-top:5px}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+<div class="brand"><span>*</span> XVJ云后台</div>
+<ul class="menu">
+<li class="active" data-p="materials" onclick="sp('materials')">[M] 素材管理</li>
+<li data-p="devices" onclick="sp('devices')">[D] 客户管理</li>
+<li data-p="unregistered" onclick="sp('unregistered')">[U] 未注册设备</li>
+</ul>
+</aside>
+<main class="main">
+<header class="header">
+<h1 id="title">素材管理</h1>
+<div id="up" style="display:none">
+<div class="progress-bar"><div class="progress-fill" id="pf"></div></div>
+<div class="progress-text" id="pt">上传中: 0%</div>
+</div>
+<div id="btns">
+<button class="btn btn-primary" onclick="document.getElementById('fi').click()">上传文件</button></div>
+</header>
+<div class="content">
+<div id="pm">
+<div class="folder-bar" id="fb"></div>
+<div class="grid" id="g"></div>
+</div>
+<div id="pd" style="display:none">
+<div id="df"></div><div id="dg"></div>
+</div>
+<div id="pu" style="display:none">
+<div class="empty" id="ur">加载中...</div>
+</div>
+</div>
+</main>
+</div>
+<input type="file" id="fi" multiple style="display:none" onchange="ul(this.files)">
+<div class="modal" id="m" onclick="this.classList.remove('show')"><button class="modal-close" onclick="dc()">×</button><div id="mc"></div></div>
+<script>
+// 统一播放器组件
+function createPlayer(url, type, container) {
+    container.innerHTML = '';
+    if (type === 'video') {
+        var v = document.createElement('video');
+        v.src = url;
+        v.autoplay = true;
+        v.muted = true;
+        v.controls = true;
+        v.loop = true;
+        v.style.width = '100%';
+        v.style.maxHeight = '80vh';
+        var playAttempt = setInterval(function() {
+            if (v.readyState >= 3) {
+                v.play().catch(function() {});
+                clearInterval(playAttempt);
+            }
+        }, 200);
+        container.appendChild(v);
+    } else {
+        var img = document.createElement('img');
+        img.src = url;
+        img.style.maxWidth = '100%';
+        img.style.maxHeight = '80vh';
+        container.appendChild(img);
+    }
+}
+
+var s={folders:JSON.parse(localStorage.getItem('xfolds')||'{}'),p:localStorage.getItem('xp')||'materials',f:localStorage.getItem('xf')||'01',fs:[],ms:[],ds:[],selected:[],stores:JSON.parse(localStorage.getItem('xstores')||'[]'),df:null};
+function sp(p){s.p=p;localStorage.setItem('xp',p);document.querySelectorAll('.menu li').forEach(function(x){x.classList.toggle('active',x.dataset.p===p)});document.getElementById('pm').style.display=p==='materials'?'block':'none';document.getElementById('pd').style.display=p==='devices'?'block':'none';document.getElementById('pu').style.display=p==='unregistered'?'block':'none';document.getElementById('title').innerText=p==='materials'?'素材管理':(p==='devices'?'客户管理':'未注册设备');ub(p);if(p==='materials')lm();else if(p==='devices'){s.df=null;ld()}else if(p==='unregistered')lu()}
+function ub(p){var b=document.getElementById('btns');if(p==='materials'){b.innerHTML='<button class="btn btn-primary" onclick="document.getElementById(\'fi\').click()">上传文件</button> <button class="btn btn-secondary" onclick="showPushDialog()">推送('+(s.selected.length||0)+')</button>'}else b.innerHTML=''}
+async function lm(){var r=await fetch('/api/materials');s.ms=await r.json();var fr=await fetch('/api/folders');s.folders=JSON.parse(localStorage.getItem('xfolds')||'{}');try{var nr=await fetch('/api/folders/notes');var serverNotes=await nr.json();s.folders={...s.folders,...serverNotes}}catch(e){}s.fs=['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20'];if(!s.fs.includes(s.f))s.f='01';rf();rm()}
+function rf(){var b=document.getElementById('fb');var h='<div class="tabs">';s.fs.forEach(function(x){var note=s.folders&&s.folders[x]||'';h+='<div class="tab '+(x===s.f?'active':'')+'" onclick="sf(\''+x+'\')"><span class="tab-n">'+x+'</span><span class="tab-d" ondblclick="rn(event,\''+x+'\')">'+(note||'+')+'</span></div>'});h+='</div>';b.innerHTML=h}
+function df(e,n){e.stopPropagation();if(!confirm('删除文件夹 '+n+'?'))return;fetch('/api/folders/'+n,{method:'DELETE'}).then(x=>x.json()).then(function(){s.fs=s.fs.filter(f=>f!==n);if(s.f===n)s.f='1';localStorage.setItem('xf',s.f);rf();rm();lm()})}
+function rn(e,n){e.stopPropagation();var note=prompt('输入备注:',s.folders&&s.folders[n]||'');if(note===null)return;s.folders=s.folders||{};s.folders[n]=note;localStorage.setItem('xfolds',JSON.stringify(s.folders));fetch('/api/folders/notes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:n,note:note})}).then(x=>x.json());rf()}
+function sf(f){s.f=f;localStorage.setItem('xf',f);rf();rm()}
+function rm(){var g=document.getElementById('g');var l=s.ms.filter(function(x){return x.folder===s.f});if(l.length===0){g.innerHTML='<div class="empty">暂无素材</div>';return}var h='';l.forEach(function(x){var sel=s.selected.includes(x.id);var t=x.type==='video'?(x.thumbnail?'<img src="'+x.thumbnail+'">':'<div class="card-thumb">▶</div>'):(x.url?'<img src="'+x.url+'">':'<div class="card-thumb">?</div>');h+='<div class="card '+(sel?'selected':'')+'"><input type="checkbox" class="card-check" '+(sel?'checked':'')+' onclick="event.stopPropagation();tc(\''+x.id+'\')"><button class="card-del" onclick="dm(event,\''+x.id+'\')">x</button><div ondblclick="pv(\''+x.url+'\',\''+x.type+'\')">'+t+'</div><div class="card-name">'+x.name+'</div></div>'});g.innerHTML=h}
+function tc(id){var idx=s.selected.indexOf(id);if(idx>-1)s.selected.splice(idx,1);else s.selected.push(id);rm()}
+function pv(u,t){createPlayer(u,t,document.getElementById('mc'));document.getElementById('m').classList.add('show')}
+function dc(){document.getElementById('m').classList.remove('show')}
+async function cf(){var n=prompt('输入文件夹名称:');if(!n)return;await fetch('/api/folders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});lm()}
+function ul(files){if(!files.length)return;var folder=s.f;var total=files.length;var completed=0;document.getElementById('up').style.display='block';var pf=document.getElementById('pf');var pt=document.getElementById('pt');function uploadOne(i){if(i>=files.length){document.getElementById('fi').value='';document.getElementById('up').style.display='none';lm();alert('上传完成 '+total+' 个文件');return}var xhr=new XMLHttpRequest();xhr.upload.onprogress=function(e){if(e.lengthComputable){var pct=Math.round(e.loaded/e.total*100);pf.style.width=pct+'%';pt.textContent='上传中 '+(i+1)+'/'+total+': '+pct+'%'}};xhr.onload=function(){if(xhr.status>=200&&xhr.status<300){completed++;console.log('上传成功:',files[i].name);uploadOne(i+1)}else{alert('上传失败: '+xhr.status);document.getElementById('up').style.display='none'}};xhr.onerror=function(){alert('上传失败');document.getElementById('up').style.display='none'};xhr.open('POST','/api/upload?folder='+folder);xhr.send((function(f){var fd=new FormData();fd.append('file',f);return fd})(files[i]))}uploadOne(0)}
+async function dm(e,id){e.stopPropagation();if(!confirm('确定删除?'))return;await fetch('/api/materials/'+id,{method:'DELETE'});lm()}
+async function ld(){var r=await fetch('/api/devices');s.ds=await r.json();try{var sr=await fetch('/api/stores');var serverStores=await sr.json();if(serverStores&&serverStores.length>0){s.stores=serverStores;localStorage.setItem('xstores',JSON.stringify(s.stores))}}catch(e){}rd()}
+async function lu(){var r=await fetch('/api/unregistered');var ds=await r.json();var g=document.getElementById('ur');if(!ds||ds.length===0){g.innerHTML='<div class="empty">暂无未注册设备</div>';return}var h='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';for(var i=0;i<ds.length;i++){var d=ds[i];var ft=d.first_seen?new Date(d.first_seen).toLocaleString():'-';var st=d.status==='online'?'<span class="device-status on">在线</span><span style="font-size:11px;color:#888">|未授权</span>':'<span class="device-status off">离线</span><span style="font-size:11px;color:#888">|未授权</span>';h+='<div class="device-card"><div class="device-header"><span>'+(d.name||'未命名')+'</span>'+st+'</div><div style="color:#888;font-size:12px;margin-top:8px"><b>ID:</b> '+d.id+'</div><div style="color:#666;font-size:11px;margin-top:4px"><b>指纹:</b> '+d.fingerprint+'</div><div style="color:#666;font-size:11px;margin-top:4px"><b>型号:</b> '+(d.model||'-')+' | <b>硬件:</b> '+(d.hardware||'-')+'</div><div style="color:#666;font-size:11px;margin-top:4px"><b>MAC:</b> '+(d.mac||'-')+'</div><div style="color:#666;font-size:11px;margin-top:4px"><b>位置:</b> '+(d.location||'-')+'</div><div style="color:#666;font-size:11px;margin-top:4px"><b>首次:</b> '+ft+'</div><button class="btn btn-primary" style="margin-top:10px" onclick="ar(\''+d.id+'\')">授权</button></div>'}h+='</div>';g.innerHTML=h}
+async function ar(id){await fetch('/api/devices/'+id+'/authorize',{method:'POST'});alert('已授权');lu()}
+async function unbind(id){if(!confirm('确定解绑该设备？解绑后设备将回到未注册状态'))return;await fetch('/api/devices/'+id+'/deauthorize',{method:'POST'});alert('已解绑');ld()}
+function rd(){var g=document.getElementById('dg');var stores={};for(var i=0;i<(s.stores||[]).length;i++){stores[s.stores[i]]=stores[s.stores[i]]||[]}for(var i=0;i<s.ds.length;i++){var x=s.ds[i];if(x.authorized!==1)continue;var store=x.store||'默认店';if(!stores[store])stores[store]=[];stores[store].push(x)}var storeNames=Object.keys(stores);if(storeNames.length>0)s.df=s.df||storeNames[0];var h='<div class="tabs">';for(var i=0;i<storeNames.length;i++){var sn=storeNames[i];var active=s.df===sn?'active':'';h+='<div class="tab '+active+'" onclick="sd(\''+sn+'\')"><span class="tab-n">'+sn+'</span><span class="folder-del" onclick="ds(event,\''+sn+'\')" title="删除">×</span></div>'}h+='<div class="tab" onclick="as()" style="border-style:dashed"><span class="tab-n">+</span></div>';h+='</div>';document.getElementById('df').innerHTML=h;var devs=storeNames.length>0?(stores[s.df]||[]):[];if(devs.length===0){g.innerHTML='<div class="empty">暂无设备</div>';return}var gh='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">';for(var j=0;j<devs.length;j++){var d=devs[j];var st=d.status==='online'?'<span class="device-status on">在线</span>':'<span class="device-status off">离线</span>';gh+='<div class="device-card"><div class="device-header"><span>'+d.name+'</span>'+st+'</div><div style="color:#888;font-size:12px">ID:'+d.id+'</div><button class="btn btn-secondary" style="margin-top:10px" onclick="sc(\''+d.id+'\')">推送</button> <button class="btn" style="background:#e94560;color:#fff;margin-top:10px" onclick="unbind(\''+d.id+'\')">解绑</button></div>'}gh+='</div>';g.innerHTML=gh}
+function sd(store){s.df=store;rd()}
+function as(){var n=prompt('新店铺:');if(!n)return;if(!s.stores)s.stores=[];if(!s.stores.includes(n)){s.stores.push(n);localStorage.setItem('xstores',JSON.stringify(s.stores));fetch('/api/stores',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})}).then(x=>x.json());s.df=n;rd()}}
+function ds(e,store){e.stopPropagation();if(!confirm('删除店铺 '+store+' 及其所有设备?'))return;fetch('/api/stores/'+encodeURIComponent(store),{method:'DELETE'}).then(x=>x.json()).then(function(){s.stores=s.stores.filter(x=>x!==store);localStorage.setItem('xstores',JSON.stringify(s.stores));s.df=s.stores[0]||'默认店';rd()})}
+function refreshDevice(id){fetch('/api/devices/'+id+'/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'refresh'})}).then(x=>x.json()).then(function(){alert('已发送刷新指令')})}
+async function showPushDialog(){if(s.selected.length===0){alert('请先勾选要推送的素材');return}s.pushMs=s.ms.filter(function(x){return s.selected.includes(x.id)});var r=await fetch('/api/devices');var devs=await r.json();var h='<div style="padding:20px;max-height:80vh;overflow-y:auto"><h3>推送到设备</h3><p style="color:#888;margin:10px 0">已选'+s.pushMs.length+'个素材，将发送到对应文件夹</p>';if(!devs||devs.length===0){h+='<p>暂无在线设备</p>'}else{var storeMap={};devs.forEach(function(d){var store=d.store||'默认店';if(!storeMap[store])storeMap[store]=[];storeMap[store].push(d)});Object.keys(storeMap).forEach(function(store){h+='<div style="margin-top:15px"><h4 style="color:#e94560">'+store+'</h4>';storeMap[store].forEach(function(d){var checked=d.status==='online'?'checked':'';var status=d.status==='online'?'<span class="device-status on">在线</span>':'<span class="device-status off">离线</span>';h+='<label style="display:flex;align-items:center;padding:8px;border:1px solid #444;margin:5px 0;border-radius:4px;cursor:pointer"><input type="checkbox" class="device-check" value="'+d.id+'" '+checked+'> <span style="margin-left:10px">'+d.name+'</span> '+status+'</label>'});h+='</div>'})}h+='<div style="margin-top:20px"><button class="btn btn-primary" onclick="doPushToDevices()">确认推送</button> <button class="btn" onclick="document.getElementById(\'m\').classList.remove(\'show\')">取消</button></div></div>';document.getElementById('mc').innerHTML=h;document.getElementById('m').classList.add('show')}
+async function doPushToDevices(){var checks=document.querySelectorAll('.device-check:checked');if(checks.length===0){alert('请选择至少一个设备');return}var deviceIds=Array.from(checks).map(function(c){return c.value});for(var i=0;i<s.pushMs.length;i++){for(var j=0;j<deviceIds.length;j++){var cmd={action:'push_file',folder:s.pushMs[i].folder,filename:s.pushMs[i].name,url:s.pushMs[i].url};await fetch('/api/devices/'+deviceIds[j]+'/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})})}}alert('已推送到'+deviceIds.length+'个设备，共'+s.pushMs.length+'个素材');document.getElementById('m').classList.remove('show')}
+// ESC关闭预览
+document.onkeydown=function(e){if(e.key==='Escape'){document.getElementById('m').classList.remove('show')}};
+sp(s.p);
+</script>
+
+<style>
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.inland-security-footer {
+  position: fixed;
+  z-index: 10;
+  bottom: 0;
+  right: 0;
+  width: fit-content;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tooltip-container {
+  position: relative;
+}
+
+.trigger-content {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background-color: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.minimax-link {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 300;
+  color: #adadad;
+  text-decoration: none;
+}
+
+.minimax-link:visited {
+  color: #adadad;
+}
+
+.minimax-link:hover {
+  color: #666666;
+}
+
+.tooltip-content {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  padding-bottom: 16px; /* 8px 内容间距 + 8px 用于鼠标移动的透明区域 */
+  font-size: 12px;
+  line-height: 17px;
+  background-color: #fafafa;
+  border-radius: 12px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  color: #171717;
+}
+
+/* 创建透明的连接区域，让鼠标可以平滑移动到 tooltip */
+.tooltip-content::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 0;
+  right: 0;
+  height: 16px;
+}
+
+.tooltip-container:hover .tooltip-content {
+  display: flex;
+}
+
+.info-section {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.beian-link {
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+  color: #171717;
+}
+
+.beian-icon {
+  width: 14px;
+  height: 14px;
+  margin-right: 2px;
+}
+
+.underline-text {
+  color: #171717;
+  text-decoration: underline;
+}
+
+.underline-text:hover {
+  color: #000000;
+}
+
+/* 深色模式支持 */
+@media (prefers-color-scheme: dark) {
+  .trigger-content {
+    background-color: transparent;
+  }
+
+  .minimax-link,
+  .minimax-link:visited {
+    color: #666666;
+  }
+
+  .minimax-link:hover {
+    color: #adadad;
+  }
+
+  .tooltip-content {
+    background-color: #262626;
+    color: #ededed;
+  }
+
+  .beian-link,
+  .underline-text {
+    color: #ededed;
+  }
+
+  .underline-text:hover {
+    color: #ffffff;
+  }
+}
+
+</style>
+<div class="inland-security-footer">
+  <div class="tooltip-container">
+    <div class="trigger-content">
+      <a href="https://www.minimaxi.com/" target="_blank" rel="noreferrer" class="minimax-link">
+        <span>© 2026 MiniMax</span>
+      </a>
+    </div>
+    <div class="tooltip-content">
+      <section class="info-section">
+        <span>上海稀宇科技有限公司</span>
+      </section>
+
+      <section class="info-section">
+        <a class="beian-link" href="https://www.beian.gov.cn/portal/registerSystemInfo?recordcode=31010402010179" target="_blank" rel="noreferrer">
+          <img alt="hailuo-beian-icon" src="https://cdn.hailuoai.com/hailuo-video-web/public_assets/223037d3-79fd-4db0-a456-749f38a6a14b.png" class="beian-icon">
+          <span class="underline-text">沪公网安备31010402010179号</span>
+        </a>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" class="underline-text">
+          沪ICP备2023003282号-38
+        </a>
+      </section>
+
+      <section class="info-section">
+        <span>模型名称：MiniMax</span>
+        <span>备案号：Shanghai-MiniMax-202505230046</span>
+      </section>
+
+      <section class="info-section">
+        <a href="https://agent.minimaxi.com/doc/zh/terms-of-service.html" target="_blank" rel="noreferrer" class="underline-text">
+          用户协议
+        </a>
+        <a href="https://agent.minimaxi.com/doc/zh/privacy-policy.html" target="_blank" rel="noreferrer" class="underline-text">
+          隐私政策
+        </a>
+      </section>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
