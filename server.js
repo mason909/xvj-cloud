@@ -3,6 +3,23 @@ const mysql = require('mysql2');
 const mqtt = require('mqtt');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
+
+// 故障记录
+const FAULT_LOG = '/workspace/xvj-backup/故障记录.md';
+function writeFault(type, msg, detail) {
+  const ts = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const entry = `## [${ts}] ${type}\n\n**消息**: ${msg}\n\n**详情**: \`${JSON.stringify(detail)}\`\n\n---\n`;
+  fs.appendFile(FAULT_LOG, entry, () => {});
+  console.error('[故障记录]', type, msg, detail);
+}
+
+// 进程级崩溃捕获
+process.on('uncaughtException', (err) => {
+  writeFault('进程崩溃 (uncaughtException)', err.message, { stack: err.stack });
+});
+process.on('unhandledRejection', (reason) => {
+  writeFault('Promise拒绝 (unhandledRejection)', String(reason), {});
+});
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -137,6 +154,9 @@ function handleMqttMessage(topic, message) {
             [isOnline ? 'online' : 'offline', message, deviceId, fingerprint, deviceId + '%', searchId + '%'],
             (err, result) => {
               if (err) console.error('更新设备状态失败:', err.message);
+              if (result && result.affectedRows > 0) {
+                logAction(isOnline ? 'online' : 'offline', 'device', { device_id: deviceId, fingerprint: fingerprint });
+              }
               // 如果没有更新到任何设备（未注册），自动创建记录
               if (result && result.affectedRows === 0 && isOnline) {
                 console.log('📱 创建新设备记录: ' + deviceId);
@@ -148,17 +168,8 @@ function handleMqttMessage(topic, message) {
                 );
               } else if (result && result.affectedRows > 0) {
                 console.log('✅ 设备状态已更新: ' + deviceId);
-                // 心跳时自动发送授权状态
-                db.query(
-                  'SELECT authorized, room_id FROM devices WHERE id = ?',
-                  [deviceId],
-                  (err2, rows2) => {
-                    if (!err2 && rows2 && rows2.length > 0) {
-                      const authorized = rows2[0].authorized === 1;
-                      sendAuthResponse(deviceId, authorized, authorized ? '在线' : '未授权', rows2[0].room_id);
-                    }
-                  }
-                );
+                // 心跳时不再自动发授权+sync，减轻设备压力，避免循环触发同步
+                // 授权状态变更时（如手动触发）由 handleDeviceRegister 或 explicit request 处理
               }
             }
           );
@@ -179,6 +190,37 @@ function handleMqttMessage(topic, message) {
               }
             }
           );
+          break;
+
+        case 'command':
+          // 设备主动发来的命令（如 sync），服务器需要回复 sync_room_materials
+          console.log('📨 设备命令: ' + deviceId + ' -> ' + JSON.stringify(data));
+          if (data.action === 'sync') {
+            db.query(
+              'SELECT d.room_id, r.folder_mappings FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
+              [deviceId],
+              (err, rows) => {
+                if (err || !rows || rows.length === 0) {
+                  console.log('⚠️ sync 命令找不到设备: ' + deviceId);
+                  return;
+                }
+                const { room_id, folder_mappings } = rows[0];
+                if (!room_id) {
+                  console.log('⚠️ sync 命令设备未绑定房间: ' + deviceId);
+                  return;
+                }
+                const syncCmd = {
+                  action: 'sync_room_materials',
+                  room_id: room_id,
+                  folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : {}
+                };
+                const topic = `xvj/device/${deviceId}/command`;
+                mqttClient.publish(topic, JSON.stringify(syncCmd));
+                console.log('📤 发送 sync_room_materials 到设备: ' + deviceId);
+                logAction('sync', 'device', { device_id: deviceId, command: syncCmd });
+              }
+            );
+          }
           break;
       }
     } catch (e) {
@@ -415,23 +457,94 @@ app.delete('/api/devices/:id', (req, res) => {
 // 4. 发送指令到设备
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
-  
+  const deviceId = req.params.id;
+
   // 转换相对URL为完整URL
   let cmd = { ...command };
   if (cmd.url && cmd.url.startsWith('/')) {
     cmd.url = 'http://47.102.106.237' + cmd.url;
   }
-  
-  const topic = `xvj/device/${req.params.id}/command`;
+
+  // sync 命令需要补全 room_id + folder_mappings（服务器查数据库，APK 不需要重复传）
+  if (cmd.action === 'sync') {
+    db.query(
+      'SELECT d.room_id, r.folder_mappings FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
+      [deviceId],
+      (err, rows) => {
+        if (err || !rows || rows.length === 0) {
+          return res.status(404).json({ error: '设备未找到' });
+        }
+        const { room_id, folder_mappings } = rows[0];
+        if (!room_id) {
+          return res.status(400).json({ error: '设备未绑定房间' });
+        }
+        const topic = `xvj/device/${deviceId}/command`;
+        const syncCmd = {
+          action: 'sync_room_materials',
+          room_id: room_id,
+          folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : {}
+        };
+        mqttClient.publish(topic, JSON.stringify(syncCmd));
+        logAction('sync', 'device', { device_id: deviceId, command: syncCmd });
+        res.json({ success: true, command: syncCmd });
+      }
+    );
+    return;
+  }
+
+  const topic = `xvj/device/${deviceId}/command`;
   mqttClient.publish(topic, JSON.stringify(cmd));
-  logAction('sync', 'device', { device_id: req.params.id, command: cmd });
+  logAction('sync', 'device', { device_id: deviceId, command: cmd });
   res.json({ success: true, command: cmd });
+});
+
+// 房间同步：向指定房间的所有授权设备发送 sync_room_materials
+app.post('/api/rooms/:id/sync', (req, res) => {
+  const roomId = req.params.id;
+
+  // 查房间的 folder_mappings 和 config
+  db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [roomId], (err, rows) => {
+    if (err || !rows || rows.length === 0) {
+      return res.status(404).json({ error: '房间不存在' });
+    }
+    const folderMappings = rows[0].folder_mappings ? JSON.parse(rows[0].folder_mappings) : {};
+    const config = rows[0].config ? JSON.parse(rows[0].config) : {};
+
+    // 查房间下所有已授权的设备
+    db.query(
+      'SELECT id FROM devices WHERE room_id = ? AND authorized = 1',
+      [roomId],
+      (err2, devices) => {
+        if (err2) return res.status(500).json({ error: err2.message });
+
+        if (!devices || devices.length === 0) {
+          return res.json({ success: true, sent: 0, message: '房间无授权设备' });
+        }
+
+        let sent = 0;
+        devices.forEach((d) => {
+          const topic = `xvj/device/${d.id}/command`;
+          const syncCmd = {
+            action: 'sync_room_materials',
+            room_id: roomId,
+            folder_mappings: folderMappings,
+            debug: config.debug === true
+          };
+          mqttClient.publish(topic, JSON.stringify(syncCmd));
+          sent++;
+        });
+
+        logAction('room_sync', 'room', { room_id: roomId, devices: sent });
+        res.json({ success: true, sent, command: { action: 'sync_room_materials', room_id: roomId, folder_mappings: folderMappings } });
+      }
+    );
+  });
 });
 
 // 5. 废止设备（远程禁用）
 app.post('/api/devices/:id/deauthorize', (req, res) => {
   const deviceId = req.params.id;
-  
+
   db.query(
     'UPDATE devices SET authorized = 0, status = "deauthorized" WHERE id = ?',
     [deviceId],
@@ -677,14 +790,34 @@ app.delete('/api/preset/folders/:id', (req, res) => {
 });
 
 // 添加预设素材
-// 删除预设素材
+// 删除预设素材（级联清理所有房间的 folder_mappings）
 app.delete('/api/preset/materials/:id', (req, res) => {
   const mid = req.params.id;
   db.query('SELECT * FROM preset_materials WHERE id = ?', [mid], (err, rows) => {
     if (rows && rows[0]) logAction('delete', 'preset_material', rows[0]);
-    db.query('DELETE FROM preset_materials WHERE id = ?', [mid], (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true });
+    // 级联：从所有房间的 folder_mappings 中移除该素材 ID
+    db.query('SELECT id, folder_mappings FROM rooms', [], (err2, rooms) => {
+      if (!err2 && rooms) {
+        rooms.forEach((room) => {
+          try {
+            const fm = JSON.parse(room.folder_mappings || '{}');
+            let changed = false;
+            Object.keys(fm).forEach((folderId) => {
+              const arr = fm[folderId];
+              const idx = arr.indexOf(mid);
+              if (idx > -1) { arr.splice(idx, 1); changed = true; }
+            });
+            if (changed) {
+              db.query('UPDATE rooms SET folder_mappings=? WHERE id=?', [JSON.stringify(fm), room.id]);
+              console.log('🗑 从房间 ' + room.id + ' 的 folder_mappings 移除预设素材 ' + mid);
+            }
+          } catch (e) {}
+        });
+      }
+      db.query('DELETE FROM preset_materials WHERE id = ?', [mid], (err3) => {
+        if (err3) return res.status(500).json({ error: err3.message });
+        res.json({ success: true });
+      });
     });
   });
 });
@@ -734,9 +867,38 @@ app.get("/api/materials", (req, res) => {
 
 app.delete("/api/materials/:id", (req, res) => {
   const id = req.params.id;
+  const fs = require('fs');
   db.query("SELECT * FROM materials WHERE id=?", [id], (err, rows) => {
     if (rows && rows[0]) {
-      logAction('delete', 'material', rows[0]);
+      const mat = rows[0];
+      logAction('delete', 'material', mat);
+      // 删除物理文件（视频 + 缩略图）
+      const base = __dirname + '/public';
+      for (const f of [mat.url, mat.thumbnail]) {
+        if (f) {
+          try { fs.unlinkSync(base + f); } catch (e) { /* ignore */ }
+        }
+      }
+      // 从所有房间的 folder_mappings 中移除该素材 ID
+      db.query("SELECT id, folder_mappings FROM rooms", [], (err2, rooms) => {
+        if (!err2 && rooms) {
+          for (const room of rooms) {
+            try {
+              const fm = JSON.parse(room.folder_mappings || '{}');
+              let didChange = false;
+              for (const folder of Object.keys(fm)) {
+                const before = fm[folder].length;
+                fm[folder] = (fm[folder] || []).filter(item => item !== id);
+                if (fm[folder].length !== before) didChange = true;
+              }
+              if (didChange) {
+                db.query("UPDATE rooms SET folder_mappings=? WHERE id=?", [JSON.stringify(fm), room.id]);
+                console.log('🗑 从房间 ' + room.id + ' 的 folder_mappings 中移除素材 ' + id);
+              }
+            } catch (e) { /* skip bad JSON */ }
+          }
+        }
+      });
     }
     db.query("DELETE FROM materials WHERE id=?", [id], ()=>{});
     res.json({success:true});
@@ -991,10 +1153,14 @@ app.put('/api/rooms/:id', (req, res) => {
 // 删除房间
 app.delete('/api/rooms/:id', (req, res) => {
   const id = req.params.id;
-  db.query('DELETE FROM rooms WHERE id = ?', [id], (err) => {
-    if (err) return res.status(500).json({error:err.message});
-    logAction('delete', 'room', { id });
-    res.json({success:true});
+  db.query('SELECT name, store_name FROM rooms WHERE id = ?', [id], (err, rows) => {
+    if (err) return res.status(500).json({error: err.message});
+    const room = rows[0];
+    db.query('DELETE FROM rooms WHERE id = ?', [id], (err2) => {
+      if (err2) return res.status(500).json({error: err2.message});
+      logAction('delete', 'room', { id, name: room ? room.name : null, store_name: room ? room.store_name : null });
+      res.json({success:true});
+    });
   });
 });
 
@@ -1087,7 +1253,17 @@ app.post('/api/devices/:id/bind-room', (req, res) => {
   const id = req.params.id;
   db.query('UPDATE devices SET room_id = ? WHERE id = ?', [room_id, id], (err) => {
     if (err) return res.status(500).json({error:err.message});
-    res.json({success:true});
+    // 查房间名称用于日志
+    db.query('SELECT r.name as room_name, d.name as device_name FROM devices d LEFT JOIN rooms r ON r.id = ? WHERE d.id = ?', [room_id, id], (err2, rows) => {
+      const room = rows && rows[0];
+      logAction('bind_room', 'device', {
+        device_id: id,
+        device_name: room ? room.device_name : null,
+        room_id: room_id,
+        room_name: room ? room.room_name : null
+      });
+      res.json({success:true});
+    });
   });
 });
 
@@ -1424,17 +1600,45 @@ app.post('/api/devices/:id/push-update', (req, res) => {
       action: 'update',
       version: apk.version,
       version_code: apk.version_code,
-      url: 'http://47.102.106.237' + apk.filepath
+      url: 'http://47.102.106.237/apk/' + path.basename(apk.filepath)
     };
-    
+
     mqttClient.publish(topic, JSON.stringify(cmd), {qos:1}, (err2) => {
       if (err2) return res.status(500).json({error:err2.message});
+      logAction('push_update', 'device', { device_id: deviceId, version: apk.version, version_code: apk.version_code });
       res.json({success:true, message:'Update pushed'});
     });
   });
 });
 
 // 批量推送更新
+// 推送指定版本到所有已授权设备
+app.post('/api/versions/:id/push-to-all', (req, res) => {
+  const versionId = req.params.id;
+  db.query('SELECT * FROM apk_versions WHERE id = ?', [versionId], (err, versions) => {
+    if (err) return res.status(500).json({error: err.message});
+    if (versions.length === 0) return res.status(404).json({error: '版本不存在'});
+    const apk = versions[0];
+    db.query('SELECT id FROM devices WHERE authorized = 1', (err2, devices) => {
+      if (err2) return res.status(500).json({error: err2.message});
+      let pushed = 0;
+      devices.forEach(device => {
+        const topic = `xvj/device/${device.id}/command`;
+        const cmd = {
+          action: 'update',
+          version: apk.version,
+          version_code: apk.version_code,
+          url: 'http://47.102.106.237/apk/' + path.basename(apk.filepath)
+        };
+        mqttClient.publish(topic, JSON.stringify(cmd), {qos: 1});
+        pushed++;
+      });
+      logAction('push_update_all', 'device', { version_id: versionId, version: apk.version, version_code: apk.version_code, devices: pushed });
+      res.json({success: true, pushed, version: apk.version});
+    });
+  });
+});
+
 app.post('/api/devices/push-update-all', (req, res) => {
   db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', (err, versions) => {
     if (err) return res.status(500).json({error:err.message});
@@ -1452,20 +1656,28 @@ app.post('/api/devices/push-update-all', (req, res) => {
           action: 'update',
           version: apk.version,
           version_code: apk.version_code,
-          url: 'http://47.102.106.237' + apk.filepath
+          url: 'http://47.102.106.237/apk/' + path.basename(apk.filepath)
         };
         mqttClient.publish(topic, JSON.stringify(cmd), {qos:1});
         pushed++;
       });
-      
+      logAction('push_update_all', 'device', { version: apk.version, version_code: apk.version_code, devices: pushed });
       res.json({success:true, pushed});
     });
   });
 });
 
+// 操作日志接口
+app.post('/api/log', (req, res) => {
+  const { action, type, detail } = req.body;
+  logAction(action, type, detail);
+  res.json({ success: true });
+});
+
 // 全局错误日志中间件
 app.use((err, req, res, next) => {
   console.error('API Error:', err.message, req.method, req.path);
+  writeFault('API错误', err.message, { method: req.method, path: req.path });
   logAction('error', 'api', { method: req.method, path: req.path, error: err.message });
   res.status(500).json({ error: err.message });
 });
