@@ -1,3 +1,32 @@
+/**
+ * XVJ 云控系统 - 服务端
+ * ========================
+ * 架构：Node.js + Express + MySQL + MQTT
+ * 端口：3000
+ *
+ * 核心表：
+ *   materials          - 素材库（原始视频文件）
+ *   preset_materials   - 预设素材（从素材库复制，可跨房间复用）
+ *   rooms              - 房间配置中心（folder_mappings 是设备同步唯一真相）
+ *   devices            - 设备注册表
+ *   operation_logs      - 前端操作日志（logAction 写入）
+ *   device_logs        - 设备日志（APP MQTT log 主题上报）
+ *
+ * MQTT 主题：
+ *   xvj/device/{id}/status  - 设备状态上报
+ *   xvj/device/{id}/command  - 服务端命令下发
+ *   xvj/device/{id}/log     - 设备日志上报（远程 DEBUG 通道）
+ *
+ * 素材三层架构：
+ *   素材库 [M] ──cp2p──→ 预设素材 [P] ──mapPreset──→ 房间 [D]
+ *
+ * 重要约定：
+ *   - 房间是配置中心，设备只是执行器
+ *   - 设备授权前用 fingerprint，注册后用 uuid
+ *   - APK filepath 统一存在 /apk/xxx.apk，URL 用 path.basename 构造
+ */
+
+
 const express = require('express');
 const mysql = require('mysql2');
 const mqtt = require('mqtt');
@@ -132,23 +161,21 @@ function handleMqttMessage(topic, message) {
     const msgType = parts[3];
     
     try {
-      const data = JSON.parse(message);
+      let data = null;
+      try { data = JSON.parse(message); } catch(e) { /* 非JSON消息（如纯文本日志）*/ }
       
       switch (msgType) {
         case 'register':
-          // 设备注册 - 带硬件指纹
+          if (!data) break;
           handleDeviceRegister(deviceId, data);
           break;
           
         case 'status':
-          // 状态上报 - 心跳不需要授权，未注册设备也能上报
-          const isOnline = data.status === 'online';
+          if (!data) break;
+          { const isOnline = data.status === 'online';
           const fingerprint = data.fingerprint || deviceId;
-          
           console.log('📡 处理心跳: deviceId=' + deviceId + ', fingerprint=' + fingerprint);
-          
-          // 先尝试按各种方式匹配设备
-          const searchId = deviceId.substring(0, 32); // 32位短ID
+          const searchId = deviceId.substring(0, 32);
           db.query(
             'UPDATE devices SET status = ?, status_data = ?, online_time = NOW() WHERE id = ? OR fingerprint = ? OR id LIKE ? OR id LIKE ?',
             [isOnline ? 'online' : 'offline', message, deviceId, fingerprint, deviceId + '%', searchId + '%'],
@@ -157,7 +184,6 @@ function handleMqttMessage(topic, message) {
               if (result && result.affectedRows > 0) {
                 logAction(isOnline ? 'online' : 'offline', 'device', { device_id: deviceId, fingerprint: fingerprint });
               }
-              // 如果没有更新到任何设备（未注册），自动创建记录
               if (result && result.affectedRows === 0 && isOnline) {
                 console.log('📱 创建新设备记录: ' + deviceId);
                 db.query(
@@ -168,32 +194,40 @@ function handleMqttMessage(topic, message) {
                 );
               } else if (result && result.affectedRows > 0) {
                 console.log('✅ 设备状态已更新: ' + deviceId);
-                // 心跳时不再自动发授权+sync，减轻设备压力，避免循环触发同步
-                // 授权状态变更时（如手动触发）由 handleDeviceRegister 或 explicit request 处理
               }
             }
-          );
+          ); }
           break;
         
         case 'request':
-          // 设备请求授权状态
           console.log('🔐 设备请求授权状态: ' + deviceId);
-          db.query(
-            'SELECT authorized, room_id FROM devices WHERE id = ?',
-            [deviceId],
-            (err, rows) => {
-              if (err || !rows || rows.length === 0) {
-                sendAuthResponse(deviceId, false, '设备未注册', '');
-              } else {
-                const authorized = rows[0].authorized === 1;
-                sendAuthResponse(deviceId, authorized, authorized ? '已授权' : '未授权', rows[0].room_id);
-              }
+          db.query('SELECT authorized, room_id FROM devices WHERE id = ?', [deviceId], (err, rows) => {
+            if (err || !rows || rows.length === 0) {
+              sendAuthResponse(deviceId, false, '设备未注册', '');
+            } else {
+              const authorized = rows[0].authorized === 1;
+              sendAuthResponse(deviceId, authorized, authorized ? '已授权' : '未授权', rows[0].room_id);
             }
-          );
+          });
+          break;
+
+        case 'log':
+          // 设备日志上报（远程 DEBUG）
+          // APP发来格式: payload = "timestamp message"（纯文本，不是JSON）
+          { const payload = message.toString();
+            const spaceIdx = payload.indexOf(' ');
+            const logTime = spaceIdx > 0 ? payload.substring(0, spaceIdx) : payload;
+            const logMsg = spaceIdx > 0 ? payload.substring(spaceIdx + 1) : payload;
+            console.log('📝 写日志: deviceId=' + deviceId + ' time=' + logTime + ' msg=' + logMsg.substring(0, 60));
+            db.query(
+              'INSERT INTO device_logs (device_id, log_time, level, message) VALUES (?, ?, ?, ?)',
+              [deviceId, logTime, 'info', logMsg],
+              (err) => { if (err) console.error('写device_logs失败:', err.message); else console.log('✅ 日志写入成功 id=' + deviceId); }
+            ); }
           break;
 
         case 'command':
-          // 设备主动发来的命令（如 sync），服务器需要回复 sync_room_materials
+          if (!data) break;
           console.log('📨 设备命令: ' + deviceId + ' -> ' + JSON.stringify(data));
           if (data.action === 'sync') {
             db.query(
@@ -300,12 +334,14 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
   let folderMappings = {};
   if (authorized && roomId) {
     // 同步获取房间素材配置
-    const roomQuery = `SELECT folder_mappings FROM rooms WHERE id = ?`;
+    const roomQuery = `SELECT folder_mappings, config FROM rooms WHERE id = ?`;
     db.query(roomQuery, [roomId], (err, results) => {
       if (!err && results.length > 0) {
         try {
           folderMappings = JSON.parse(results[0].folder_mappings || '{}');
-          
+          const roomConfig = results[0].config ? JSON.parse(results[0].config) : {};
+          const debugFlag = roomConfig.debug === true;
+
           // 构建完整的推送数据
           const payload = {
             action: 'auth_result',
@@ -314,6 +350,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             message: message,
             room_id: roomId || '',
             folder_mappings: folderMappings,
+            debug: debugFlag,
             timestamp: Date.now()
           };
           
@@ -321,7 +358,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
           console.log(`📤 已推送授权+素材配置到设备 ${deviceId}, 房间: ${roomId}, 文件夹: ${JSON.stringify(folderMappings)}`);
           
           // 触发设备同步素材
-          sendSyncCommandToDevice(deviceId, roomId, folderMappings);
+          sendSyncCommandToDevice(deviceId, roomId, folderMappings, debugFlag);
           
         } catch (e) {
           console.error('解析folder_mappings失败:', e);
@@ -333,6 +370,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             message: message,
             room_id: roomId || '',
             folder_mappings: {},
+            debug: false,
             timestamp: Date.now()
           });
           mqttClient.publish(topic, payload);
@@ -346,6 +384,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
           message: message,
           room_id: roomId || '',
           folder_mappings: {},
+          debug: false,
           timestamp: Date.now()
         });
         mqttClient.publish(topic, payload);
@@ -367,16 +406,17 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
 }
 
 // 发送同步命令到设备，触发素材下载
-function sendSyncCommandToDevice(deviceId, roomId, folderMappings) {
+function sendSyncCommandToDevice(deviceId, roomId, folderMappings, debug) {
   const topic = `xvj/device/${deviceId}/command`;
   const payload = JSON.stringify({
     action: 'sync_room_materials',
     room_id: roomId,
     folder_mappings: folderMappings,
+    debug: debug === true,
     timestamp: Date.now()
   });
   mqttClient.publish(topic, payload);
-  console.log(`📦 已发送同步命令到设备 ${deviceId}`);
+  console.log(`📦 已发送同步命令到设备 ${deviceId}, debug=${debug}`);
 }
 
 // 远程废止设备
@@ -468,21 +508,23 @@ app.post('/api/devices/:id/command', (req, res) => {
   // sync 命令需要补全 room_id + folder_mappings（服务器查数据库，APK 不需要重复传）
   if (cmd.action === 'sync') {
     db.query(
-      'SELECT d.room_id, r.folder_mappings FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
+      'SELECT d.room_id, r.folder_mappings, r.config FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
       [deviceId],
       (err, rows) => {
         if (err || !rows || rows.length === 0) {
           return res.status(404).json({ error: '设备未找到' });
         }
-        const { room_id, folder_mappings } = rows[0];
+        const { room_id, folder_mappings, config } = rows[0];
         if (!room_id) {
           return res.status(400).json({ error: '设备未绑定房间' });
         }
+        const roomConfig = config ? JSON.parse(config) : {};
         const topic = `xvj/device/${deviceId}/command`;
         const syncCmd = {
           action: 'sync_room_materials',
           room_id: room_id,
-          folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : {}
+          folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : {},
+          debug: roomConfig.debug === true
         };
         mqttClient.publish(topic, JSON.stringify(syncCmd));
         logAction('sync', 'device', { device_id: deviceId, command: syncCmd });
@@ -1049,6 +1091,24 @@ app.get('/api/logs', (req, res) => {
   });
 });
 
+// ==================== 设备日志 API（远程 DEBUG） ====================
+app.get('/api/device_logs', (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  const deviceId = req.query.device_id;
+  let sql = "SELECT * FROM device_logs";
+  let params = [];
+  if (deviceId) {
+    sql += " WHERE device_id = ?";
+    params.push(deviceId);
+  }
+  sql += " ORDER BY id DESC LIMIT ?";
+  params.push(limit);
+  db.query(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
 // ==================== 店铺管理 API ====================
 app.get('/api/stores', (req, res) => {
   db.query('SELECT name FROM stores ORDER BY id', (err, results) => {
@@ -1209,10 +1269,12 @@ app.post('/api/rooms/:id/folder/:folder', (req, res) => {
 // 获取房间所有素材（materials + preset_materials 合并，按文件夹分组，供APK同步使用）
 app.get('/api/room-materials/:roomId', (req, res) => {
   const { roomId } = req.params;
-  db.query('SELECT folder_mappings FROM rooms WHERE id = ?', [roomId], (err, results) => {
+  db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [roomId], (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!results || results.length === 0) return res.json({});
     const mappings = JSON.parse(results[0].folder_mappings || '{}');
+    const roomConfig = results[0].config ? JSON.parse(results[0].config) : {};
+    const debugFlag = roomConfig.debug === true;
 
     // 收集所有需要的 material IDs
     const allIds = new Set();
@@ -1224,7 +1286,7 @@ app.get('/api/room-materials/:roomId', (req, res) => {
       db.query('SELECT id, filename, url, type, thumbnail FROM preset_materials', (err, presets) => {
         if (err) return res.status(500).json({ error: err.message });
         const all = [...materials, ...presets];
-        const result = {};
+        const result = { debug: debugFlag };
         Object.entries(mappings).forEach(([folder, ids]) => {
           result[folder] = (ids || []).map(id => all.find(m => m.id === id)).filter(Boolean);
         });

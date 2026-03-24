@@ -92,7 +92,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="progress-text" id="pt">上传中: 0%</div>
 </div>
 <div id="btns">
-<button class="btn btn-primary" onclick="document.getElementById('fi').click()">上传文件</button><button class="btn btn-primary" style="background:#28a745;margin-left:8px" onclick="syncAllDevices()">同步全部设备</button></div>
+<button class="btn btn-primary" onclick="document.getElementById('fi').click()">上传文件</button></div>
 </header>
 <div class="content">
 <div id="pm">
@@ -131,9 +131,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </div>
 <div style="background:#242424;padding:20px;border-radius:10px;margin-top:20px">
 <h3 style="margin-bottom:15px">设备版本</h3>
-<div style="display:flex;gap:10px;margin-bottom:15px">
-<button class="btn btn-primary" onclick="pushAllUpdate()">推送全部设备更新</button>
-</div>
 <div id="dev"></div>
 </div>
 </div>
@@ -147,55 +144,51 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <script>
 // 同步当前房间的设备
 async function syncCurrentRoom() {
-    if (!s.df) { alert('请先选择一个客户'); return; }
-    if (!s.rf) { alert('请先选择一个房间'); return; }
-    
-    // 获取当前房间信息
-    var currentRoom = s.rooms.find(function(x) { return x.id === s.rf; });
-    if (!currentRoom) { alert('房间不存在'); return; }
-    
-    var dr = await fetch('/api/devices?room_id=' + s.rf);
-    var devices = await dr.json();
-    // 只同步已授权的设备
-    devices = devices.filter(function(d) { return d.authorized === 1; });
-    if (!devices || devices.length === 0) { alert('当前房间没有已授权的设备'); return; }
-    if (!confirm('将向 ' + currentRoom.name + ' 房间的 ' + devices.length + ' 个设备发送同步命令?')) return;
-    
-    // 使用HTTP API发送命令
-    var sent = 0;
-    for (var i = 0; i < devices.length; i++) {
-        try {
-            await fetch('/api/devices/' + devices[i].id + '/command', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({command: {action: 'sync'}})
-            });
-            sent++;
-        } catch(e) { console.error(e); }
-    }
-    alert('已发送同步命令到 ' + sent + ' 个设备');
+    if (!s.df) { showAlert('请先选择一个客户'); return; }
+    if (!s.rf) { showAlert('请先选择一个房间'); return; }
+    var mc = document.getElementById('mc');
+    var m = document.getElementById('m');
+    mc.innerHTML = '<div style="padding:30px;text-align:center">' +
+        '<div style="font-size:48px;margin-bottom:10px">🔄</div>' +
+        '<div style="font-size:16px;margin-bottom:6px">将向 <b>当前房间</b> 的所有设备发送同步命令</div>' +
+        '<div style="color:#888;font-size:13px;margin-bottom:20px">设备将自动下载最新素材</div>' +
+        '<div style="display:flex;gap:10px;justify-content:center">' +
+        '<button class="btn btn-primary" id="do_sync_btn">确认发送</button>' +
+        '<button class="btn btn-secondary" onclick="m.classList.remove(\'show\')">取消</button></div></div>';
+    m.classList.add('show');
+    document.getElementById('do_sync_btn').onclick = function() {
+        m.classList.remove('show');
+        doSyncRoom(s.rf);
+    };
 }
 
-// 同步当前房间的设备(兼容旧名)
-async function syncAllDevices() {
-    if (!s.df) { alert('请先选择一个客户'); return; }
-    if (!s.rf) { alert('请先选择一个房间'); return; }
-    var dr = await fetch('/api/devices?room_id=' + s.rf);
-    var devices = await dr.json();
-    if (!devices || devices.length === 0) { alert('当前房间没有绑定设备'); return; }
-    if (!confirm('将向房间的 ' + devices.length + ' 个设备发送同步命令?')) return;
-    var sent = 0;
-    for (var i = 0; i < devices.length; i++) {
-        try {
-            await fetch('/api/devices/' + devices[i].id + '/command', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({command: {action: 'sync'}})
-            });
-            sent++;
-        } catch(e) { console.error(e); }
-    }
-    alert('已发送同步命令到 ' + sent + ' 个设备');
+function doSyncRoom(roomId) {
+    var mc = document.getElementById('mc');
+    var m = document.getElementById('m');
+    mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">📡 发送中...</div>';
+    m.classList.add('show');
+    fetch('/api/rooms/' + roomId + '/sync', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+            if (result.success) {
+                mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">✅ 已发送同步命令到 <b>' + result.sent + '</b> 个设备</div>';
+            } else {
+                mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 失败: ' + (result.error || '未知错误') + '</div>';
+            }
+            setTimeout(function() { m.classList.remove('show'); }, 2000);
+        })
+        .catch(function(e) {
+            mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 错误: ' + e.message + '</div><button class="btn btn-primary" onclick="m.classList.remove(\'show\')" style="margin-top:10px">关闭</button>';
+        });
+}
+
+
+// 显示简短提示
+function showAlert(msg) {
+    var mc = document.getElementById('mc');
+    var m = document.getElementById('m');
+    mc.innerHTML = '<div style="padding:30px;text-align:center;font-size:15px">' + msg + '</div><button class="btn btn-primary" onclick="m.classList.remove(\'show\')" style="margin-top:10px">好的</button>';
+    m.classList.add('show');
 }
 function createPlayer(url, type, container) {
     container.innerHTML = '';
@@ -230,7 +223,8 @@ var s = {
     stores: JSON.parse(localStorage.getItem('xstores') || '[]'),
     df: null,
     rf: null,
-    rooms: []
+    rooms: [],
+    devicePollInterval: null
 };
 
 function sp(p) {
@@ -245,8 +239,14 @@ function sp(p) {
     document.getElementById('title').innerText = p === 'materials' ? '素材管理' : (p === 'devices' ? '客户管理' : (p === 'unregistered' ? '未注册设备' : (p === 'presets' ? '预设素材' : '版本管理')));
     ub(p);
     if (p === 'materials') lm();
-    else if (p === 'devices') { s.df = localStorage.getItem('xstore') || '默认店'; s.rf = localStorage.getItem('xroom') || ''; ld(); lr(); }
-    else if (p === 'unregistered') lu();
+    else if (p === 'devices') {
+        if (s.devicePollInterval) clearInterval(s.devicePollInterval);
+        s.df = localStorage.getItem('xstore') || '默认店';
+        s.rf = localStorage.getItem('xroom') || '';
+        ld();
+        lr();
+        s.devicePollInterval = setInterval(function() { ld(); lr(); }, 30000);
+    } else if (p === 'unregistered') lu();
     else if (p === 'presets') lp();
     else if (p === 'versions') { lv(); lvd(); }
 }
@@ -353,7 +353,7 @@ function rm() {
         h += '<button class="card-del" onclick="dm(event,\'' + x.id + '\')">x</button>';
         h += '<button class="card-preset" onclick="event.stopPropagation();cp2p(\'' + x.id + '\')" title="复制到预设">预设</button>';
         h += '<div ondblclick="pv(\'' + x.url + '\',\'' + x.type + '\')">' + thumb + '</div>';
-        h += '<div class="card-name">' + x.filename + '</div>';
+        h += '<div class="card-name">' + (x.filename || x.name) + '</div>';
         h += '</div>';
     });
     g.innerHTML = h;
@@ -380,7 +380,7 @@ function dc() {
 
 function ul(files) {
     if (!files.length) return;
-    var folder = s.f || '01';
+    var folder = s.f;
     var total = files.length;
     var completed = 0;
     document.getElementById('up').style.display = 'block';
@@ -413,7 +413,7 @@ function ul(files) {
                 document.getElementById('up').style.display = 'none';
             }
         };
-        xhr.onerror = function() { alert('上传失败: ' + xhr.status); document.getElementById('up').style.display = 'none'; };
+        xhr.onerror = function() { alert('上传失败'); document.getElementById('up').style.display = 'none'; };
         xhr.open('POST', '/api/upload?folder=' + folder);
         var fd = new FormData();
         fd.append('file', files[i]);
@@ -437,6 +437,7 @@ async function dm(e, id) {
         }
     }
     // 2. 从所有房间的folder_mappings中移除（所有文件夹）
+    var modifiedRooms = [];
     if (url && s.rooms) {
         for (var j = 0; j < s.rooms.length; j++) {
             var room = s.rooms[j];
@@ -453,6 +454,7 @@ async function dm(e, id) {
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({folder_mappings: JSON.stringify(fm)})
                 });
+                modifiedRooms.push(room.id);
             }
         }
     }
@@ -460,6 +462,8 @@ async function dm(e, id) {
     lm();
     lp();
     if (s.df) lr();
+    // 删除素材后同步所有受影响的房间
+    modifiedRooms.forEach(function(rid) { doSyncRoom(rid); });
 }
 
 async function cp2p(id) {
@@ -471,7 +475,7 @@ async function cp2p(id) {
     if (existing.length > 0) { alert('该素材已在预设中'); return; }
     var preset = {
         folder_id: folder,
-        filename: m.filename,
+        filename: m.filename || m.name,
         url: m.url,
         type: m.type || 'video',
         thumbnail: m.thumbnail || null
@@ -484,7 +488,7 @@ async function cp2p(id) {
     });
     var result = await res.json();
     console.log('Server response:', result);
-    if (res.ok) { alert('已复制到预设素材 ' + folder + ' 文件夹'); lp(); lm(); }
+    if (res.ok) { alert('已复制到预设素材 ' + folder + ' 文件夹'); lp(); lm(); logAction('cp2p', 'preset', { material_id: id, folder: folder, filename: m.filename || m.name }); }
     else alert('复制失败: ' + result.error);
 }
 
@@ -616,27 +620,30 @@ async function ar(id) {
 
 async function confirmAuth(id, store) {
     var roomId = document.getElementById('room_select').value;
+    var modal = document.getElementById('m');
+    modal.classList.remove('show');
+    var mc = document.getElementById('mc');
+    mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">✅ 授权成功，正在刷新设备列表...</div>';
     await fetch('/api/devices/' + id + '/authorize?store=' + encodeURIComponent(store) + '&room_id=' + roomId, {method: 'POST'});
-    document.getElementById('m').classList.remove('show');
-    alert('已授权到: ' + store + '，房间ID: ' + roomId);
-    lu();
-    // 刷新已授权设备列表和房间设备
     var r = await fetch('/api/devices');
     s.ds = await r.json();
     if (s.rf) { rmDevice(); }
+    lu();
 }
 
 async function unbind(id) {
     if (!confirm('确定解绑该设备？')) return;
     await fetch('/api/devices/' + id + '/deauthorize', {method: 'POST'});
-    alert('已解绑');
+    var card = document.getElementById('rd_' + id);
+    if (card) card.style.opacity = '0.5';
     ld();
 }
 
 async function unbindRoom(id) {
     if (!confirm('确定解绑该设备？设备将回到未授权状态')) return;
     await fetch('/api/devices/' + id + '/deauthorize', {method: 'POST'});
-    alert('已解绑');
+    var card = document.getElementById('rd_' + id);
+    if (card) card.style.opacity = '0.5';
     var r = await fetch('/api/devices');
     s.ds = await r.json();
     if (s.rf) { rmDevice(); }
@@ -684,12 +691,6 @@ async function dr(e, id) {
     await lr();
 }
 
-// ============================================================================
-// 📋 rmDevice() — 客户管理：显示房间设备 + folder_mappings 里的素材
-//    素材来源：同时查 preset_materials + materials 两张表合并展示
-//    删除素材：只从 folder_mappings 移除 ID，不删 materials 表
-// ============================================================================
-
 function rmDevice() {
     var g = document.getElementById('dg');
     if (!s.rf) {
@@ -704,20 +705,28 @@ function rmDevice() {
     
     var h = '<h3 style="color:#e94560">' + r.name + ' (' + r.store_name + ')</h3>';
     
-    // 显示房间设备列表（一行显示）
+    // 显示房间设备列表
     if (roomDevices.length > 0) {
-        var deviceTags = '';
+        h += '<div style="margin-top:8px;background:#2a2a2a;border-radius:8px;overflow:hidden">';
+        h += '<div style="padding:6px 10px;background:#252525;border-bottom:1px solid #333"><span style="color:#888;font-size:11px">绑定设备</span></div>';
         roomDevices.forEach(function(d) {
-            var statusClass = d.status === 'online' ? 'on' : 'off';
-            var statusText = d.status === 'online' ? '在线' : '离线';
             var shortId = d.id.substring(0, 8);
-            deviceTags += '<span class="device-status ' + statusClass + '" style="margin-right:8px;padding:4px 8px;border-radius:4px;font-size:12px">' + shortId + ' ' + statusText + '</span>';
+            var isOnline = d.status === 'online';
+            var statusClass = isOnline ? 'on' : 'off';
+            var statusText = isOnline ? '在线' : '离线';
+            var dotColor = isOnline ? '#4caf50' : '#666';
+            h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #2a2a2a">';
+            h += '<div style="display:flex;align-items:center;gap:8px">';
+            h += '<div style="width:7px;height:7px;border-radius:50%;background:' + dotColor + ';flex-shrink:0"></div>';
+            h += '<span style="color:#ccc;font-size:13px" title="' + d.id + '">' + shortId + '</span>';
+            h += '<span class="device-status ' + statusClass + '" style="font-size:11px;padding:1px 6px;border-radius:10px">' + statusText + '</span>';
+            h += '</div>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="unbindRoom(\'' + d.id + '\')">解绑</button>';
+            h += '</div>';
         });
-        h += '<div style="margin-top:10px;padding:8px;background:#2a2a2a;border-radius:8px;display:flex;align-items:center;flex-wrap:wrap;gap:4px">';
-        h += '<span style="color:#888;font-size:12px;margin-right:8px">设备:</span>' + deviceTags + '<button class="btn btn-secondary" style="padding:4px 8px;font-size:11px;margin-left:auto" onclick="unbindRoom(\'' + roomDevices[0].id + '\')">解绑</button>';
         h += '</div>';
     } else {
-        h += '<div style="margin-top:10px;padding:8px;background:#2a2a2a;border-radius:8px;text-align:center;color:#666;font-size:12px">等待设备中...</div>';
+        h += '<div style="margin-top:15px;padding:15px;background:#2a2a2a;border-radius:8px;text-align:center;color:#666">等待设备中...</div>';
     }
     
     h += '<div class="tabs" style="margin-top:10px">';
@@ -793,12 +802,24 @@ async function mapPreset() {
     if (presetInFolder.length === 0) { alert('预设素材库为空，请先在预设素材页面添加'); return; }
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     var folderMs = r.folder_mappings ? JSON.parse(r.folder_mappings) : {};
-    // 添加所有预设素材到对应文件夹（去重）
+    // 添加所有预设素材到对应文件夹（按ID或URL去重）
     var count = 0;
     presetInFolder.forEach(function(m) {
         var fid = m.folder_id;
         if (!folderMs[fid]) folderMs[fid] = [];
-        if (!folderMs[fid].includes(m.id)) { folderMs[fid].push(m.id); count++; }
+        // 检查ID是否已存在，或URL对应的素材是否已在该文件夹（防止素材库文件被复制到预设后重复添加）
+        var alreadyAdded = folderMs[fid].some(function(existingId) {
+            // 已有的是预设素材
+            var existingPreset = pm.find(function(p) { return p.id === existingId; });
+            if (existingPreset && existingPreset.url === m.url) return true;
+            // 已有的是素材库原始素材
+            var existingMaterial = ms.find(function(mat) { return mat.id === existingId; });
+            if (existingMaterial && existingMaterial.url === m.url) return true;
+            // ID直接相同
+            if (existingId === m.id) return true;
+            return false;
+        });
+        if (!alreadyAdded) { folderMs[fid].push(m.id); count++; }
     });
     await fetch('/api/rooms/' + s.rf, {
         method: 'PUT',
@@ -807,74 +828,55 @@ async function mapPreset() {
     });
     alert('已映射全部 ' + count + ' 个预设素材');
     lr();
+    doSyncRoom(s.rf);
+    logAction('preset_map', 'room', { room_id: s.rf, room_name: r.name, store_name: r.store, count: count });
 }
-
-// ============================================================================
-// 🔄 syncMaterials() — 同步房间素材到设备
-//    旧逻辑：发 {action:'sync'}，设备全量同步 materials 表
-//    新逻辑：发 {action:'sync_room_materials', room_id, folder_mappings}，设备精确同步
-// ============================================================================
 
 // 同步素材到设备
 async function syncMaterials() {
-    if (!s.rf) { alert('请先选择房间'); return; }
+    if (!s.rf) { showAlert('请先选择房间'); return; }
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
-    if (!r) { alert('房间不存在'); return; }
-    
-    // 获取该房间绑定的所有设备
-    var dr = await fetch('/api/devices?room_id=' + s.rf);
-    var devices = await dr.json();
-    if (!devices || devices.length === 0) { alert('该房间没有绑定设备'); return; }
-    
-    if (!confirm('将向 ' + devices.length + ' 个设备发送同步命令，是否继续?')) return;
-    
-    // 使用MQTT over WebSocket发送命令
-    try {
-        // 尝试连接MQTT WebSocket
-        var client = mqtt.connect('ws://47.102.106.237:8083/mqtt', {
-            clientId: 'xvj_cloud_' + Date.now(),
-            clean: true,
-            connectTimeout: 5000
-        });
-        
-        client.on('connect', function() {
-            console.log('MQTT connected');
-            var sent = 0;
-            var failed = 0;
-            devices.forEach(function(device) {
-                var topic = 'xvj/device/' + device.device_id + '/command';
-                var mappings = r.folder_mappings ? JSON.parse(r.folder_mappings) : {};
-                var payload = JSON.stringify({
-                    action: 'sync_room_materials',
-                    room_id: r.id,
-                    folder_mappings: mappings
-                });
-                try {
-                    client.publish(topic, payload, {qos: 1});
-                    sent++;
-                } catch(e) {
-                    failed++;
+    if (!r) { showAlert('房间不存在'); return; }
+
+    var mc = document.getElementById('mc');
+    var m = document.getElementById('m');
+    mc.innerHTML = '<div style="padding:30px;text-align:center">' +
+        '<div style="font-size:48px;margin-bottom:10px">🔄</div>' +
+        '<div style="font-size:16px">将向 <b>当前房间</b> 的所有设备发送同步命令</div>' +
+        '<div style="color:#888;font-size:13px;margin-top:6px;margin-bottom:20px">是否继续?</div>' +
+        '<div style="display:flex;gap:10px;justify-content:center">' +
+        '<button class="btn btn-primary" id="do_sm_btn">确认</button>' +
+        '<button class="btn btn-secondary" onclick="m.classList.remove(\'show\')">取消</button></div></div>';
+    m.classList.add('show');
+    document.getElementById('do_sm_btn').onclick = function() {
+        m.classList.remove('show');
+        mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50">📡 发送中...</div>';
+        m.classList.add('show');
+        fetch('/api/rooms/' + s.rf + '/sync', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+                if (result.success) {
+                    mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">✅ 已发送同步命令到 <b>' + result.sent + '</b> 个设备</div>';
+                } else {
+                    mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 失败: ' + (result.error || '未知错误') + '</div>';
                 }
+                setTimeout(function() { m.classList.remove('show'); }, 2000);
+            })
+            .catch(function(e) {
+                mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 错误: ' + e.message + '</div><button class="btn btn-primary" onclick="m.classList.remove(\'show\')" style="margin-top:10px">关闭</button>';
             });
-            client.end();
-            alert('同步命令已发送: 成功 ' + sent + ' 个, 失败 ' + failed + ' 个');
+    };
+}
+
+// 操作日志
+async function logAction(action, type, detail) {
+    try {
+        await fetch('/api/log', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action, type, detail})
         });
-        
-        client.on('error', function(err) {
-            alert('MQTT连接失败: ' + err.message);
-        });
-        
-        // 5秒超时
-        setTimeout(function() {
-            if (client.connected === false) {
-                client.end();
-                alert('MQTT连接超时，请检查网络');
-            }
-        }, 5000);
-        
-    } catch(e) {
-        alert('发送同步命令失败: ' + e.message);
-    }
+    } catch(e) {}
 }
 
 async function rmRoomMat(e, mid) {
@@ -892,6 +894,15 @@ async function rmRoomMat(e, mid) {
         body: JSON.stringify({folder_mappings: JSON.stringify(ms)})
     });
     lr();
+    // 删除后自动同步设备
+    doSyncRoom(s.rf);
+    // 查找素材文件名
+    var mat = s.pm ? s.pm.find(function(x) { return x.id === mid; }) : null;
+    if (!mat) mat = s.ms ? s.ms.find(function(x) { return x.id === mid; }) : null;
+    logAction('room_remove', 'room', {
+        room_id: s.rf, room_name: r.name, store_name: r.store,
+        folder: s.f, material_id: mid, material_name: mat ? (mat.filename || mat.name) : mid
+    });
 }
 
 function showBindDevice() {
@@ -1005,10 +1016,11 @@ async function loadPushRooms() {
         var rooms = await r.json();
         console.log('rooms:', rooms);
         if (!rooms || rooms.length === 0) { div.innerHTML = '<p>该店铺暂无房间，请先创建房间</p>'; return; }
+        s.rooms = rooms; // 同步到全局缓存
         var h = '<div><label style="color:#e94560;font-weight:bold;font-size:20px">选择房间（可多选）：</label></div>';
         rooms.forEach(function(room) {
             h += '<label style="display:block;padding:14px;border:1px solid #444;margin:8px 0;border-radius:4px;cursor:pointer;background:#2a2a2a;font-size:16px">';
-            h += '<input type="checkbox" class="room-check" value="' + room.id + '" style="margin-right:10px;width:18px;height:18px">';
+            h += '<input type="checkbox" class="room-check" value="' + room.id + '" data-name="' + room.name + '" style="margin-right:10px;width:18px;height:18px">';
             h += '<span>' + room.name + '</span>';
             h += '</label>';
         });
@@ -1061,6 +1073,22 @@ async function doPushToRoom() {
     document.getElementById('m').classList.remove('show');
     // 刷新当前显示
     if (s.df) lr();
+    // 推送后自动同步设备
+    roomIds.forEach(function(rid) { doSyncRoom(rid); });
+    // 记录操作日志
+    var pushStore = document.getElementById('pushStore') ? document.getElementById('pushStore').value : '';
+    var roomNames = roomIds.map(function(rid) {
+        var r = Array.isArray(s.rooms) ? s.rooms.find(function(x) { return x.id === rid; }) : null;
+        if (r && r.name) return r.name;
+        var cb = document.querySelector('.room-check[value="' + rid + '"]');
+        return cb && cb.getAttribute('data-name') ? cb.getAttribute('data-name') : rid;
+    });
+    logAction('push', 'room', {
+        room_ids: roomIds, room_names: roomNames, store_name: pushStore,
+        material_ids: s.pushMs.map(function(m) { return m.id; }),
+        material_names: s.pushMs.map(function(m) { return m.filename || m.name; }),
+        total: totalCount
+    });
 }
 
 document.onkeydown = function(e) { if (e.key === 'Escape') { document.getElementById('m').classList.remove('show'); } };
@@ -1103,7 +1131,8 @@ async function lv() {
         h += '<div><div style="font-weight:bold;font-size:16px">v' + v.version + ' (Code: ' + v.version_code + ')' + badge + '</div>';
         h += '<div style="color:#888;font-size:12px;margin-top:5px">' + (v.size/1024/1024).toFixed(2) + ' MB | ' + (v.changelog || '无更新日志') + '</div>';
         h += '<div style="color:#666;font-size:11px">' + v.created_at + '</div></div>';
-        h += '<div><a href="' + v.filepath + '" target="_blank" style="color:#e94560;margin-right:10px">下载</a>';
+        h += '<div><button onclick="pushVersionToAll(' + v.id + ')" style="background:#e94560;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;margin-right:8px">推送</button>';
+        h += '<a href="' + v.filepath + '" target="_blank" style="color:#e94560;margin-right:10px">下载</a>';
         h += '<button onclick="dv(' + v.id + ')" style="background:#dc3545;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">删除</button></div>';
         h += '</div>';
     });
@@ -1168,15 +1197,17 @@ async function pushUpdate(deviceId) {
     }
 }
 
-async function pushAllUpdate() {
-    var r = await fetch('/api/devices/push-update-all', {method: 'POST'});
+async function pushVersionToAll(versionId) {
+    if (!confirm('确定向所有在线设备推送此版本？')) return;
+    var r = await fetch('/api/versions/' + versionId + '/push-to-all', {method: 'POST'});
     var res = await r.json();
     if (res.success) {
-        alert('已推送到 ' + res.pushed + ' 台设备');
+        alert('已推送 v' + res.version + ' 到 ' + res.pushed + ' 台设备');
     } else {
         alert('推送失败: ' + res.error);
     }
 }
+
 </script>
 
 <style>
