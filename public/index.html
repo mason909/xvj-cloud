@@ -894,8 +894,8 @@ function renderWinEditorFull() {
     if (!r) return;
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-    var wins = cfg.windows || [];
-    s._winCache = wins;
+    var wins = s._winCache && s._winCache.length > 0 ? s._winCache : (cfg.windows || []);
+    if (!s._winCache || s._winCache.length === 0) s._winCache = wins;
     var area = document.getElementById('winEditorArea');
     if (!area) return;
     var deviceW = 1920, deviceH = 1080;
