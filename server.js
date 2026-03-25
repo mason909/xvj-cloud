@@ -342,6 +342,15 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
           const roomConfig = results[0].config ? JSON.parse(results[0].config) : {};
           const debugFlag = roomConfig.debug === true;
 
+          // 迁移旧数据到 scenes 结构
+          if (!roomConfig.scenes) {
+            roomConfig.scenes = {
+              A: { name: '第一幕', folder_mappings: folderMappings, windows: roomConfig.windows || [] },
+              B: { name: '第二幕', folder_mappings: {}, windows: [] }
+            };
+            delete roomConfig.windows;
+          }
+
           // 构建完整的推送数据
           const payload = {
             action: 'auth_result',
@@ -349,8 +358,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             authorized: true,
             message: message,
             room_id: roomId || '',
-            folder_mappings: folderMappings,
-            windows: roomConfig.windows || [],   // ← Phase1 新增：多窗口配置
+            scenes: roomConfig.scenes,   // ← 两套场景数据
             debug: debugFlag,
             timestamp: Date.now()
           };
@@ -410,17 +418,27 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
 
 // 发送同步命令到设备，触发素材下载
 function sendSyncCommandToDevice(deviceId, roomId, folderMappings, config) {
+  // scenes 结构迁移
+  var scenes = {};
+  if (config && config.scenes) {
+    scenes = config.scenes;
+  } else {
+    // 旧兼容
+    scenes = {
+      A: { name: '第一幕', folder_mappings: folderMappings, windows: (config && config.windows) || [] },
+      B: { name: '第二幕', folder_mappings: {}, windows: [] }
+    };
+  }
   const topic = `xvj/device/${deviceId}/command`;
   const payload = {
     action: 'sync_room_materials',
     room_id: roomId,
-    folder_mappings: folderMappings,
-    windows: config.windows || [],   // ← Phase1 新增：多窗口配置
-    debug: config.debug === true,
+    scenes: scenes,   // ← 两套场景数据
+    debug: config && config.debug === true,
     timestamp: Date.now()
   };
   mqttClient.publish(topic, JSON.stringify(payload));
-  console.log(`📦 已发送同步命令到设备 ${deviceId}, windows=${payload.windows.length}, debug=${payload.debug}`);
+  console.log(`📦 已发送同步命令到设备 ${deviceId}, scenes=A/B, debug=${payload.debug}`);
 }
 
 // 远程废止设备
@@ -556,6 +574,15 @@ app.post('/api/rooms/:id/sync', (req, res) => {
     const folderMappings = rows[0].folder_mappings ? JSON.parse(rows[0].folder_mappings) : {};
     const config = rows[0].config ? JSON.parse(rows[0].config) : {};
 
+    // 迁移旧数据到 scenes 结构
+    if (!config.scenes) {
+      config.scenes = {
+        A: { name: '第一幕', folder_mappings: folderMappings, windows: config.windows || [] },
+        B: { name: '第二幕', folder_mappings: {}, windows: [] }
+      };
+      delete config.windows;
+    }
+
     // 查房间下所有已授权的设备
     db.query(
       'SELECT id FROM devices WHERE room_id = ? AND authorized = 1',
@@ -573,8 +600,7 @@ app.post('/api/rooms/:id/sync', (req, res) => {
           const syncCmd = {
             action: 'sync_room_materials',
             room_id: roomId,
-            folder_mappings: folderMappings,
-            windows: config.windows || [],   // ← Phase1 新增：多窗口配置
+            scenes: config.scenes,   // ← 新增：两套场景数据
             debug: config.debug === true
           };
           mqttClient.publish(topic, JSON.stringify(syncCmd));
@@ -582,7 +608,7 @@ app.post('/api/rooms/:id/sync', (req, res) => {
         });
 
         logAction('room_sync', 'room', { room_id: roomId, devices: sent });
-        res.json({ success: true, sent, command: { action: 'sync_room_materials', room_id: roomId, folder_mappings: folderMappings, windows: config.windows || [] } });
+        res.json({ success: true, sent, command: { action: 'sync_room_materials', room_id: roomId, scenes: config.scenes } });
       }
     );
   });
@@ -1179,7 +1205,18 @@ app.get('/api/rooms/:id', (req, res) => {
   db.query('SELECT * FROM rooms WHERE id = ?', [id], (err, results) => {
     if (err) return res.status(500).json({error:err.message});
     if (results.length === 0) return res.status(404).json({error:'Room not found'});
-    res.json(results[0]);
+    const room = results[0];
+    // 迁移旧数据到 scenes 结构（向后兼容）
+    const config = room.config ? JSON.parse(room.config) : {};
+    if (!config.scenes) {
+      config.scenes = {
+        A: { name: '第一幕', folder_mappings: room.folder_mappings ? JSON.parse(room.folder_mappings) : {}, windows: config.windows || [] },
+        B: { name: '第二幕', folder_mappings: {}, windows: [] }
+      };
+      delete config.windows; // 移除旧的 flat windows
+      room.config = JSON.stringify(config);
+    }
+    res.json(room);
   });
 });
 
@@ -1205,7 +1242,18 @@ app.put('/api/rooms/:id', (req, res) => {
   var values = [];
   if (name !== undefined) { updates.push('name=?'); values.push(name); }
   if (folder_mappings !== undefined) { updates.push('folder_mappings=?'); values.push(folder_mappings); }
-  if (config !== undefined) { updates.push('config=?'); values.push(config); }
+  if (config !== undefined) {
+    // 确保 config 中有 scenes 结构（向后兼容迁移）
+    var cfg = typeof config === 'string' ? JSON.parse(config) : config;
+    if (!cfg.scenes) {
+      cfg.scenes = {
+        A: { name: '第一幕', folder_mappings: folder_mappings ? (typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings) : {}, windows: cfg.windows || [] },
+        B: { name: '第二幕', folder_mappings: {}, windows: [] }
+      };
+      delete cfg.windows;
+    }
+    updates.push('config=?'); values.push(JSON.stringify(cfg));
+  }
   if (updates.length === 0) return res.json({success:true});
   values.push(id);
   db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
@@ -1218,29 +1266,40 @@ app.put('/api/rooms/:id', (req, res) => {
 // ============================================================================
 // Phase 1 新增：多窗口配置 API
 // ============================================================================
-// 更新房间的窗口配置（快捷接口，内部读写 rooms.config.windows）
+// 更新房间的窗口配置（快捷接口，支持指定场景）
+// PUT /api/rooms/:id/windows  body: { windows, sceneId }
 app.put('/api/rooms/:id/windows', (req, res) => {
-  const { windows } = req.body;
+  const { windows, sceneId } = req.body;   // sceneId: 'A' 或 'B'
   const id = req.params.id;
   if (!Array.isArray(windows)) {
     return res.status(400).json({ error: 'windows 必须是数组' });
   }
-  // 校验每个元素是带有 id 和 name 的对象
+  // 校验每个元素
   for (const w of windows) {
     if (!w || typeof w !== 'object' || !w.id || !w.name) {
       return res.status(400).json({ error: 'windows 数组元素必须是对象，且必须包含 id 和 name 字段' });
     }
   }
-  // 读取现有 config，合并 windows 字段
   db.query('SELECT config FROM rooms WHERE id = ?', [id], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!rows || rows.length === 0) return res.status(404).json({ error: '房间不存在' });
     const existingConfig = rows[0].config ? JSON.parse(rows[0].config) : {};
-    const updatedConfig = { ...existingConfig, windows };
-    db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(updatedConfig), id], (err2) => {
+    if (!existingConfig.scenes) {
+      // 旧数据：初始化 scenes 结构
+      existingConfig.scenes = {
+        A: { name: '第一幕', folder_mappings: {}, windows: [] },
+        B: { name: '第二幕', folder_mappings: {}, windows: [] }
+      };
+    }
+    const targetScene = sceneId || 'A';
+    if (!existingConfig.scenes[targetScene]) {
+      return res.status(400).json({ error: '无效的场景ID' });
+    }
+    existingConfig.scenes[targetScene].windows = windows;
+    db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(existingConfig), id], (err2) => {
       if (err2) return res.status(500).json({ error: err2.message });
-      logAction('update_windows', 'room', { id, windows });
-      res.json({ success: true, windows });
+      logAction('update_windows', 'room', { id, scene: targetScene, windows });
+      res.json({ success: true, scene: targetScene, windows });
     });
   });
 });

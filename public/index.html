@@ -733,7 +733,15 @@ async function lr() {
 function sr(id) {
     s.rf = id;
     localStorage.setItem('xroom', id);
-    rd();
+    // 拉取完整房间数据（含 scenes 配置）
+    fetch('/api/rooms/' + id).then(function(res){ return res.json(); }).then(function(room) {
+        // 更新 s.rooms 中的房间数据
+        var idx = s.rooms.findIndex(function(r){ return r.id === id; });
+        if (idx >= 0) { s.rooms[idx] = room; }
+        // 默认选中第一幕
+        s._curScene = 'A';
+        rd();
+    });
 }
 
 async function createRoom() {
@@ -801,11 +809,29 @@ function rmDevice() {
     }
     
     var hideTabs = s.f === 'win' ? 'display:none' : '';
+    
+    // 场景选择器（第一幕/第二幕）
+    var curS = s._curScene || 'A';
+    h += '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
+    h += '<span style="color:#888;font-size:11px;flex-shrink:0">场景:</span>';
+    h += '<button class="btn btn-sm ' + (curS==='A'?'btn-primary':'btn-secondary') + '" onclick="switchScene(\'A\')" style="padding:3px 12px;font-size:11px">' + ((function(){
+        try{var c=typeof r.config==='string'?JSON.parse(r.config):(r.config||{});return(c.scenes&&c.scenes.A)?c.scenes.A.name:'第一幕';}catch(e){return '第一幕';}})() + '</button>');
+    h += '<button class="btn btn-sm ' + (curS==='B'?'btn-primary':'btn-secondary') + '" onclick="switchScene(\'B\')" style="padding:3px 12px;font-size:11px">' + ((function(){
+        try{var c=typeof r.config==='string'?JSON.parse(r.config):(r.config||{});return(c.scenes&&c.scenes.B)?c.scenes.B.name:'第二幕';}catch(e){return '第二幕';}})() + '</button>');
+    h += '</div>';
+    
+    // 获取当前场景的 folder_mappings
+    var sceneFM = {};
+    try {
+        var _rc2 = typeof r.config === 'string' ? JSON.parse(r.config) : (r.config || {});
+        sceneFM = (_rc2.scenes && _rc2.scenes[curS]) ? _rc2.scenes[curS].folder_mappings : {};
+    } catch(e) {}
+    
     h += '<div class="tabs" style="margin-top:10px;' + hideTabs + '">';
     for (var i = 1; i <= 30; i++) {
         var f = i.toString().padStart(2, '0');
         var act = s.f === f ? 'active' : '';
-        var ms = r.folder_mappings ? JSON.parse(r.folder_mappings)[f] || [] : [];
+        var ms = sceneFM[f] || [];
         h += '<div class="tab ' + act + '" onclick="sfR(\'' + f + '\')"><span class="tab-n">' + f + '</span><span class="tab-d">' + (ms.length > 0 ? ms.length : '+') + '</span></div>';
     }
     h += '</div>';
@@ -824,7 +850,7 @@ function rmDevice() {
     
     // 以下是文件夹模式的内容，只在非窗口模式时渲染
     
-    var ms = r.folder_mappings ? JSON.parse(r.folder_mappings)[s.f] || [] : [];
+    var ms = sceneFM[s.f] || [];
     // 只显示已映射的素材
     var all = [];
     if (ms && ms.length > 0) {
@@ -854,6 +880,7 @@ function rmDevice() {
     updateRoomDebugToggle();
 }
 
+function switchScene(id) { s._curScene = id; rmDevice(); }
 function sfR(f) {
     s.f = f;
     var wea = document.getElementById('winEditorArea');
@@ -865,6 +892,7 @@ function sfR(f) {
     if (wt) wt.checked = false;
     if (ws) { ws.style.background = '#444'; }
     if (wk) { wk.style.left = '3px'; }
+    if (!s._curScene) s._curScene = 'A';
     rmDevice();
 }
 
@@ -875,6 +903,7 @@ function sfW() {
         // 开关 ON → 进入窗口模式
         s.f = 'win';
         s._selWin = null;
+        if (!s._curScene) s._curScene = 'A';
         rmDevice();
     } else {
         // 开关 OFF → 切回文件夹模式
@@ -1030,7 +1059,9 @@ function selWin(id) {
     if (!r) return;
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-    var wins = cfg.windows || [];
+    var curS = s._curScene || 'A';
+    var sceneData = (cfg.scenes && cfg.scenes[curS]) ? cfg.scenes[curS] : {};
+    var wins = sceneData.windows || [];
     // 不再无条件覆盖 _winCache：只在首次（_winCache 为空）时初始化
     // 这样 drag 后 selWin 不会把拖动结果覆盖掉
     if (!s._winCache || s._winCache.length === 0) {
@@ -1051,11 +1082,16 @@ function addWin() {
     var wins = cfg.windows || [];
     var newId = 'win_' + Date.now();
     wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: 'video_input', inputIndex: 0 }, zIndex: wins.length + 1 });
-    cfg.windows = wins;
+    var curS = s._curScene || 'A';
+    if (!cfg.scenes) { cfg.scenes = { A:{name:'第一幕',folder_mappings:{},windows:[]}, B:{name:'第二幕',folder_mappings:{},windows:[]} }; }
+    cfg.scenes[curS].windows = wins;
     s._winCache = wins;
     s._selWin = Object.assign({}, wins[wins.length - 1]);
-    // 保存到 config
-    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { doSyncRoom(s.rf); renderWinEditorFull(); } });
+    // 同步更新 s.rooms 内存
+    var ridx = s.rooms.findIndex(function(r){ return r.id == s.rf; });
+    if (ridx >= 0) { s.rooms[ridx].config = JSON.stringify(cfg); }
+    // 保存到服务器
+    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: s._curScene || 'A'}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { doSyncRoom(s.rf); renderWinEditorFull(); } });
 }
 
 function delWin(e, id) {
@@ -1065,8 +1101,13 @@ function delWin(e, id) {
     if (!r) return;
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-    var wins = (cfg.windows || []).filter(function(w) { return w.id !== id; });
-    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { s._winCache = wins; s._selWin = null; doSyncRoom(s.rf); renderWinEditorFull(); } });
+    var curS2 = s._curScene || 'A';
+    var scene2 = (cfg.scenes && cfg.scenes[curS2]) ? cfg.scenes[curS2] : {};
+    var wins = (scene2.windows || []).filter(function(w) { return w.id !== id; });
+    cfg.scenes[curS2].windows = wins;
+    var ridx2 = s.rooms.findIndex(function(r){ return r.id == s.rf; });
+    if (ridx2 >= 0) { s.rooms[ridx2].config = JSON.stringify(cfg); }
+    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: s._curScene || 'A'}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { s._winCache = wins; s._selWin = null; doSyncRoom(s.rf); renderWinEditorFull(); } });
 }
 
 function updWinField(field, value) {
@@ -1125,7 +1166,7 @@ async function saveWindows() {
     var wins = s._winCache || [];
     btn.classList.add('saving'); btn.textContent = '保存中...';
     try {
-        var res = await fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins}) });
+        var res = await fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: s._curScene || 'A'}) });
         var json = await res.json();
         if (json.success) { await doSyncRoom(s.rf); btn.textContent = '✅ 已保存并推送'; setTimeout(function(){ btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }, 2000); }
         else { alert('保存失败: ' + json.error); btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }
