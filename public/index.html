@@ -880,7 +880,37 @@ function rmDevice() {
     updateRoomDebugToggle();
 }
 
+// ============================================================================
+// 场景 / 窗口编辑器模块
+// ============================================================================
+// 场景（Scene）概念：
+//   每个房间有 A（第一幕）和 B（第二幕）两套配置，互不影响。
+//   场景包含：folder_mappings（素材映射）+ windows（窗口布局配置）。
+//   设备收到 sync_room_materials 时根据当前激活的场景加载对应配置。
+//
+// 窗口（Window）数据模型（与 rooms.config.scenes[sceneId].windows 对应）：
+//   {
+//     id: String,         // 唯一标识，如 "win_1"
+//     name: String,        // 显示名，如 "主屏"
+//     x: Number, y: Number, width: Number, height: Number,  // 位置和尺寸（px）
+//     zIndex: Number,     // 层级，越大越上层
+//     aspectRatio: String | null,  // 可选，如 "16:9"
+//     content: { type: 'COLOR'|'VIDEO'|'HDMI'|'IMAGE', ... }
+//   }
+//
+// 设备开机行为（APK 逻辑）：
+//   场景A windows 数组为空 → APK 自动创建全屏窗口1播放文件夹01
+//   场景B windows 数组为空 → APK 保持黑屏，等待用户手动配置
+//
+// API 约定：
+//   PUT /api/rooms/:id/windows  { windows: [WinConfig, ...], sceneId: 'A'|'B' }
+//   返回 { success: true, scene: 'A'|'B', windows: [...] }
+//   保存后自动调用 doSyncRoom(id) 推送至设备
+
+/** 切换当前编辑的场景（A = 第一幕，B = 第二幕）*/
 function switchScene(id) { s._curScene = id; rmDevice(); }
+
+/** 退出窗口配置模式，恢复普通房间视图 */
 function sfR(f) {
     s.f = f;
     var wea = document.getElementById('winEditorArea');
@@ -896,6 +926,11 @@ function sfR(f) {
     rmDevice();
 }
 
+/**
+ * 窗口配置开关（点击"窗口配置"滑动条触发）
+ * 开启 → 切换到 win 视图模式，渲染窗口编辑器
+ * 关闭 → 切回普通文件夹模式
+ */
 function sfW() {
     var wt = document.getElementById('winToggle');
     if (!wt) return;
@@ -918,6 +953,15 @@ function sfW() {
 var _canvasScale = 1, _canvasOffsetX = 0, _canvasOffsetY = 0;
 var _dragging = null;
 
+/**
+ * 渲染完整窗口编辑器界面
+ * 包含：
+ *   - 可视化画布（拖拽/缩放窗口）
+ *   - 窗口列表（点击选中）
+ *   - 选中窗口属性编辑面板（名称、位置、尺寸、内容类型）
+ *   - 场景 A/B 标签卡切换
+ *   - 保存并推送按钮
+ */
 function renderWinEditorFull() {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
@@ -1054,6 +1098,10 @@ function _renderWinRects(wins) {
     });
 }
 
+/**
+ * 选中指定窗口（高亮显示，打开属性编辑面板）
+ * @param {string} id - 窗口 ID
+ */
 function selWin(id) {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
@@ -1074,6 +1122,11 @@ function selWin(id) {
     renderWinEditorFull();
 }
 
+/**
+ * 添加新窗口
+ * 自动生成唯一 ID，插入 windows 数组，触发 renderWinEditorFull()
+ * 窗口默认：主屏名、全屏尺寸(1920x1080)、zIndex=1、type=VIDEO
+ */
 function addWin() {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
@@ -1094,6 +1147,11 @@ function addWin() {
     fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: s._curScene || 'A'}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { doSyncRoom(s.rf); renderWinEditorFull(); } });
 }
 
+/**
+ * 删除指定窗口
+ * @param {Event} e - 冒泡事件（用于阻止传播）
+ * @param {string} id - 窗口 ID
+ */
 function delWin(e, id) {
     e.stopPropagation();
     if (!confirm('删除此窗口？')) return;
@@ -1160,6 +1218,12 @@ function setWinRatio(ratioStr) {
     _renderWinRects(wins);
 }
 
+
+/**
+ * 保存窗口配置到后端，并推送到设备
+ * 流程：PUT /api/rooms/:id/windows → doSyncRoom() → 设备收到新的 scenes 数据
+ * 保存成功后自动刷新编辑器状态
+ */
 async function saveWindows() {
     var btn = document.getElementById('winSaveBtn');
     if (!btn) return;

@@ -20,10 +20,46 @@
  * 素材三层架构：
  *   素材库 [M] ──cp2p──→ 预设素材 [P] ──mapPreset──→ 房间 [D]
  *
+ * ==========================================================
+ * 场景系统（多窗口）
+ * ==========================================================
+ * 场景数据结构（存储在 rooms.config.scenes）：
+ *   {
+ *     A: { name: '第一幕', folder_mappings: {...}, windows: [WinConfig, ...] },
+ *     B: { name: '第二幕', folder_mappings: {...}, windows: [WinConfig, ...] }
+ *   }
+ *
+ * WinConfig（窗口配置）：
+ *   {
+ *     id: String,        // 窗口唯一ID，如 "win_1"
+ *     name: String,       // 显示名称，如 "主屏"
+ *     x: Number,          // 左上角 X 坐标（px）
+ *     y: Number,          // 左上角 Y 坐标（px）
+ *     width: Number,      // 宽度（px）
+ *     height: Number,     // 高度（px）
+ *     zIndex: Number,    // 层级（越大越上层）
+ *     aspectRatio: String | null,  // 如 "16:9"，可选
+ *     content: {                    // 窗口内容
+ *       type: 'COLOR' | 'VIDEO' | 'HDMI' | 'IMAGE',
+ *       // type=HDMI 时：
+ *       inputIndex?: Number,        // HDMI 输入索引（0-based）
+ *       // type=COLOR 时：
+ *       color?: String,             // 背景色，如 "#000000"
+ *       // type=VIDEO 时：
+ *       folderId?: String           // 对应素材文件夹 ID，如 "01"
+ *     }
+ *   }
+ *
+ * 设备开机流程：
+ *   1. APP 启动 → loadConfig() → 从 scenes_json 缓存恢复 → 窗口1播放文件夹01
+ *   2. MQTT 连接成功 → 收到 sync_room_materials → applySceneConfigs(scenes)
+ *   3. scenes 为空 → 离线模式，使用 scenes_json 缓存恢复
+ *
  * 重要约定：
  *   - 房间是配置中心，设备只是执行器
  *   - 设备授权前用 fingerprint，注册后用 uuid
  *   - APK filepath 统一存在 /apk/xxx.apk，URL 用 path.basename 构造
+ *   - 第二幕（场景B）默认窗口为空，由用户手动配置
  */
 
 
