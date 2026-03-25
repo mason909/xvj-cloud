@@ -917,11 +917,10 @@ function renderWinEditorFull() {
     h += '<div class="win-prop-panel" id="winPropPanel"><div class="win-prop-title">属性</div>';
     if (s._selWin) {
         var w = s._selWin, ct = w.content || {};
-        var ctType = ct.type || 'inherit';
+        var ctType = ct.type || 'video_input';
         h += '<div class="win-prop-row"><label>ID</label><input value="' + w.id + '" readonly style="color:#555;background:#1a1a1a"></div>';
         h += '<div class="win-prop-row"><label>名称</label><input id="wpName" value="' + (w.name||'') + '" oninput="updWinField(\'name\',this.value)"></div>';
         h += '<div class="win-content-type-row">';
-        h += '<button class="win-content-type-btn' + (ctType==='inherit'?' active':'') + '" onclick="setWinContentType(\'inherit\')">保持播放</button>';
         h += '<button class="win-content-type-btn' + (ctType==='video_input'?' active':'') + '" onclick="setWinContentType(\'video_input\')">输入源</button>';
         h += '<button class="win-content-type-btn' + (ctType==='color'?' active':'') + '" onclick="setWinContentType(\'color\')">测试背景</button>';
         h += '</div>';
@@ -974,7 +973,7 @@ function renderWinCanvas(wins) {
         var rh = (w.height||180) * _canvasScale;
         var sel = w.id === selWinId;
         var ct = w.content || {};
-        var typeLabel = ct.type === 'video_input' ? '📷' : (ct.type === 'color' ? '■ ' + (ct.color||'') : '⟳');
+        var typeLabel = ct.type === 'video_input' ? '📷' : (ct.type === 'color' ? '■ ' + (ct.color||'') : '▶');
         var el = document.createElement('div');
         el.className = 'win-rect' + (sel ? ' selected' : '');
         el.style.cssText = 'position:absolute;left:' + rx + 'px;top:' + ry + 'px;width:' + rw + 'px;height:' + rh + 'px;z-index:' + (w.zIndex||1) + ';box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:20px;min-height:20px;user-select:none' + (sel ? ';border-color:#e94560;background:rgba(233,69,96,0.18)' : '');
@@ -1051,7 +1050,7 @@ function addWin() {
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var wins = cfg.windows || [];
     var newId = 'win_' + Date.now();
-    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: 'inherit' }, zIndex: wins.length + 1 });
+    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: 'video_input', inputIndex: 0 }, zIndex: wins.length + 1 });
     cfg.windows = wins;
     s._winCache = wins;
     s._selWin = Object.assign({}, wins[wins.length - 1]);
