@@ -371,6 +371,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             message: message,
             room_id: roomId || '',
             folder_mappings: {},
+            windows: [],   // fallback：解析失败时也返回空窗口
             debug: false,
             timestamp: Date.now()
           });
@@ -400,6 +401,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
       message: message,
       room_id: roomId || '',
       folder_mappings: {},
+      windows: [],   // fallback：未授权时也返回空窗口
       timestamp: Date.now()
     });
     mqttClient.publish(topic, payload);
@@ -1222,6 +1224,12 @@ app.put('/api/rooms/:id/windows', (req, res) => {
   const id = req.params.id;
   if (!Array.isArray(windows)) {
     return res.status(400).json({ error: 'windows 必须是数组' });
+  }
+  // 校验每个元素是带有 id 和 name 的对象
+  for (const w of windows) {
+    if (!w || typeof w !== 'object' || !w.id || !w.name) {
+      return res.status(400).json({ error: 'windows 数组元素必须是对象，且必须包含 id 和 name 字段' });
+    }
   }
   // 读取现有 config，合并 windows 字段
   db.query('SELECT config FROM rooms WHERE id = ?', [id], (err, rows) => {
