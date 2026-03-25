@@ -1037,7 +1037,14 @@ function selWin(id) {
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var wins = cfg.windows || [];
-    s._winCache = wins;
+    // 不再无条件覆盖 _winCache：只在首次（_winCache 为空）时初始化
+    // 这样 drag 后 selWin 不会把拖动结果覆盖掉
+    if (!s._winCache || s._winCache.length === 0) {
+        s._winCache = wins;
+    } else {
+        // _winCache 已有数据（可能包含拖动修改），直接用，忽略 cfg.windows
+        wins = s._winCache;
+    }
     s._selWin = Object.assign({}, wins.find(function(w) { return w.id === id; }) || null);
     renderWinEditorFull();
 }
