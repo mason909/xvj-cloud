@@ -70,17 +70,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .progress-bar{height:6px;background:#333;border-radius:3px;overflow:hidden;margin-top:10px}
 .progress-fill{height:100%;background:linear-gradient(90deg,#e94560,#ff6b8a);width:0%;transition:width 0.2s}
 .progress-text{font-size:12px;color:#888;margin-top:5px}
-/* ==========================================================================
-   Phase2: 多窗口配置编辑器
-   ========================================================================== */
+/* Phase2: 多窗口配置编辑器 */
 .win-editor-wrap{display:flex;gap:16px;margin-top:10px;height:calc(100vh - 280px);min-height:400px}
 .win-canvas-area{flex:1;background:#1a1a1a;border:1px solid #333;border-radius:8px;position:relative;overflow:hidden;min-width:0}
 .win-canvas{position:absolute;top:0;left:0;width:100%;height:100%}
-.win-device-frame{position:absolute;border:2px solid #444;border-radius:2px;background:rgba(255,255,255,0.03);box-sizing:border-box;cursor:move;transition:border-color 0.15s}
-.win-device-frame.selected{border-color:#e94560;box-shadow:0 0 0 1px #e94560}
+.win-device-frame{position:absolute;border:2px solid #444;border-radius:2px;background:rgba(255,255,255,0.03);box-sizing:border-box}
 .win-rect{position:absolute;box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;font-size:11px;color:#e94560;overflow:hidden;min-width:20px;min-height:20px;user-select:none}
 .win-rect.selected{border-color:#e94560;background:rgba(233,69,96,0.18)}
-.win-rect .wr-name{position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;max-width:100%;text-overlength:ellipsis}
+.win-rect .wr-name{position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}
 .win-rect .wr-type{position:absolute;bottom:3px;right:5px;font-size:9px;color:#888}
 .win-rect .wr-handle{position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize}
 .win-rect .wr-handle.tr{top:-4px;right:-4px}
@@ -107,14 +104,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .win-prop-row .lock-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:3px 8px;font-size:11px;cursor:pointer}
 .win-prop-row .lock-btn.active{background:rgba(233,69,96,0.2);border-color:#e94560;color:#e94560}
 .win-canvas-info{position:absolute;bottom:8px;left:10px;background:rgba(0,0,0,0.7);color:#888;font-size:10px;padding:3px 8px;border-radius:4px;pointer-events:none;z-index:10}
-.win-add-btn{width:100%;padding:8px;background:#2a2a2a;color:#888;border:1px dashed #444;border-radius:6px;cursor:pointer;font-size:12px;margin-top:6px;text-align:center}
-.win-add-btn:hover{background:#333;color:#fff;border-color:#e94560}
 .win-ratio-presets{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
 .win-ratio-btn{padding:2px 8px;background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;font-size:11px;cursor:pointer}
-.win-ratio-btn.active{background:rgba(233,69,96,0.18);border-color:#e94560;color:#e94560}
+.win-ratio-btn.active,.win-ratio-btn:hover{background:rgba(233,69,96,0.18);border-color:#e94560;color:#e94560}
 .win-content-type-row{display:flex;gap:4px;margin-bottom:8px}
 .win-content-type-btn{flex:1;padding:5px;background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;font-size:11px;cursor:pointer;text-align:center}
-.win-content-type-btn.active{background:rgba(233,69,96,0.18);border-color:#e94560;color:#e94560}
+.win-content-type-btn.active,.win-content-type-btn:hover{background:rgba(233,69,96,0.18);border-color:#e94560;color:#e94560}
 .win-save-btn{width:100%;padding:8px;background:#e94560;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;margin-top:10px}
 .win-save-btn:hover{background:#ff6b6b}
 .win-save-btn.saving{opacity:0.6;pointer-events:none}
@@ -810,11 +805,12 @@ function rmDevice() {
     var winAct = s.f === 'win' ? 'active' : '';
     h += '<div class="tab ' + winAct + '" onclick="sfW()" style="background:' + (s.f === 'win' ? '#e94560' : '') + '"><span class="tab-n">🪟</span><span class="tab-d">窗口</span></div>';
     h += '</div>';
-
     // Phase2: 窗口编辑器区域
-    h += '<div id="winEditorArea" style="' + (s.f !== 'win' ? 'display:none' : '') + '"></div>';
-
-    h += '<button class="btn btn-primary" style="margin-top:10px;width:100%;background:#28a745;font-size:16px;padding:12px' + (s.f === 'win' ? ';display:none' : '') + '" onclick="syncCurrentRoom()">🔄 同步当前房间</button>';
+    h += '<div id="winEditorArea" style="display:' + (s.f === 'win' ? 'block' : 'none') + '"></div>';
+    // 同步按钮（窗口tab下隐藏）
+    if (s.f !== 'win') {
+        h += '<button class="btn btn-primary" style="margin-top:10px;width:100%;background:#28a745;font-size:16px;padding:12px" onclick="syncCurrentRoom()">🔄 同步当前房间</button>';
+    }
     
     var ms = r.folder_mappings ? JSON.parse(r.folder_mappings)[s.f] || [] : [];
     // 只显示已映射的素材
@@ -848,311 +844,165 @@ function rmDevice() {
 
 function sfR(f) {
     s.f = f;
-    // 切走窗口tab时隐藏编辑器
     var wea = document.getElementById('winEditorArea');
     if (wea) wea.style.display = 'none';
-    var syncBtn = document.querySelector('[onclick="syncCurrentRoom()"]');
-    if (syncBtn) syncBtn.style.display = '';
+    rmDevice();
+}
+
+function sfW() {
+    s.f = 'win';
+    s._selWin = null;
+    var wea = document.getElementById('winEditorArea');
+    if (wea) { wea.style.display = 'block'; renderWinEditorFull(); }
     rmDevice();
 }
 
 // ============================================================================
-// Phase2: 多窗口配置 Tab
+// Phase2: 多窗口配置编辑器
 // ============================================================================
-function sfW() {
-    s.f = 'win';   // 'win' 表示窗口配置 tab
-    s._selWin = null;
-    // 显示 winEditorArea，隐藏 sync 按钮
-    var wea = document.getElementById('winEditorArea');
-    if (wea) wea.style.display = 'block';
-    var syncBtn = document.querySelector('[onclick="syncCurrentRoom()"]');
-    if (syncBtn) syncBtn.style.display = 'none';
-    // 渲染窗口编辑器
-    renderWinEditorFull();
-}
+var _canvasScale = 1, _canvasOffsetX = 0, _canvasOffsetY = 0;
+var _dragging = null;
 
-// 初始化窗口编辑器：在 rmDevice 完成后调用
-// 注意：sfW 只在 tab 点击时调用，由它触发完整的编辑器渲染
-
-function renderWindowEditor(r) {
-    // 从房间 config 读取 windows
+function renderWinEditorFull() {
+    var r = s.rooms.find(function(x) { return x.id === s.rf; });
+    if (!r) return;
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var wins = cfg.windows || [];
-    var selectedWin = s._selWin || null;
-
+    s._winCache = wins;
+    var area = document.getElementById('winEditorArea');
+    if (!area) return;
+    var deviceW = 1920, deviceH = 1080;
     var ratioPresets = [
-        {label:'16:9', w:16, h:9},
-        {label:'4:3', w:4, h:3},
-        {label:'21:9', w:21, h:9},
-        {label:'1:1', w:1, h:1},
-        {label:'9:16', w:9, h:16}
+        {label:'16:9', w:16, h:9}, {label:'4:3', w:4, h:3},
+        {label:'1:1', w:1, h:1}, {label:'9:16', w:9, h:16}
     ];
-    var deviceW = 1920, deviceH = 1080; // 设备分辨率基准
-
-    // 素材下拉选项
     var matOptions = '<option value="">— 无 —</option>';
-    if (s.ms && s.ms.length > 0) {
-        s.ms.forEach(function(m) {
-            var name = m.filename || m.name || m.id;
-            matOptions += '<option value="m_' + m.id + '">' + name + '</option>';
-        });
-    }
-    if (s.pm && s.pm.length > 0) {
-        s.pm.forEach(function(m) {
-            var name = m.name || m.id;
-            matOptions += '<option value="preset_' + m.id + '">' + name + ' (预设)</option>';
-        });
-    }
-
+    if (s.ms) s.ms.forEach(function(m) { matOptions += '<option value="m_' + m.id + '">' + (m.filename||m.name||m.id) + '</option>'; });
+    if (s.pm) s.pm.forEach(function(m) { matOptions += '<option value="preset_' + m.id + '">' + (m.name||m.id) + ' (预设)</option>'; });
+    var selWinId = s._selWin ? s._selWin.id : null;
     var h = '<div class="win-editor-wrap">';
-
-    // 左侧：画布
     h += '<div class="win-canvas-area" id="winCanvasArea">';
     h += '<div class="win-canvas" id="winCanvas"></div>';
     h += '<div class="win-device-frame" id="winDeviceFrame"></div>';
-    h += '<div class="win-canvas-info" id="winCanvasInfo">1920 × 1080</div>';
-    h += '</div>';
-
-    // 右侧：窗口列表 + 属性面板
+    h += '<div class="win-canvas-info" id="winCanvasInfo">' + deviceW + ' × ' + deviceH + '</div></div>';
     h += '<div class="win-sidebar">';
-
-    // 窗口列表
-    h += '<div class="win-list">';
-    h += '<div class="win-list-header"><span>窗口</span><button class="btn btn-primary" style="padding:2px 8px;font-size:11px" onclick="addWin()">+ 添加</button></div>';
-    h += '<div class="win-list-body" id="winListBody">';
-    if (wins.length === 0) {
-        h += '<div style="color:#555;font-size:11px;text-align:center;padding:20px 0">暂无窗口，点击"添加"创建</div>';
-    } else {
-        wins.forEach(function(w) {
-            var cls = selectedWin && selectedWin.id === w.id ? 'active' : '';
-            h += '<div class="win-item ' + cls + '" onclick="selWin(\'' + w.id + '\')">';
-            h += '<span class="win-item-name">' + (w.name || w.id) + '</span>';
-            h += '<button class="win-item-del" onclick="delWin(event,\'' + w.id + '\')">×</button>';
-            h += '</div>';
-        });
-    }
-    h += '</div>'; // win-list-body
-    h += '</div>'; // win-list
-
-    // 属性面板
-    h += '<div class="win-prop-panel" id="winPropPanel">';
-    h += '<div class="win-prop-title">属性</div>';
-    if (selectedWin) {
-        var ct = selectedWin.content || {};
+    h += '<div class="win-list"><div class="win-list-header"><span>窗口</span><button class="btn btn-primary" style="padding:2px 8px;font-size:11px" onclick="addWin()">+ 添加</button></div><div class="win-list-body" id="winListBody">';
+    if (wins.length === 0) { h += '<div style="color:#555;font-size:11px;text-align:center;padding:20px 0">暂无窗口</div>'; }
+    else { wins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="selWin(\'' + w.id + '\')"><span class="win-item-name">' + (w.name||w.id) + '</span><button class="win-item-del" onclick="delWin(event,\'' + w.id + '\')">×</button></div>'; }); }
+    h += '</div></div>';
+    h += '<div class="win-prop-panel" id="winPropPanel"><div class="win-prop-title">属性</div>';
+    if (s._selWin) {
+        var w = s._selWin, ct = w.content || {};
         var ctType = ct.type || 'material';
-        h += '<div class="win-prop-row"><label>ID</label><input id="wpId" value="' + selectedWin.id + '" readonly style="color:#555;background:#1a1a1a"></div>';
-        h += '<div class="win-prop-row"><label>名称</label><input id="wpName" value="' + (selectedWin.name || '') + '" oninput="updWinField(\'name\', this.value)"></div>';
-
-        // 内容类型切换
+        h += '<div class="win-prop-row"><label>ID</label><input value="' + w.id + '" readonly style="color:#555;background:#1a1a1a"></div>';
+        h += '<div class="win-prop-row"><label>名称</label><input id="wpName" value="' + (w.name||'') + '" oninput="updWinField(\'name\',this.value)"></div>';
         h += '<div class="win-content-type-row">';
-        h += '<button class="win-content-type-btn ' + (ctType === 'material' ? 'active' : '') + '" onclick="setWinContentType(\'material\')">素材</button>';
-        h += '<button class="win-content-type-btn ' + (ctType === 'video_input' ? 'active' : '') + '" onclick="setWinContentType(\'video_input\')">视频输入</button>';
-        h += '<button class="win-content-type-btn ' + (ctType === 'blank' ? 'active' : '') + '" onclick="setWinContentType(\'blank\')">黑屏</button>';
+        h += '<button class="win-content-type-btn' + (ctType==='material'?' active':'') + '" onclick="setWinContentType(\'material\')">素材</button>';
+        h += '<button class="win-content-type-btn' + (ctType==='video_input'?' active':'') + '" onclick="setWinContentType(\'video_input\')">视频输入</button>';
+        h += '<button class="win-content-type-btn' + (ctType==='blank'?' active':'') + '" onclick="setWinContentType(\'blank\')">黑屏</button>';
         h += '</div>';
-
         if (ctType === 'material') {
-            h += '<div class="win-prop-row"><label>素材</label><select id="wpMat" onchange="updWinContent(\'materialId\', this.value)">' + matOptions + '</select></div>';
-            // 选中已有值
             var selVal = ct.presetId ? 'preset_' + ct.presetId : (ct.materialId ? 'm_' + ct.materialId : '');
-            h = h.replace('id="wpMat"', 'id="wpMat" value="' + selVal + '"');
-            // 处理 selected
-            if (ct.materialId) {
-                if (ct.presetId) { h = h.replace('value="preset_' + ct.presetId + '"', 'value="preset_' + ct.presetId + '" selected'); } else if (ct.materialId) { h = h.replace('value="m_' + ct.materialId + '"', 'value="m_' + ct.materialId + '" selected'); }
-            }
+            h += '<div class="win-prop-row"><label>素材</label><select id="wpMatSel" onchange="updWinContentMat(this.value)">' + matOptions + '</select></div>';
+            h = h.replace('value="' + selVal + '"', 'value="' + selVal + '" selected');
         } else if (ctType === 'video_input') {
-            h += '<div class="win-prop-row"><label>输入源</label><select id="wpInput" onchange="updWinContent(\'inputIndex\', parseInt(this.value))">';
-            for (var ii = 0; ii < 4; ii++) {
-                h += '<option value="' + ii + '"' + (ct.inputIndex === ii ? ' selected' : '') + '>输入 ' + (ii + 1) + '</option>';
-            }
+            h += '<div class="win-prop-row"><label>输入源</label><select id="wpInputSel" onchange="updWinContent(\'inputIndex\',parseInt(this.value))">';
+            for (var ii = 0; ii < 4; ii++) { h += '<option value="' + ii + '"' + (ct.inputIndex===ii?' selected':'') + '>输入 ' + (ii+1) + '</option>'; }
             h += '</select></div>';
         }
-
-        h += '<div class="win-prop-row" style="margin-top:6px"><label>位置 X</label><input type="number" id="wpX" value="' + (selectedWin.x || 0) + '" oninput="updWinField(\'x\', parseInt(this.value)||0)"></div>';
-        h += '<div class="win-prop-row"><label>位置 Y</label><input type="number" id="wpY" value="' + (selectedWin.y || 0) + '" oninput="updWinField(\'y\', parseInt(this.value)||0)"></div>';
-        h += '<div class="win-prop-row"><label>宽度</label><input type="number" id="wpW" value="' + (selectedWin.width || 640) + '" oninput="updWinField(\'width\', parseInt(this.value)||64)"></div>';
-        h += '<div class="win-prop-row"><label>高度</label><input type="number" id="wpH" value="' + (selectedWin.height || 360) + '" oninput="updWinField(\'height\', parseInt(this.value)||64)"></div>';
-
-        // 比例锁定
-        var ratioLocked = !!(s._winRatioLock && s._winRatioLock[selectedWin.id]);
-        h += '<div class="win-prop-row"><label>比例</label><button class="lock-btn ' + (ratioLocked ? 'active' : '') + '" id="wpRatioLock" onclick="toggleWinRatio(\'' + selectedWin.id + '\')">' + (ratioLocked ? '🔒 锁定' : '🔓 锁定') + '</button></div>';
-
-        // 快速比例预设
+        h += '<div class="win-prop-row"><label>位置 X</label><input type="number" id="wpX" value="' + (w.x||0) + '" oninput="updWinField(\'x\',parseInt(this.value)||0)"></div>';
+        h += '<div class="win-prop-row"><label>位置 Y</label><input type="number" id="wpY" value="' + (w.y||0) + '" oninput="updWinField(\'y\',parseInt(this.value)||0)"></div>';
+        h += '<div class="win-prop-row"><label>宽度</label><input type="number" id="wpW" value="' + (w.width||640) + '" oninput="updWinField(\'width\',parseInt(this.value)||64)"></div>';
+        h += '<div class="win-prop-row"><label>高度</label><input type="number" id="wpH" value="' + (w.height||360) + '" oninput="updWinField(\'height\',parseInt(this.value)||64)"></div>';
+        var locked = !!(s._winRatioLock && s._winRatioLock[w.id]);
+        h += '<div class="win-prop-row"><label>比例</label><button class="lock-btn' + (locked?' active':'') + '" id="wpRatioLock" onclick="toggleWinRatio(\'' + w.id + '\')">' + (locked?'🔒':'🔓') + ' 锁定</button></div>';
         h += '<div class="win-ratio-presets">';
-        ratioPresets.forEach(function(p) {
-            h += '<button class="win-ratio-btn" onclick="setWinRatio(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>';
-        });
+        ratioPresets.forEach(function(p) { h += '<button class="win-ratio-btn" onclick="setWinRatio(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>'; });
         h += '</div>';
-
-        h += '<div class="win-prop-row"><label>Z序</label><input type="number" id="wpZ" value="' + (selectedWin.zIndex || 1) + '" oninput="updWinField(\'zIndex\', parseInt(this.value)||1)" style="width:60px"></div>';
+        h += '<div class="win-prop-row"><label>Z序</label><input type="number" id="wpZ" value="' + (w.zIndex||1) + '" oninput="updWinField(\'zIndex\',parseInt(this.value)||1)" style="width:60px"></div>';
     } else {
         h += '<div style="color:#555;font-size:12px;text-align:center;padding:20px 0">选择或添加窗口以编辑属性</div>';
     }
-    h += '</div>'; // win-prop-panel
-
-    // 保存按钮
+    h += '</div>';
     h += '<button class="win-save-btn" id="winSaveBtn" onclick="saveWindows()">💾 保存并推送</button>';
-
-    h += '</div>'; // win-sidebar
-    h += '</div>'; // win-editor-wrap
-
-    return h;
+    h += '</div></div>';
+    area.innerHTML = h;
+    renderWinCanvas(wins);
 }
 
-// 画布相关全局变量
-var _canvasScale = 1;
-var _canvasOffsetX = 0, _canvasOffsetY = 0;
-var _dragging = null;      // {winId, mode:'move'|'resize', startX, startY, startWin}
-var _lastSelWinId = null;
-
-function renderWinCanvas(r) {
-    var cfg = {};
-    try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-    var wins = cfg.windows || [];
+function renderWinCanvas(wins) {
     var area = document.getElementById('winCanvasArea');
     var canvas = document.getElementById('winCanvas');
+    var df = document.getElementById('winDeviceFrame');
     if (!area || !canvas) return;
-
     var deviceW = 1920, deviceH = 1080;
-    var AW = area.clientWidth || 600;
-    var AH = area.clientHeight || 400;
+    var AW = area.clientWidth || 600, AH = area.clientHeight || 400;
     _canvasScale = Math.min(AW / deviceW, AH / deviceH) * 0.92;
     _canvasOffsetX = (AW - deviceW * _canvasScale) / 2;
     _canvasOffsetY = (AH - deviceH * _canvasScale) / 2;
-
-    // 画布缩放偏移
-    canvas.style.transform = 'scale(1)';
-    canvas.style.transformOrigin = 'top left';
-
-    // 画布尺寸 = 设备分辨率 * scale
     canvas.style.width = (deviceW * _canvasScale) + 'px';
     canvas.style.height = (deviceH * _canvasScale) + 'px';
-
-    // 设备边框定位
-    var df = document.getElementById('winDeviceFrame');
-    if (df) {
-        df.style.left = _canvasOffsetX + 'px';
-        df.style.top = _canvasOffsetY + 'px';
-        df.style.width = (deviceW * _canvasScale) + 'px';
-        df.style.height = (deviceH * _canvasScale) + 'px';
-        df.onmousedown = null;
-    }
-
-    // 清空画布，重绘
+    if (df) { df.style.left = _canvasOffsetX + 'px'; df.style.top = _canvasOffsetY + 'px'; df.style.width = (deviceW * _canvasScale) + 'px'; df.style.height = (deviceH * _canvasScale) + 'px'; }
     canvas.innerHTML = '';
-    canvas.onmousedown = null;
-    canvas.style.cursor = 'default';
-
+    var selWinId = s._selWin ? s._selWin.id : null;
     wins.forEach(function(w) {
-        var rx = _canvasOffsetX + (w.x || 0) * _canvasScale;
-        var ry = _canvasOffsetY + (w.y || 0) * _canvasScale;
-        var rw = (w.width || 320) * _canvasScale;
-        var rh = (w.height || 180) * _canvasScale;
-        var sel = s._selWin && s._selWin.id === w.id;
-
+        var rx = _canvasOffsetX + (w.x||0) * _canvasScale;
+        var ry = _canvasOffsetY + (w.y||0) * _canvasScale;
+        var rw = (w.width||320) * _canvasScale;
+        var rh = (w.height||180) * _canvasScale;
+        var sel = w.id === selWinId;
+        var ct = w.content || {};
+        var typeLabel = ct.type === 'video_input' ? '📷' : (ct.type === 'blank' ? '■' : '▶');
         var el = document.createElement('div');
         el.className = 'win-rect' + (sel ? ' selected' : '');
-        el.style.left = rx + 'px';
-        el.style.top = ry + 'px';
-        el.style.width = rw + 'px';
-        el.style.height = rh + 'px';
-        el.style.zIndex = w.zIndex || 1;
+        el.style.cssText = 'position:absolute;left:' + rx + 'px;top:' + ry + 'px;width:' + rw + 'px;height:' + rh + 'px;z-index:' + (w.zIndex||1) + ';box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:20px;min-height:20px;user-select:none' + (sel ? ';border-color:#e94560;background:rgba(233,69,96,0.18)' : '');
+        el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + (w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:9px;color:#888">' + typeLabel + '</span>';
+        el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px" data-dir="br"></div>';
         el.dataset.winId = w.id;
-
-        var ct = w.content || {};
-        var typeLabel = ct.type === 'video_input' ? '📷输入' : (ct.type === 'blank' ? '■黑屏' : '▶素材');
-        el.innerHTML = '<span class="wr-name">' + (w.name || w.id) + '</span><span class="wr-type">' + typeLabel + '</span>';
-        el.innerHTML += '<div class="wr-handle tr" data-dir="tr"></div><div class="wr-handle tl" data-dir="tl"></div><div class="wr-handle br" data-dir="br"></div><div class="wr-handle bl" data-dir="bl"></div>';
-
         el.onmousedown = function(e) {
             e.stopPropagation();
             selWin(w.id);
-            var dir = e.target.dataset.dir;
-            _dragging = {
-                winId: w.id,
-                mode: dir ? 'resize' : 'move',
-                dir: dir || null,
-                startX: e.clientX,
-                startY: e.clientY,
-                startWin: Object.assign({}, w)
-            };
-            canvas.style.cursor = dir ? 'se-resize' : 'move';
+            _dragging = { winId: w.id, mode: e.target.dataset.dir ? 'resize' : 'move', dir: e.target.dataset.dir || null, startX: e.clientX, startY: e.clientY, startWin: Object.assign({}, w) };
         };
-
         canvas.appendChild(el);
     });
-
-    // 全局鼠标事件（拖拽）
-    document.onmousemove = function(e) {
-        if (!_dragging) return;
-        var dx = e.clientX - _dragging.startX;
-        var dy = e.clientY - _dragging.startY;
-        var sW = _dragging.startWin;
-        var id = _dragging.winId;
-        var cfg = _getWinCfg();
-        var w = cfg.find(function(x) { return x.id === id; });
-        if (!w) return;
-
-        var locked = s._winRatioLock && s._winRatioLock[id];
-        var ratio = locked ? (sW.width / sW.height) : null;
-
-        if (_dragging.mode === 'move') {
-            w.x = Math.max(0, Math.round(sW.x + dx / _canvasScale));
-            w.y = Math.max(0, Math.round(sW.y + dy / _canvasScale));
-        } else if (_dragging.mode === 'resize') {
-            var newW = Math.max(64, Math.round(sW.width + dx / _canvasScale));
-            var newH = Math.max(64, Math.round(sW.height + dy / _canvasScale));
-            if (locked) {
-                newH = Math.round(newW / ratio);
-            }
-            w.width = newW;
-            w.height = newH;
-        }
-
-        // 实时更新属性面板
-        var xEl = document.getElementById('wpX');
-        var yEl = document.getElementById('wpY');
-        var wEl = document.getElementById('wpW');
-        var hEl = document.getElementById('wpH');
-        if (wEl) wEl.value = w.width;
-        if (hEl) hEl.value = w.height;
-        if (xEl) xEl.value = w.x;
-        if (yEl) yEl.value = w.y;
-
-        // 画布重绘（局部更新）
-        _renderWinRects(cfg);
-    };
-
-    document.onmouseup = function() {
-        if (_dragging) {
-            _dragging = null;
-            document.getElementById('winCanvas').style.cursor = 'default';
-        }
-    };
-
-    // 更新 info
+    document.onmousemove = winCanvasMouseMove;
+    document.onmouseup = winCanvasMouseUp;
     var info = document.getElementById('winCanvasInfo');
-    if (info) info.textContent = deviceW + ' × ' + deviceH + ' (×' + _canvasScale.toFixed(2) + ')');
+    if (info) info.textContent = deviceW + ' × ' + deviceH + ' (×' + _canvasScale.toFixed(2) + ')';
 }
+
+function winCanvasMouseMove(e) {
+    if (!_dragging) return;
+    var dx = e.clientX - _dragging.startX, dy = e.clientY - _dragging.startY;
+    var sW = _dragging.startWin, id = _dragging.winId;
+    var wins = s._winCache || [], w = wins.find(function(x) { return x.id === id; });
+    if (!w) return;
+    if (_dragging.mode === 'move') {
+        w.x = Math.max(0, Math.round(sW.x + dx / _canvasScale));
+        w.y = Math.max(0, Math.round(sW.y + dy / _canvasScale));
+    } else {
+        var newW = Math.max(64, Math.round(sW.width + dx / _canvasScale));
+        var newH = Math.max(64, Math.round(sW.height + dy / _canvasScale));
+        if (s._winRatioLock && s._winRatioLock[id]) { newH = Math.round(newW * sW.height / sW.width); }
+        w.width = newW; w.height = newH;
+    }
+    ['wpX','wpY','wpW','wpH'].forEach(function(id2, i) { var el = document.getElementById(id2); if (el) el.value = [w.x,w.y,w.width,w.height][i]; });
+    _renderWinRects(wins);
+}
+
+function winCanvasMouseUp() { _dragging = null; }
 
 function _renderWinRects(wins) {
     wins.forEach(function(w) {
         var el = document.querySelector('[data-win-id="' + w.id + '"]');
         if (!el) return;
-        var rx = _canvasOffsetX + (w.x || 0) * _canvasScale;
-        var ry = _canvasOffsetY + (w.y || 0) * _canvasScale;
-        var rw = (w.width || 320) * _canvasScale;
-        var rh = (w.height || 180) * _canvasScale;
-        el.style.left = rx + 'px';
-        el.style.top = ry + 'px';
-        el.style.width = rw + 'px';
-        el.style.height = rh + 'px';
+        el.style.left = (_canvasOffsetX + (w.x||0) * _canvasScale) + 'px';
+        el.style.top = (_canvasOffsetY + (w.y||0) * _canvasScale) + 'px';
+        el.style.width = ((w.width||320) * _canvasScale) + 'px';
+        el.style.height = ((w.height||180) * _canvasScale) + 'px';
     });
-}
-
-function _getWinCfg() {
-    // 从当前渲染的DOM读取或从 s._winCache 读取
-    return s._winCache || [];
 }
 
 function selWin(id) {
@@ -1161,10 +1011,9 @@ function selWin(id) {
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var wins = cfg.windows || [];
-    s._selWin = Object.assign({}, wins.find(function(w) { return w.id === id; })) || null;
     s._winCache = wins;
+    s._selWin = Object.assign({}, wins.find(function(w) { return w.id === id; }) || null);
     renderWinEditorFull();
-    _renderWinRects(wins);
 }
 
 function addWin() {
@@ -1174,20 +1023,12 @@ function addWin() {
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var wins = cfg.windows || [];
     var newId = 'win_' + Date.now();
-    wins.push({
-        id: newId,
-        name: '新窗口',
-        x: 0, y: 0,
-        width: 640, height: 360,
-        aspectRatio: '16:9',
-        content: { type: 'material', materialId: '' },
-        zIndex: wins.length + 1
-    });
+    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: 'material', materialId: '' }, zIndex: wins.length + 1 });
     cfg.windows = wins;
     s._winCache = wins;
     s._selWin = Object.assign({}, wins[wins.length - 1]);
-    renderWinEditorFull();
-    _renderWinRects(wins);
+    // 保存到 config
+    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { doSyncRoom(s.rf); renderWinEditorFull(); } });
 }
 
 function delWin(e, id) {
@@ -1198,78 +1039,67 @@ function delWin(e, id) {
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var wins = (cfg.windows || []).filter(function(w) { return w.id !== id; });
-    cfg.windows = wins;
-    s._winCache = wins;
-    s._selWin = null;
-    renderWinEditorFull();
-    _renderWinRects(wins);
+    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { s._winCache = wins; s._selWin = null; doSyncRoom(s.rf); renderWinEditorFull(); } });
 }
 
 function updWinField(field, value) {
     if (!s._selWin) return;
     s._selWin[field] = value;
-    var id = s._selWin.id;
-    var wins = s._winCache || [];
+    var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w[field] = value;
-    // 画布重绘
     _renderWinRects(wins);
-    // 窗口列表文字
-    var item = document.querySelector('.win-item.active .win-item-name');
-    if (item && field === 'name') item.textContent = value;
+    if (field === 'name') { var items = document.querySelectorAll('.win-item'); items.forEach(function(it){ if (it.querySelector('.win-item-name').textContent !== (s._selWin&&s._selWin.name)) it.querySelector('.win-item-name').textContent = value; }); }
 }
 
 function updWinContent(field, value) {
     if (!s._selWin) return;
     if (!s._selWin.content) s._selWin.content = {};
-    if (field === 'materialId') {
-        var isPreset = value.startsWith('preset_');
-        s._selWin.content.materialId = value.startsWith('m_') ? value.slice(2) : (isPreset ? null : value);
-        s._selWin.content.presetId = isPreset ? value.slice(8) : null;
-    } else {
-        s._selWin.content[field] = value;
-    }
-    var id = s._selWin.id;
-    var wins = s._winCache || [];
+    s._selWin.content[field] = value;
+    var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w.content = Object.assign({}, s._selWin.content);
-    _renderWinRects(wins);
+}
+
+function updWinContentMat(value) {
+    if (!s._selWin) return;
+    if (!s._selWin.content) s._selWin.content = {};
+    var isPreset = value.startsWith('preset_');
+    s._selWin.content.materialId = value.startsWith('m_') ? value.slice(2) : (isPreset ? null : value);
+    s._selWin.content.presetId = isPreset ? value.slice(8) : null;
+    var id = s._selWin.id, wins = s._winCache || [];
+    var w = wins.find(function(x) { return x.id === id; });
+    if (w) w.content = Object.assign({}, s._selWin.content);
+    renderWinEditorFull();
 }
 
 function setWinContentType(type) {
     if (!s._selWin) return;
     s._selWin.content = { type: type };
     if (type === 'video_input') s._selWin.content.inputIndex = 0;
-    var id = s._selWin.id;
-    var wins = s._winCache || [];
+    var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w.content = Object.assign({}, s._selWin.content);
     renderWinEditorFull();
-    _renderWinRects(wins);
 }
 
 function toggleWinRatio(id) {
     if (!s._winRatioLock) s._winRatioLock = {};
     s._winRatioLock[id] = !s._winRatioLock[id];
     var btn = document.getElementById('wpRatioLock');
-    if (btn) {
-        btn.className = 'lock-btn' + (s._winRatioLock[id] ? ' active' : '');
-        btn.textContent = (s._winRatioLock[id] ? '🔒 锁定' : '🔓 锁定');
-    }
+    if (btn) { btn.className = 'lock-btn' + (s._winRatioLock[id] ? ' active' : ''); btn.textContent = (s._winRatioLock[id] ? '🔒' : '🔓') + ' 锁定'; }
 }
 
 function setWinRatio(ratioStr) {
     if (!s._selWin) return;
-    var parts = ratioStr.split(',');
-    var rw = parseInt(parts[0]), rh = parseInt(parts[1]);
+    var parts = ratioStr.split(','), rw = parseInt(parts[0]), rh = parseInt(parts[1]);
     if (!rw || !rh) return;
     s._selWin.width = Math.round(s._selWin.height * rw / rh);
     var wEl = document.getElementById('wpW');
     if (wEl) wEl.value = s._selWin.width;
-    var id = s._selWin.id;
-    var wins = s._winCache || [];
+    var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
-    if (w) { w.width = s._selWin.width; }
+    if (w) w.width = s._selWin.width;
     _renderWinRects(wins);
 }
 
@@ -1277,58 +1107,14 @@ async function saveWindows() {
     var btn = document.getElementById('winSaveBtn');
     if (!btn) return;
     var wins = s._winCache || [];
-    btn.classList.add('saving');
-    btn.textContent = '保存中...';
+    btn.classList.add('saving'); btn.textContent = '保存中...';
     try {
-        var res = await fetch('/api/rooms/' + s.rf + '/windows', {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ windows: wins })
-        });
+        var res = await fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins}) });
         var json = await res.json();
-        if (json.success) {
-            // 同步推送
-            await doSyncRoom(s.rf);
-            btn.textContent = '✅ 已保存并推送';
-            setTimeout(function() { btn.textContent = '💾 保存并推送'; btn.classList.remove('saving'); }, 2000);
-        } else {
-            alert('保存失败: ' + json.error);
-            btn.textContent = '💾 保存并推送';
-            btn.classList.remove('saving');
-        }
-    } catch(e) {
-        alert('保存失败: ' + e.message);
-        btn.textContent = '💾 保存并推送';
-        btn.classList.remove('saving');
-    }
+        if (json.success) { await doSyncRoom(s.rf); btn.textContent = '✅ 已保存并推送'; setTimeout(function(){ btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }, 2000); }
+        else { alert('保存失败: ' + json.error); btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }
+    } catch(e) { alert('保存失败: ' + e.message); btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }
 }
-
-function renderWinEditorFull() {
-    var r = s.rooms.find(function(x) { return x.id === s.rf; });
-    if (!r) return;
-    var cfg = {};
-    try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-    s._winCache = cfg.windows || [];
-    var html = renderWindowEditor(r);
-    // 注入到 room detail panel
-    var g = document.getElementById('dg');
-    // 找到 win-editor-wrap 的位置，或者在 material content 之后
-    // rmDevice renders into dg, but for win tab we replace it entirely
-    // Actually, we inject the win editor as part of the room detail
-    // The simplest: replace the material grid area
-    var matArea = document.getElementById('winEditorArea');
-    if (matArea) matArea.innerHTML = html;
-    else {
-        // First time: find the material container and inject after folder tabs
-        // The rmDevice renders folder tabs + material grid. We override it for win tab.
-    }
-    renderWinCanvas(r);
-    // Rebind canvas mouse events (already bound in renderWinCanvas)
-}
-
-// 修改 rmDevice：在 folder tabs 之后注入 winEditorArea，并判断是否显示
-// 修改 sfR 和 sfW 以支持切换
-
 
 async function toggleRM(mid) {
     if (!s.rf) return;
