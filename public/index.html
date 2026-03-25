@@ -769,6 +769,8 @@ function rmDevice() {
     
     var h = '<h3 style="color:#e94560">' + (r.name || '') + ' (' + (r.store_name || '') + ')</h3>';
     h += '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#888">调试模式</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="roomDebugToggle" onchange="toggleRoomDebug()" style="opacity:0;width:0;height:0"><span id="roomDebugSlider" style="position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:0.3s"></span><span id="roomDebugKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
+    // Phase2: 独立窗口配置按钮（调试开关右边）
+    h += '<button class="btn btn-secondary" id="winTabBtn" style="margin-top:8px;margin-left:8px;padding:4px 12px;font-size:12px' + (s.f === 'win' ? ';background:#e94560;color:#fff;border-color:#e94560' : '') + '" onclick="sfW()">🪟 窗口</button>';
 
     // 显示房间设备列表
     if (roomDevices.length > 0) {
@@ -801,16 +803,11 @@ function rmDevice() {
         var ms = r.folder_mappings ? JSON.parse(r.folder_mappings)[f] || [] : [];
         h += '<div class="tab ' + act + '" onclick="sfR(\'' + f + '\')"><span class="tab-n">' + f + '</span><span class="tab-d">' + (ms.length > 0 ? ms.length : '+') + '</span></div>';
     }
-    // Phase2: 窗口配置 tab
-    var winAct = s.f === 'win' ? 'active' : '';
-    h += '<div class="tab ' + winAct + '" onclick="sfW()" style="background:' + (s.f === 'win' ? '#e94560' : '') + '"><span class="tab-n">🪟</span><span class="tab-d">窗口</span></div>';
     h += '</div>';
-    // Phase2: 窗口编辑器区域
+    // Phase2: 窗口编辑器区域（文件夹tab下方或替代）
     h += '<div id="winEditorArea" style="display:' + (s.f === 'win' ? 'block' : 'none') + '"></div>';
-    // 同步按钮（窗口tab下隐藏）
-    if (s.f !== 'win') {
-        h += '<button class="btn btn-primary" style="margin-top:10px;width:100%;background:#28a745;font-size:16px;padding:12px" onclick="syncCurrentRoom()">🔄 同步当前房间</button>';
-    }
+    // 同步按钮
+    h += '<button class="btn btn-primary" style="margin-top:10px;width:100%;background:#28a745;font-size:16px;padding:12px" onclick="syncCurrentRoom()">🔄 同步当前房间</button>';
     
     var ms = r.folder_mappings ? JSON.parse(r.folder_mappings)[s.f] || [] : [];
     // 只显示已映射的素材
@@ -846,12 +843,16 @@ function sfR(f) {
     s.f = f;
     var wea = document.getElementById('winEditorArea');
     if (wea) wea.style.display = 'none';
+    var btn = document.getElementById('winTabBtn');
+    if (btn) { btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = ''; }
     rmDevice();
 }
 
 function sfW() {
     s.f = 'win';
     s._selWin = null;
+    var btn = document.getElementById('winTabBtn');
+    if (btn) { btn.style.background = '#e94560'; btn.style.color = '#fff'; btn.style.borderColor = '#e94560'; }
     rmDevice();
 }
 
