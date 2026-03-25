@@ -1215,6 +1215,10 @@ app.get('/api/rooms/:id', (req, res) => {
       };
       delete config.windows; // 移除旧的 flat windows
       room.config = JSON.stringify(config);
+      // 持久化迁移到数据库
+      db.query('UPDATE rooms SET config=? WHERE id=?', [room.config, id], function(err2) {
+        if (err2) console.error('迁移持久化失败:', err2);
+      });
     }
     res.json(room);
   });
