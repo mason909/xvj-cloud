@@ -845,15 +845,21 @@ function sfR(f) {
     if (wea) wea.style.display = 'none';
     var btn = document.getElementById('winTabBtn');
     if (btn) { btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = ''; }
+    // 隐藏窗口编辑器
+    var wea2 = document.getElementById('winEditorArea');
+    if (wea2) wea2.style.display = 'none';
     rmDevice();
 }
 
 function sfW() {
+    if (!s.rf) { alert('请先选择一个房间'); return; }
     s.f = 'win';
     s._selWin = null;
+    // 直接渲染窗口编辑器（不通过 rmDevice，否则被覆盖）
+    renderWinEditorFull();
+    // 更新按钮高亮
     var btn = document.getElementById('winTabBtn');
     if (btn) { btn.style.background = '#e94560'; btn.style.color = '#fff'; btn.style.borderColor = '#e94560'; }
-    rmDevice();
 }
 
 // ============================================================================
