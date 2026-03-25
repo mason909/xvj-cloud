@@ -350,6 +350,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             message: message,
             room_id: roomId || '',
             folder_mappings: folderMappings,
+            windows: roomConfig.windows || [],   // ← Phase1 新增：多窗口配置
             debug: debugFlag,
             timestamp: Date.now()
           };
@@ -358,7 +359,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
           console.log(`📤 已推送授权+素材配置到设备 ${deviceId}, 房间: ${roomId}, 文件夹: ${JSON.stringify(folderMappings)}`);
           
           // 触发设备同步素材
-          sendSyncCommandToDevice(deviceId, roomId, folderMappings, debugFlag);
+          sendSyncCommandToDevice(deviceId, roomId, folderMappings, roomConfig);
           
         } catch (e) {
           console.error('解析folder_mappings失败:', e);
@@ -406,17 +407,18 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
 }
 
 // 发送同步命令到设备，触发素材下载
-function sendSyncCommandToDevice(deviceId, roomId, folderMappings, debug) {
+function sendSyncCommandToDevice(deviceId, roomId, folderMappings, config) {
   const topic = `xvj/device/${deviceId}/command`;
-  const payload = JSON.stringify({
+  const payload = {
     action: 'sync_room_materials',
     room_id: roomId,
     folder_mappings: folderMappings,
-    debug: debug === true,
+    windows: config.windows || [],   // ← Phase1 新增：多窗口配置
+    debug: config.debug === true,
     timestamp: Date.now()
-  });
-  mqttClient.publish(topic, payload);
-  console.log(`📦 已发送同步命令到设备 ${deviceId}, debug=${debug}`);
+  };
+  mqttClient.publish(topic, JSON.stringify(payload));
+  console.log(`📦 已发送同步命令到设备 ${deviceId}, windows=${payload.windows.length}, debug=${payload.debug}`);
 }
 
 // 远程废止设备
@@ -570,6 +572,7 @@ app.post('/api/rooms/:id/sync', (req, res) => {
             action: 'sync_room_materials',
             room_id: roomId,
             folder_mappings: folderMappings,
+            windows: config.windows || [],   // ← Phase1 新增：多窗口配置
             debug: config.debug === true
           };
           mqttClient.publish(topic, JSON.stringify(syncCmd));
@@ -577,7 +580,7 @@ app.post('/api/rooms/:id/sync', (req, res) => {
         });
 
         logAction('room_sync', 'room', { room_id: roomId, devices: sent });
-        res.json({ success: true, sent, command: { action: 'sync_room_materials', room_id: roomId, folder_mappings: folderMappings } });
+        res.json({ success: true, sent, command: { action: 'sync_room_materials', room_id: roomId, folder_mappings: folderMappings, windows: config.windows || [] } });
       }
     );
   });
@@ -1207,6 +1210,30 @@ app.put('/api/rooms/:id', (req, res) => {
     if (err) return res.status(500).json({error:err.message});
     logAction('update', 'room', { id, name, folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : undefined });
     res.json({success:true});
+  });
+});
+
+// ============================================================================
+// Phase 1 新增：多窗口配置 API
+// ============================================================================
+// 更新房间的窗口配置（快捷接口，内部读写 rooms.config.windows）
+app.put('/api/rooms/:id/windows', (req, res) => {
+  const { windows } = req.body;
+  const id = req.params.id;
+  if (!Array.isArray(windows)) {
+    return res.status(400).json({ error: 'windows 必须是数组' });
+  }
+  // 读取现有 config，合并 windows 字段
+  db.query('SELECT config FROM rooms WHERE id = ?', [id], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: '房间不存在' });
+    const existingConfig = rows[0].config ? JSON.parse(rows[0].config) : {};
+    const updatedConfig = { ...existingConfig, windows };
+    db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(updatedConfig), id], (err2) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      logAction('update_windows', 'room', { id, windows });
+      res.json({ success: true, windows });
+    });
   });
 });
 
