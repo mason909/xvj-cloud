@@ -811,10 +811,12 @@ function rmDevice() {
     var hideSync = s.f === 'win' ? 'display:none' : '';
     h += '<button class="btn btn-primary" style="margin-top:10px;width:100%;background:#28a745;font-size:16px;padding:12px;' + hideSync + '" onclick="syncCurrentRoom()">🔄 同步当前房间</button>';
     
-    g.innerHTML = h;
-    
-    // Phase2: 窗口模式下渲染编辑器
-    if (s.f === 'win') { renderWinEditorFull(); }
+    // Phase2: 窗口模式下直接渲染编辑器，不要继续构建任何HTML
+    if (s.f === 'win') {
+        g.innerHTML = h;
+        renderWinEditorFull();
+        return;
+    }
     
     // 以下是文件夹模式的内容，只在非窗口模式时渲染
     
