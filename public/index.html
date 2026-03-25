@@ -113,6 +113,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .win-save-btn{width:100%;padding:8px;background:#e94560;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;margin-top:10px}
 .win-save-btn:hover{background:#ff6b6b}
 .win-save-btn.saving{opacity:0.6;pointer-events:none}
+/* Phase2: 窗口模式时隐藏文件夹tabs和同步按钮 */
+[data-mode="win"] .tabs,
+[data-mode="win"] .sync-btn { display: none; }
 </style>
 </head>
 <body>
@@ -809,6 +812,14 @@ function rmDevice() {
     // 同步按钮
     h += '<button class="btn btn-primary" style="margin-top:10px;width:100%;background:#28a745;font-size:16px;padding:12px" onclick="syncCurrentRoom()">🔄 同步当前房间</button>';
     
+    g.innerHTML = h;
+    g.dataset.mode = s.f === 'win' ? 'win' : 'folder';
+    
+    // Phase2: 窗口模式下渲染编辑器
+    if (s.f === 'win') { renderWinEditorFull(); }
+    
+    // 以下是文件夹模式的内容，只在非窗口模式时渲染
+    
     var ms = r.folder_mappings ? JSON.parse(r.folder_mappings)[s.f] || [] : [];
     // 只显示已映射的素材
     var all = [];
@@ -855,30 +866,9 @@ function sfR(f) {
 
 function sfW() {
     if (!s.rf) { alert('请先选择一个房间'); return; }
-    if (s.f === 'win') {
-        // 已在窗口模式，切换回文件夹
-        s.f = '01';
-        var wt = document.getElementById('winToggle');
-        var ws = document.getElementById('winSlider');
-        var wk = document.getElementById('winKnob');
-        if (wt) wt.checked = false;
-        if (ws) { ws.style.background = '#444'; }
-        if (wk) { wk.style.left = '3px'; }
-        var wea = document.getElementById('winEditorArea');
-        if (wea) wea.style.display = 'none';
-        rmDevice();
-    } else {
-        // 切换到窗口模式
-        s.f = 'win';
-        s._selWin = null;
-        var wt = document.getElementById('winToggle');
-        var ws = document.getElementById('winSlider');
-        var wk = document.getElementById('winKnob');
-        if (wt) wt.checked = true;
-        if (ws) { ws.style.background = '#e94560'; }
-        if (wk) { wk.style.left = '23px'; }
-        renderWinEditorFull();
-    }
+    s.f = 'win';
+    s._selWin = null;
+    rmDevice();
 }
 
 // ============================================================================
