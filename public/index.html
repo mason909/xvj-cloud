@@ -770,7 +770,7 @@ function rmDevice() {
     var h = '<h3 style="color:#e94560">' + (r.name || '') + ' (' + (r.store_name || '') + ')</h3>';
     h += '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#888">调试模式</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="roomDebugToggle" onchange="toggleRoomDebug()" style="opacity:0;width:0;height:0"><span id="roomDebugSlider" style="position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:0.3s"></span><span id="roomDebugKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
     // Phase2: 独立窗口配置按钮（调试开关右边）
-    h += '<button class="btn btn-secondary" id="winTabBtn" style="margin-top:8px;margin-left:8px;padding:4px 12px;font-size:12px' + (s.f === 'win' ? ';background:#e94560;color:#fff;border-color:#e94560' : '') + '" onclick="sfW()">🪟 窗口</button>';
+    h += '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#888">窗口</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="winToggle" style="opacity:0;width:0;height:0" ' + (s.f === 'win' ? 'checked' : '') + ' onclick="sfW()"><span id="winSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s.f === 'win' ? '#e94560' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="winKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s.f === 'win' ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
 
     // 显示房间设备列表
     if (roomDevices.length > 0) {
@@ -843,23 +843,42 @@ function sfR(f) {
     s.f = f;
     var wea = document.getElementById('winEditorArea');
     if (wea) wea.style.display = 'none';
-    var btn = document.getElementById('winTabBtn');
-    if (btn) { btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = ''; }
-    // 隐藏窗口编辑器
-    var wea2 = document.getElementById('winEditorArea');
-    if (wea2) wea2.style.display = 'none';
+    // 重置窗口开关
+    var wt = document.getElementById('winToggle');
+    var ws = document.getElementById('winSlider');
+    var wk = document.getElementById('winKnob');
+    if (wt) wt.checked = false;
+    if (ws) { ws.style.background = '#444'; }
+    if (wk) { wk.style.left = '3px'; }
     rmDevice();
 }
 
 function sfW() {
     if (!s.rf) { alert('请先选择一个房间'); return; }
-    s.f = 'win';
-    s._selWin = null;
-    // 直接渲染窗口编辑器（不通过 rmDevice，否则被覆盖）
-    renderWinEditorFull();
-    // 更新按钮高亮
-    var btn = document.getElementById('winTabBtn');
-    if (btn) { btn.style.background = '#e94560'; btn.style.color = '#fff'; btn.style.borderColor = '#e94560'; }
+    if (s.f === 'win') {
+        // 已在窗口模式，切换回文件夹
+        s.f = '01';
+        var wt = document.getElementById('winToggle');
+        var ws = document.getElementById('winSlider');
+        var wk = document.getElementById('winKnob');
+        if (wt) wt.checked = false;
+        if (ws) { ws.style.background = '#444'; }
+        if (wk) { wk.style.left = '3px'; }
+        var wea = document.getElementById('winEditorArea');
+        if (wea) wea.style.display = 'none';
+        rmDevice();
+    } else {
+        // 切换到窗口模式
+        s.f = 'win';
+        s._selWin = null;
+        var wt = document.getElementById('winToggle');
+        var ws = document.getElementById('winSlider');
+        var wk = document.getElementById('winKnob');
+        if (wt) wt.checked = true;
+        if (ws) { ws.style.background = '#e94560'; }
+        if (wk) { wk.style.left = '23px'; }
+        renderWinEditorFull();
+    }
 }
 
 // ============================================================================
