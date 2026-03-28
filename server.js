@@ -1060,7 +1060,7 @@ app.delete("/api/materials/:id", (req, res) => {
                 db.query("UPDATE rooms SET folder_mappings=? WHERE id=?", [JSON.stringify(fm), room.id]);
                 console.log('🗑 从房间 ' + room.id + ' 根级 folder_mappings 移除素材 ' + id);
               }
-            } catch (e) { /* skip bad JSON in root */ }
+            } catch (e) { console.error("清理根级 folder_mappings 失败，房间 " + room.id + ": " + e.message); }
 
             // 2. 清理 config.scenes.A/B.folder_mappings
             if (room.config) {
@@ -1076,7 +1076,7 @@ app.delete("/api/materials/:id", (req, res) => {
                   db.query("UPDATE rooms SET config=? WHERE id=?", [JSON.stringify(cfg), room.id]);
                   console.log('🗑 从房间 ' + room.id + ' scenes 移除素材 ' + id + ' (A:' + sceneAChanged + ', B:' + sceneBChanged + ')');
                 }
-              } catch (e) { /* skip bad JSON in config */ }
+              } catch (e) { console.error("清理 scenes folder_mappings 失败，房间 " + room.id + ": " + e.message); }
             }
           }
         }
@@ -1398,39 +1398,51 @@ db.query(`CREATE TABLE IF NOT EXISTS rooms (
   UNIQUE KEY unique_store_room (store_name, name)
 )`);
 
-// 获取房间列表
+// 获取房间列表（Plan A: 内存迁移，不写DB）
 app.get('/api/rooms', (req, res) => {
   const store = req.query.store;
-  if (!store) return res.status(400).json({error:'store required'});
-  db.query('SELECT * FROM rooms WHERE store_name = ? ORDER BY id', [store], (err, results) => {
+  let sql = 'SELECT * FROM rooms';
+  let params = [];
+  if (store) { sql += ' WHERE store_name = ?'; params.push(store); }
+  db.query(sql, params, (err, results) => {
     if (err) return res.status(500).json({error:err.message});
-    res.json(results || []);
+    // 内存迁移：为每个房间构造 scenes 结构（不写 DB）
+    results.forEach(function(room) {
+      try {
+        const config = room.config ? JSON.parse(room.config) : {};
+        if (!config.scenes) {
+          config.scenes = {
+            A: { name: '第一幕', folder_mappings: room.folder_mappings ? JSON.parse(room.folder_mappings) : {}, windows: config.windows || [] },
+            B: { name: '第二幕', folder_mappings: {}, windows: [] }
+          };
+          delete config.windows;
+          room.config = JSON.stringify(config);
+        }
+      } catch(e) {}
+    });
+    res.json(results);
   });
 });
 
-// 获取单个房间
+// 获取单个房间（Plan A: 内存迁移，不写DB）
 app.get('/api/rooms/:id', (req, res) => {
   const id = req.params.id;
   db.query('SELECT * FROM rooms WHERE id = ?', [id], (err, results) => {
     if (err) return res.status(500).json({error:err.message});
     if (results.length === 0) return res.status(404).json({error:'Room not found'});
     const room = results[0];
-    // 迁移旧数据到 scenes 结构（向后兼容）
-    const config = room.config ? JSON.parse(room.config) : {};
-    if (!config.scenes) {
-      config.scenes = {
-        A: { name: '第一幕', folder_mappings: room.folder_mappings ? JSON.parse(room.folder_mappings) : {}, windows: config.windows || [] },
-        B: { name: '第二幕', folder_mappings: {}, windows: [] }
-      };
-      delete config.windows; // 移除旧的 flat windows
-      room.config = JSON.stringify(config);
-      // 持久化迁移到数据库
-      db.query('UPDATE rooms SET config=? WHERE id=?', [room.config, id], function(err2) {
-        if (err2) console.error('迁移持久化失败:', err2);
-      });
-    }
-    // 回填 scenes[A].folder_mappings 到 root folder_mappings（供旧设备 HTTP 兼容）
-    room.folder_mappings = JSON.stringify(config.scenes.A.folder_mappings);
+    // 内存迁移：为前端响应构造 scenes 结构（不写 DB）
+    try {
+      const config = room.config ? JSON.parse(room.config) : {};
+      if (!config.scenes) {
+        config.scenes = {
+          A: { name: '第一幕', folder_mappings: room.folder_mappings ? JSON.parse(room.folder_mappings) : {}, windows: config.windows || [] },
+          B: { name: '第二幕', folder_mappings: {}, windows: [] }
+        };
+        delete config.windows;
+        room.config = JSON.stringify(config);
+      }
+    } catch(e) {}
     res.json(room);
   });
 });
@@ -1452,35 +1464,74 @@ app.post('/api/rooms', (req, res) => {
 app.put('/api/rooms/:id', (req, res) => {
   const { name, folder_mappings, config } = req.body;
   const id = req.params.id;
-  // 构建动态更新
   var updates = [];
   var values = [];
   if (name !== undefined) { updates.push('name=?'); values.push(name); }
-  if (folder_mappings !== undefined) { updates.push('folder_mappings=?'); values.push(folder_mappings); }
   if (config !== undefined) {
-    // 确保 config 中有 scenes 结构（向后兼容迁移）
     var cfg = typeof config === 'string' ? JSON.parse(config) : config;
+    var rootFm = folder_mappings ? (typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings) : {};
     if (!cfg.scenes) {
       cfg.scenes = {
-        A: { name: '第一幕', folder_mappings: folder_mappings ? (typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings) : {}, windows: cfg.windows || [] },
+        A: { name: '第一幕', folder_mappings: rootFm, windows: cfg.windows || [] },
         B: { name: '第二幕', folder_mappings: {}, windows: [] }
       };
       delete cfg.windows;
+    } else {
+      cfg.scenes.A = cfg.scenes.A || { name: '第一幕', folder_mappings: {}, windows: [] };
+      cfg.scenes.B = cfg.scenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
+    }
+    // doPushToRoom: 有 folder_mappings 时同步更新 root
+    if (folder_mappings !== undefined) {
+      var fm = typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings;
+      updates.push('folder_mappings=?'); values.push(typeof folder_mappings === 'string' ? folder_mappings : JSON.stringify(fm));
     }
     updates.push('config=?'); values.push(JSON.stringify(cfg));
   }
-  if (updates.length === 0) return res.json({success:true});
+  // folder_mappings-only 分支（plan A：只更新「有变化的那个场景」，不做全量同步）
+  if (folder_mappings !== undefined && config === undefined) {
+    var newFm = typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings;
+    var newFmStr = typeof folder_mappings === 'string' ? folder_mappings : JSON.stringify(folder_mappings);
+    db.query('SELECT folder_mappings, config FROM rooms WHERE id=?', [id], (err, rows) => {
+      if (err) return res.status(500).json({error: err.message});
+      var oldRootFm = {};
+      try { oldRootFm = rows && rows[0] && rows[0].folder_mappings ? JSON.parse(rows[0].folder_mappings) : {}; } catch(e) {}
+      var cfg2 = {};
+      if (rows && rows[0] && rows[0].config) {
+        try { cfg2 = typeof rows[0].config === 'string' ? JSON.parse(rows[0].config) : rows[0].config; } catch(e) {}
+      }
+      cfg2.scenes = cfg2.scenes || {};
+      cfg2.scenes.A = cfg2.scenes.A || { name: '第一幕', folder_mappings: {}, windows: [] };
+      cfg2.scenes.B = cfg2.scenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
+      // 找出哪个场景被修改了：与 oldRootFm 相同的那个场景是被操作方
+      // oldRootFm 可能为 {}，此时无法判断，沿用保守策略：更新 A
+      var changedScene = null;
+      if (JSON.stringify(cfg2.scenes.A.folder_mappings) === JSON.stringify(oldRootFm) && JSON.stringify(newFm) !== JSON.stringify(oldRootFm)) {
+        changedScene = 'B';
+      } else if (JSON.stringify(cfg2.scenes.B.folder_mappings) === JSON.stringify(oldRootFm) && JSON.stringify(newFm) !== JSON.stringify(oldRootFm)) {
+        changedScene = 'A';
+      } else {
+        // 无法根据旧数据判断（root 为空或两边都空），保守策略：更新 A
+        changedScene = 'A';
+      }
+      cfg2.scenes[changedScene].folder_mappings = newFm;
+      db.query('UPDATE rooms SET folder_mappings=?, config=? WHERE id=?',
+        [newFmStr, JSON.stringify(cfg2), id],
+        function(err2) {
+          if (err2) return res.status(500).json({error: err2.message});
+          logAction('update', 'room', { id, folder_mappings: newFm, changedScene: changedScene });
+          res.json({success: true});
+        });
+    });
+    return;
+  }
+  if (updates.length === 0) return res.json({success: true});
   values.push(id);
   db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
-    if (err) return res.status(500).json({error:err.message});
+    if (err) return res.status(500).json({error: err.message});
     logAction('update', 'room', { id, name, folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : undefined });
-    res.json({success:true});
+    res.json({success: true});
   });
 });
-
-// ============================================================================
-// Phase 1 新增：多窗口配置 API
-// ============================================================================
 // 更新房间的窗口配置（快捷接口，支持指定场景）
 // PUT /api/rooms/:id/windows  body: { windows, sceneId }
 app.put('/api/rooms/:id/windows', (req, res) => {

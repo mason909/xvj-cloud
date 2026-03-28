@@ -741,6 +741,7 @@ function sr(id) {
         // 默认选中第一幕
         s._curScene = 'A';
         rd();
+        rmDevice();
     });
 }
 
@@ -1248,7 +1249,7 @@ async function toggleRM(mid) {
     await fetch('/api/rooms/' + s.rf, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({folder_mappings: JSON.stringify(ms)})
+        body: JSON.stringify({config: JSON.stringify(cfg)})
     });
     await lr();
 }
@@ -1416,24 +1417,30 @@ async function rmRoomMat(e, mid) {
     e.stopPropagation();
     if (!s.rf) return;
     if (!confirm('从房间移除该素材?')) return;
+    var curScene = s._curScene || 'A';
+    // 从 config.scenes[currentScene] 读取（plan A：各场景独立）
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
-    var ms = r.folder_mappings ? JSON.parse(r.folder_mappings) : {};
-    if (!ms[s.f]) ms[s.f] = [];
-    var i = ms[s.f].indexOf(mid);
-    if (i > -1) ms[s.f].splice(i, 1);
-    await fetch('/api/rooms/' + s.rf, {
+    var cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {};
+    cfg.scenes = cfg.scenes || { A: { name: '第一幕', folder_mappings: {}, windows: [] }, B: { name: '第二幕', folder_mappings: {}, windows: [] } };
+    cfg.scenes.A = cfg.scenes.A || { name: '第一幕', folder_mappings: {}, windows: [] };
+    cfg.scenes.B = cfg.scenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
+    var sceneFm = cfg.scenes[curScene].folder_mappings || {};
+    if (!sceneFm[s.f]) sceneFm[s.f] = [];
+    var i = sceneFm[s.f].indexOf(mid);
+    if (i > -1) sceneFm[s.f].splice(i, 1);
+    // 发 {config} 触发后端 config 分支，只更新当前场景
+    var resp = await fetch('/api/rooms/' + s.rf, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({folder_mappings: JSON.stringify(ms)})
+        body: JSON.stringify({config: JSON.stringify(cfg)})
     });
+    await resp.json();
     lr();
-    // 删除后自动同步设备
     doSyncRoom(s.rf);
-    // 查找素材文件名
     var mat = s.pm ? s.pm.find(function(x) { return x.id === mid; }) : null;
     if (!mat) mat = s.ms ? s.ms.find(function(x) { return x.id === mid; }) : null;
     logAction('room_remove', 'room', {
-        room_id: s.rf, room_name: r.name, store_name: r.store,
+        room_id: s.rf, room_name: r.name, store_name: r.store_name || r.store,
         folder: s.f, material_id: mid, material_name: mat ? (mat.filename || mat.name) : mid
     });
 }
@@ -1512,6 +1519,7 @@ function ds(e, store) {
         localStorage.setItem('xstores', JSON.stringify(s.stores));
         s.df = s.stores[0] || '';
         rd();
+        rmDevice();
     });
 }
 
@@ -1667,6 +1675,7 @@ function rs(e, oldName) {
         localStorage.setItem('xstores', JSON.stringify(s.stores));
         if (s.df === oldName) s.df = newName;
         rd();
+        rmDevice();
     });
 }
 
