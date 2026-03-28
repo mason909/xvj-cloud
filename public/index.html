@@ -1533,11 +1533,25 @@ async function showPushDialog() {
         h += '<option value="">无可用店铺</option>';
     }
     h += '</select></div>';
+    // 场景选择（A/B）
+    h += '<div style="margin-bottom:15px"><label style="color:#e94560;font-weight:bold;font-size:20px;display:block;margin-bottom:8px">目标场景：</label>';
+    h += '<div id="pushSceneSel" style="display:flex;gap:10px">';
+    h += '<button class="folder-btn active" id="pushSceneA" onclick="selectPushScene(\'A\')" style="flex:1;padding:10px 0;font-size:15px;border-radius:6px">第一幕</button>';
+    h += '<button class="folder-btn" id="pushSceneB" onclick="selectPushScene(\'B\')" style="flex:1;padding:10px 0;font-size:15px;border-radius:6px">第二幕</button>';
+    h += '</div></div>';
     h += '<div id="pushRoomsDiv"><p style="color:#888">加载中...</p></div>';
     document.getElementById('mc').innerHTML = h;
     document.getElementById('m').classList.add('show');
     // 加载房间
     loadPushRooms();
+}
+
+var _pushScene = 'A'; // 默认推送到第一幕
+
+function selectPushScene(scene) {
+    _pushScene = scene;
+    document.getElementById('pushSceneA').classList.toggle('active', scene === 'A');
+    document.getElementById('pushSceneB').classList.toggle('active', scene === 'B');
 }
 
 async function loadPushRooms() {
@@ -1573,14 +1587,24 @@ async function doPushToRoom() {
     var roomIds = Array.from(checks).map(function(c) { return c.value; });
     console.log('roomIds:', roomIds);
     var totalCount = 0;
+    var scene = _pushScene; // 'A' 或 'B'
     // 推送到每个房间
     for (var i = 0; i < roomIds.length; i++) {
         var roomId = roomIds[i];
-        // 获取房间当前配置
+        // 获取房间当前完整配置（包含 scenes 结构）
         var ro = await fetch('/api/rooms/' + roomId);
         var room = await ro.json();
         console.log('room:', room);
-        var folderMs = room.folder_mappings ? JSON.parse(room.folder_mappings) : {};
+        var config = room.config ? (typeof room.config === 'string' ? JSON.parse(room.config) : room.config) : {};
+        // 确保 scenes 结构存在（向后兼容）
+        if (!config.scenes) {
+            config.scenes = {
+                A: { name: '第一幕', folder_mappings: room.folder_mappings ? JSON.parse(room.folder_mappings) : {}, windows: config.windows || [] },
+                B: { name: '第二幕', folder_mappings: {}, windows: [] }
+            };
+            delete config.windows;
+        }
+        var folderMs = config.scenes[scene] ? config.scenes[scene].folder_mappings : {};
         // 添加素材ID到对应文件夹（按原文件夹归属，去重）
         s.pushMs.forEach(function(m) {
             var folder = m.folder || '01';
@@ -1589,20 +1613,21 @@ async function doPushToRoom() {
             var exists = folderMs[folder].some(function(existingId) {
                 var materialInMs = s.ms ? s.ms.find(function(x) { return x.id === existingId; }) : null;
                 var materialInPm = s.pm ? s.pm.find(function(x) { return x.id === existingId; }) : null;
-                return existingId === m.id || 
+                return existingId === m.id ||
                        (materialInMs && materialInMs.url === m.url) ||
                        (materialInPm && materialInPm.url === m.url);
             });
             if (!exists) { folderMs[folder].push(m.id); totalCount++; }
         });
-        // 保存
+        // 更新目标场景的 folder_mappings，然后保存完整 config
+        config.scenes[scene].folder_mappings = folderMs;
         await fetch('/api/rooms/' + roomId, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({folder_mappings: JSON.stringify(folderMs)})
+            body: JSON.stringify({config: JSON.stringify(config)})
         });
     }
-    alert('已推送到 ' + roomIds.length + ' 个房间，共' + totalCount + '个素材');
+    alert('已推送到 ' + roomIds.length + ' 个房间（' + (scene === 'A' ? '第一幕' : '第二幕') + '），共' + totalCount + '个素材');
     document.getElementById('m').classList.remove('show');
     // 刷新当前显示
     if (s.df) lr();
@@ -1620,7 +1645,9 @@ async function doPushToRoom() {
         room_ids: roomIds, room_names: roomNames, store_name: pushStore,
         material_ids: s.pushMs.map(function(m) { return m.id; }),
         material_names: s.pushMs.map(function(m) { return m.filename || m.name; }),
-        total: totalCount
+        total: totalCount,
+        scene: scene,
+        scene_name: scene === 'A' ? '第一幕' : '第二幕'
     });
 }
 

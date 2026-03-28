@@ -393,7 +393,8 @@ function handleDeviceRegister(deviceId, data) {
 // 发送授权响应
 function sendAuthResponse(deviceId, authorized, message, roomId) {
   // debug: sendAuthResponse
-  const topic = `xvj/device/${deviceId}/command`;
+  // FIX: 改为 xvj/auth/response，与 APP 订阅的 AUTH_TOPIC 对应
+  const topic = `xvj/auth/response`;
   
   // 如果授权成功，获取房间的素材配置
   let folderMappings = {};
@@ -1072,24 +1073,8 @@ app.post("/api/upload", (req, res) => {
   const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, __dirname + "/public/uploads/" + folder),
     filename: (req, file, cb) => {
-      // 处理中文文件名编码问题
-      let filename = file.originalname;
-      if (filename) {
-        try {
-          // 将乱码字符串的每个字符作为字节处理，转换为正确的UTF-8
-          const bytes = [];
-          for (let i = 0; i < filename.length; i++) {
-            bytes.push(filename.charCodeAt(i) & 0xFF);
-          }
-          const fixed = Buffer.from(bytes).toString('utf8');
-          if (/[\u4e00-\u9fa5]/.test(fixed)) {
-            filename = fixed;
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
-      cb(null, filename);
+      // 文件名直接使用浏览器传递的原始 UTF-8 字符串，无需额外编解码
+      cb(null, file.originalname);
     }
   });
   const upload = multer({storage}).single("file");
@@ -1097,39 +1082,101 @@ app.post("/api/upload", (req, res) => {
     if (err) return res.status(500).json({error:err.message});
     if (!req.file) return res.status(400).json({error:"no file"});
     const id = uuidv4();
-    let fname = req.file.originalname || 'file_' + Date.now();
-    const type = fname.endsWith(".mp4") || req.file.mimetype.startsWith("video") ? "video" : 
-                 fname.endsWith(".gif") ? "gif" : 
+    const fullFilename = req.file.originalname || 'file_' + Date.now();
+    const type = fullFilename.endsWith(".mp4") || req.file.mimetype.startsWith("video") ? "video" : 
+                 fullFilename.endsWith(".gif") ? "gif" : 
                  req.file.mimetype.startsWith("image") ? "image" : "other";
+    const isVideo = type === "video";
+    const isImage = type === "image";
     let thumbnail = null;
     let resolution = null;
     let md5 = null;
-    if (type === "video") {
-      const thumbPath = __dirname + "/public/uploads/" + folder + "/" + fname.replace(".mp4",".jpg");
+
+    // 视频：提取缩略图、分辨率、MD5
+    if (isVideo) {
+      const thumbPath = __dirname + "/public/uploads/" + folder + "/" + fullFilename.replace(".mp4", ".jpg");
       try { 
-        require('child_process').execSync("ffmpeg -i '" + __dirname + "/public/uploads/"+folder+"/"+fname + "' -ss 00:00:01 -vframes 1 -q:v 2 -y '" + thumbPath + "'", {stdio:"ignore"});
-        thumbnail = "/uploads/"+folder+"/"+fname.replace(".mp4",".jpg");
-        const ffprobe = require('child_process').execSync("ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 '" + __dirname + "/public/uploads/"+folder+"/"+fname + "'", {encoding:"utf8"});
+        require('child_process').execSync(
+          "ffmpeg -i '" + __dirname + "/public/uploads/" + folder + "/" + fullFilename + "' -ss 00:00:01 -vframes 1 -q:v 2 -y '" + thumbPath + "'",
+          {stdio:"ignore"}
+        );
+        thumbnail = "/uploads/" + folder + "/" + fullFilename.replace(".mp4", ".jpg");
+      } catch(e) {}
+
+      try {
+        const ffprobe = require('child_process').execSync(
+          "ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 '" + __dirname + "/public/uploads/" + folder + "/" + fullFilename + "'",
+          {encoding:"utf8"}
+        );
         resolution = ffprobe.trim();
       } catch(e) {}
-      
-      // 计算MD5
+
       try {
         const fs = require('fs');
-        const fileBuffer = fs.readFileSync(__dirname + "/public/uploads/" + folder + "/" + fname);
-        const crypto = require('crypto');
-        md5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+        const fileBuffer = fs.readFileSync(__dirname + "/public/uploads/" + folder + "/" + fullFilename);
+        md5 = require('crypto').createHash('md5').update(fileBuffer).digest('hex');
       } catch(e) {}
     }
-    const url = "/uploads/" + folder + "/" + fname;
-    db.query("INSERT INTO materials (id,name,url,type,folder,thumbnail,resolution) VALUES (?,?,?,?,?,?,?)",
-      [id, fname, url, type, folder, thumbnail, resolution],
+
+    const url = "/uploads/" + folder + "/" + fullFilename;
+    const displayName = fullFilename.replace(/\.[^.]+$/, ''); // 前端显示的素材名（去扩展名）
+
+    // 字段说明：
+    //   name       = displayName，前端展示用
+    //   filename   = fullFilename，物理文件名，用于准确定位文件
+    //   url        = 访问路径，拼接 name 用于下载/预览
+    db.query(
+      "INSERT INTO materials (id,name,url,type,folder,thumbnail,resolution,filename) VALUES (?,?,?,?,?,?,?,?)",
+      [id, displayName, url, type, folder, thumbnail, resolution, fullFilename],
       e => {
         if (e) return res.status(500).json({error:e.message});
-        logAction('upload', 'material', {id, name: fname, folder, type, md5});
-        res.json({id, name: fname, url, type, folder, thumbnail, resolution, md5});
+        logAction('upload', 'material', {id, name: displayName, folder, type, filename: fullFilename, md5});
+        res.json({id, name: displayName, url, type, folder, thumbnail, resolution, filename: fullFilename, md5});
       }
     );
+  });
+});
+
+// 临时修复：修正 materials 表中的乱码记录 + 补全空 name
+app.get("/api/admin/fix-garbled", (req, res) => {
+  const fs = require('fs');
+  const { execSync } = require('child_process');
+  const uploadDir = __dirname + '/public/uploads/01/';
+  let fixed = 0, nameFixed = 0;
+  db.query('SELECT id, name, url, thumbnail FROM materials', (err, rows) => {
+    if (err) return res.json({error: err.message});
+    const files = fs.readdirSync(uploadDir).filter(f => f.endsWith('.mp4'));
+
+    // 1. 修复乱码 URL/Name（双重编码的记录）
+    const garbled = rows.filter(r => r.url && (r.url.includes('%3') || r.name.includes('%3')));
+    garbled.forEach(r => {
+      const match = files.find(f => {
+        const base = f.replace('.mp4', '');
+        return base.startsWith('3') && base.includes('月');
+      });
+      if (match) {
+        const correctUrl = '/uploads/01/' + match;
+        const correctName = match.replace(/\.[^.]+$/, '');
+        const correctThumb = '/uploads/01/' + match.replace('.mp4', '.jpg');
+        try { execSync(`ffmpeg -i '${uploadDir}${match}' -ss 00:00:01 -vframes 1 -q:v 2 -y '${uploadDir}${match.replace('.mp4','.jpg')}'`, {stdio:'ignore'}); } catch(e) {}
+        db.query('UPDATE materials SET name=?, url=?, thumbnail=? WHERE id=?',
+          [correctName, correctUrl, correctThumb, r.id], (e2) => { if (!e2) fixed++; });
+      }
+    });
+
+    // 2. 补全空 name（从 URL 提取文件名）
+    rows.forEach(r => {
+      if ((!r.name || r.name === '') && r.url) {
+        const fname = decodeURIComponent(r.url.split('/').pop().replace(/\.[^.]+$/, ''));
+        if (fname && fname.length > 0) {
+          db.query('UPDATE materials SET name=? WHERE id=?', [fname, r.id], (e2) => {
+            if (!e2) nameFixed++;
+          });
+        }
+      }
+    });
+
+    setTimeout(() => res.json({fixed, nameFixed, garbled: garbled.length}), 2000);
   });
 });
 
