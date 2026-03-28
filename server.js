@@ -1021,6 +1021,17 @@ app.get("/api/materials", (req, res) => {
   db.query("SELECT * FROM materials", (err, rows) => res.json(err ? [] : rows));
 });
 
+// 从指定 folder_mappings 对象中移除素材 ID，返回是否改变
+function removeFromMappings(mappings, id) {
+  let changed = false;
+  for (const folder of Object.keys(mappings)) {
+    const before = mappings[folder].length;
+    mappings[folder] = (mappings[folder] || []).filter(item => item !== id);
+    if (mappings[folder].length !== before) changed = true;
+  }
+  return changed;
+}
+
 app.delete("/api/materials/:id", (req, res) => {
   const id = req.params.id;
   const fs = require('fs');
@@ -1035,23 +1046,38 @@ app.delete("/api/materials/:id", (req, res) => {
           try { fs.unlinkSync(base + f); } catch (e) { /* ignore */ }
         }
       }
-      // 从所有房间的 folder_mappings 中移除该素材 ID
-      db.query("SELECT id, folder_mappings FROM rooms", [], (err2, rooms) => {
+      // 从所有房间的 folder_mappings（根级 + scenes A/B）中移除该素材 ID
+      db.query("SELECT id, folder_mappings, config FROM rooms", (err2, rooms) => {
         if (!err2 && rooms) {
           for (const room of rooms) {
+            let rootChanged = false, sceneAChanged = false, sceneBChanged = false;
+
+            // 1. 清理根级 folder_mappings
             try {
               const fm = JSON.parse(room.folder_mappings || '{}');
-              let didChange = false;
-              for (const folder of Object.keys(fm)) {
-                const before = fm[folder].length;
-                fm[folder] = (fm[folder] || []).filter(item => item !== id);
-                if (fm[folder].length !== before) didChange = true;
-              }
-              if (didChange) {
+              rootChanged = removeFromMappings(fm, id);
+              if (rootChanged) {
                 db.query("UPDATE rooms SET folder_mappings=? WHERE id=?", [JSON.stringify(fm), room.id]);
-                console.log('🗑 从房间 ' + room.id + ' 的 folder_mappings 中移除素材 ' + id);
+                console.log('🗑 从房间 ' + room.id + ' 根级 folder_mappings 移除素材 ' + id);
               }
-            } catch (e) { /* skip bad JSON */ }
+            } catch (e) { /* skip bad JSON in root */ }
+
+            // 2. 清理 config.scenes.A/B.folder_mappings
+            if (room.config) {
+              try {
+                const cfg = typeof room.config === 'string' ? JSON.parse(room.config) : { ...room.config };
+                if (cfg.scenes && cfg.scenes.A && cfg.scenes.A.folder_mappings) {
+                  sceneAChanged = removeFromMappings(cfg.scenes.A.folder_mappings, id);
+                }
+                if (cfg.scenes && cfg.scenes.B && cfg.scenes.B.folder_mappings) {
+                  sceneBChanged = removeFromMappings(cfg.scenes.B.folder_mappings, id);
+                }
+                if (sceneAChanged || sceneBChanged) {
+                  db.query("UPDATE rooms SET config=? WHERE id=?", [JSON.stringify(cfg), room.id]);
+                  console.log('🗑 从房间 ' + room.id + ' scenes 移除素材 ' + id + ' (A:' + sceneAChanged + ', B:' + sceneBChanged + ')');
+                }
+              } catch (e) { /* skip bad JSON in config */ }
+            }
           }
         }
       });
