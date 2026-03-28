@@ -1082,38 +1082,39 @@ app.post("/api/upload", (req, res) => {
     if (err) return res.status(500).json({error:err.message});
     if (!req.file) return res.status(400).json({error:"no file"});
     const id = uuidv4();
-    let fname = req.file.originalname || 'file_' + Date.now();
-    const type = fname.endsWith(".mp4") || req.file.mimetype.startsWith("video") ? "video" : 
-                 fname.endsWith(".gif") ? "gif" : 
+    // multer 直接存储原始文件名（UTF-8 不需要额外编码处理）
+    const fullFilename = req.file.originalname || 'file_' + Date.now();
+    const displayName = fullFilename.replace(/\.[^.]+$/, ''); // 去扩展名后的纯文件名
+    const type = fullFilename.endsWith(".mp4") || req.file.mimetype.startsWith("video") ? "video" :
+                 fullFilename.endsWith(".gif") ? "gif" :
                  req.file.mimetype.startsWith("image") ? "image" : "other";
     let thumbnail = null;
     let resolution = null;
     let md5 = null;
     if (type === "video") {
-      const thumbPath = __dirname + "/public/uploads/" + folder + "/" + fname.replace(".mp4",".jpg");
-      try { 
-        require('child_process').execSync("ffmpeg -i '" + __dirname + "/public/uploads/"+folder+"/"+fname + "' -ss 00:00:01 -vframes 1 -q:v 2 -y '" + thumbPath + "'", {stdio:"ignore"});
-        thumbnail = "/uploads/"+folder+"/"+fname.replace(".mp4",".jpg");
-        const ffprobe = require('child_process').execSync("ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 '" + __dirname + "/public/uploads/"+folder+"/"+fname + "'", {encoding:"utf8"});
+      const thumbPath = __dirname + "/public/uploads/" + folder + "/" + fullFilename.replace(".mp4",".jpg");
+      try {
+        require('child_process').execSync("ffmpeg -i '" + __dirname + "/public/uploads/"+folder+"/"+fullFilename + "' -ss 00:00:01 -vframes 1 -q:v 2 -y '" + thumbPath + "'", {stdio:"ignore"});
+        thumbnail = "/uploads/"+folder+"/"+fullFilename.replace(".mp4",".jpg");
+        const ffprobe = require('child_process').execSync("ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 '" + __dirname + "/public/uploads/"+folder+"/"+fullFilename + "'", {encoding:"utf8"});
         resolution = ffprobe.trim();
       } catch(e) {}
-      
+
       // 计算MD5
       try {
         const fs = require('fs');
-        const fileBuffer = fs.readFileSync(__dirname + "/public/uploads/" + folder + "/" + fname);
+        const fileBuffer = fs.readFileSync(__dirname + "/public/uploads/" + folder + "/" + fullFilename);
         const crypto = require('crypto');
         md5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
       } catch(e) {}
     }
-    const url = "/uploads/" + folder + "/" + fname;
-    const name = fname.replace(/\.[^.]+$/, ''); // 用文件名（去扩展名）作为素材名
-    db.query("INSERT INTO materials (id,name,url,type,folder,thumbnail,resolution) VALUES (?,?,?,?,?,?,?)",
-      [id, name, url, type, folder, thumbnail, resolution],
+    const url = "/uploads/" + folder + "/" + fullFilename;
+    db.query("INSERT INTO materials (id,name,url,type,folder,thumbnail,resolution,filename) VALUES (?,?,?,?,?,?,?,?)",
+      [id, displayName, url, type, folder, thumbnail, resolution, fullFilename],
       e => {
         if (e) return res.status(500).json({error:e.message});
-        logAction('upload', 'material', {id, name, folder, type, md5});
-        res.json({id, name, url, type, folder, thumbnail, resolution, md5});
+        logAction('upload', 'material', {id, name: displayName, folder, type, md5});
+        res.json({id, name: displayName, url, type, folder, thumbnail, resolution, md5});
       }
     );
   });
