@@ -229,7 +229,7 @@ function doSyncRoom(roomId) {
     var m = document.getElementById('m');
     mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">📡 发送中...</div>';
     m.classList.add('show');
-    fetch('/api/rooms/' + roomId + '/sync', { method: 'POST' })
+    fetch('/api/rooms/' + roomId + '/sync?scene=' + (s._curScene || 'A'), { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function(result) {
             if (result.success) {
@@ -273,6 +273,22 @@ function createPlayer(url, type, container) {
         container.appendChild(img);
     }
 }
+
+/* ============================================================
+ * 【代码索引】搜索 "【F-XX】" 快速定位
+ * ─────────────────────────────────────────────────────────
+ * 【F-01】全局状态对象 var s = {...}
+ * 【F-02】菜单切换 sp(p) & 各页初始化
+ * 【F-03】素材管理页 lm() / lp() / lr()
+ * 【F-04】设备管理 ld() & 未注册设备 lu()
+ * 【F-05】授权 & 设备绑定 ar() / bindDev()
+ * 【F-06】房间视图 sr() & rmDevice()
+ * 【F-07】素材推送 showPushDialog() & doPushToRoom()
+ * 【F-08】房间内素材 doSyncRoom() & rmRoomMat()
+ * 【F-09】窗口编辑器 renderWinEditorFull() & saveWindows()
+ * 【F-10】日志 & 操作记录 logAction() | loadDeviceLogs()
+ * ─────────────────────────────────────────────────────────
+ */
 
 var s = {
     folders: JSON.parse(localStorage.getItem('xfolds') || '{}'),
@@ -324,6 +340,8 @@ function ub(p) {
     }
 }
 
+
+// 【F-03】 素材管理页初始化 // async function lm()
 async function lm() {
     var r = await fetch('/api/materials');
     s.ms = await r.json();
@@ -557,6 +575,8 @@ async function cp2p(id) {
 }
 
 // ==================== 设备管理 ====================
+
+// 【F-04b】 设备列表 // async function ld()
 async function ld() {
     var r = await fetch('/api/devices');
     s.ds = await r.json();
@@ -578,6 +598,8 @@ async function ld() {
 }
 
 // 预设素材
+
+// 【F-03b】 预设素材页初始化 // async function lp()
 async function lp() {
     var r = await fetch('/api/preset/materials');
     s.pm = await r.json();
@@ -629,6 +651,8 @@ async function dpm(e, id) {
     fetch('/api/preset/materials/' + id, {method: 'DELETE'}).then(function() { lp(); lm(); });
 }
 
+
+// 【F-04】 未注册设备 // async function lu()
 async function lu() {
     var r = await fetch('/api/unregistered');
     var ds = await r.json();
@@ -655,6 +679,8 @@ async function lu() {
     g.innerHTML = h;
 }
 
+
+// 【F-05】 设备授权 // async function ar()
 async function ar(id) {
     var store = document.getElementById('store_' + id).value;
     
@@ -715,6 +741,8 @@ async function unbindRoom(id) {
 
 
 // ==================== 房间管理 ====================
+
+// 【F-06】 房间列表刷新 // async function lr()
 async function lr() {
     if (!s.df) return;
     var r = await fetch('/api/rooms?store=' + encodeURIComponent(s.df));
@@ -730,6 +758,8 @@ async function lr() {
     rd();
 }
 
+
+// 【F-06b】 选择房间渲染 // function sr(id)
 function sr(id) {
     s.rf = id;
     localStorage.setItem('xroom', id);
@@ -896,7 +926,7 @@ function rmDevice() {
 //     x: Number, y: Number, width: Number, height: Number,  // 位置和尺寸（px）
 //     zIndex: Number,     // 层级，越大越上层
 //     aspectRatio: String | null,  // 可选，如 "16:9"
-//     content: { type: 'COLOR'|'VIDEO'|'HDMI'|'IMAGE', ... }
+//     content: { type: 'COLOR'|'SCENE_A'|'SCENE_B'|'HDMI'|'IMAGE', ... }
 //   }
 //
 // 设备开机行为（APK 逻辑）：
@@ -963,6 +993,8 @@ var _dragging = null;
  *   - 场景 A/B 标签卡切换
  *   - 保存并推送按钮
  */
+
+// 【F-09】 窗口编辑器 // function renderWinEditorFull()
 function renderWinEditorFull() {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
@@ -991,18 +1023,16 @@ function renderWinEditorFull() {
     h += '<div class="win-prop-panel" id="winPropPanel"><div class="win-prop-title">属性</div>';
     if (s._selWin) {
         var w = s._selWin, ct = w.content || {};
-        var ctType = ct.type || 'video_input';
+        var ctType = ct.type || 'SCENE_A';
         h += '<div class="win-prop-row"><label>ID</label><input value="' + w.id + '" readonly style="color:#555;background:#1a1a1a"></div>';
         h += '<div class="win-prop-row"><label>名称</label><input id="wpName" value="' + (w.name||'') + '" oninput="updWinField(\'name\',this.value)"></div>';
         h += '<div class="win-content-type-row">';
-        h += '<button class="win-content-type-btn' + (ctType==='video_input'?' active':'') + '" onclick="setWinContentType(\'video_input\')">输入源</button>';
+        h += '<button class="win-content-type-btn' + ('SCENE_A'===ctType?' active':'') + '" onclick="setWinContentType(\'SCENE_A\')">第一幕</button>';
+        h += '<button class="win-content-type-btn' + (ctType==='SCENE_B'?' active':'') + '" onclick="setWinContentType(\'SCENE_B\')">第二幕</button>';
+        h += '<button class="win-content-type-btn' + (ctType==='HDMI'?' active':'') + '" onclick="setWinContentType(\'HDMI\')">HDMI</button>';
         h += '<button class="win-content-type-btn' + (ctType==='color'?' active':'') + '" onclick="setWinContentType(\'color\')">测试背景</button>';
         h += '</div>';
-        if (ctType === 'video_input') {
-            h += '<div class="win-prop-row"><label>输入</label><select id="wpInputSel" onchange="updWinContent(\'inputIndex\',parseInt(this.value))">';
-            for (var ii = 0; ii < 4; ii++) { var labels = ['第一幕','第二幕','点歌机','HDMI 4']; h += '<option value="' + ii + '"' + (ct.inputIndex===ii?' selected':'') + '>' + labels[ii] + '</option>'; }
-            h += '</select></div>';
-        } else if (ctType === 'color') {
+        if (ctType === 'color') {
             h += '<div class="win-prop-row"><label>颜色</label><input type="color" id="wpColor" value="' + (ct.color||'#000000') + '" oninput="updWinContent(\'color\',this.value)" style="width:60px;height:28px;border-radius:4px;border:1px solid #3a3a3a;background:#2a2a2a;cursor:pointer"></div>';
         }
         h += '<div class="win-prop-row"><label>位置 X</label><input type="number" id="wpX" value="' + (w.x||0) + '" oninput="updWinField(\'x\',parseInt(this.value)||0)"></div>';
@@ -1047,7 +1077,7 @@ function renderWinCanvas(wins) {
         var rh = (w.height||180) * _canvasScale;
         var sel = w.id === selWinId;
         var ct = w.content || {};
-        var typeLabel = ct.type === 'video_input' ? '📷' : (ct.type === 'color' ? '■ ' + (ct.color||'') : '▶');
+        var typeLabel = 'SCENE_A'===ct.type ? '第一幕' : (ct.type === 'SCENE_B' ? '🎬 第二幕' : (ct.type === 'HDMI' ? '📷 HDMI' : (ct.type === 'color' ? '■ ' + (ct.color||'') : '▶')));
         var el = document.createElement('div');
         el.className = 'win-rect' + (sel ? ' selected' : '');
         el.style.cssText = 'position:absolute;left:' + rx + 'px;top:' + ry + 'px;width:' + rw + 'px;height:' + rh + 'px;z-index:' + (w.zIndex||1) + ';box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:20px;min-height:20px;user-select:none' + (sel ? ';border-color:#e94560;background:rgba(233,69,96,0.18)' : '');
@@ -1135,7 +1165,7 @@ function addWin() {
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var wins = cfg.windows || [];
     var newId = 'win_' + Date.now();
-    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: 'video_input', inputIndex: 0 }, zIndex: wins.length + 1 });
+    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: 'SCENE_A' }, zIndex: wins.length + 1 });
     var curS = s._curScene || 'A';
     if (!cfg.scenes) { cfg.scenes = { A:{name:'第一幕',folder_mappings:{},windows:[]}, B:{name:'第二幕',folder_mappings:{},windows:[]} }; }
     cfg.scenes[curS].windows = wins;
@@ -1192,7 +1222,6 @@ function updWinContent(field, value) {
 function setWinContentType(type) {
     if (!s._selWin) return;
     s._selWin.content = { type: type };
-    if (type === 'video_input') s._selWin.content.inputIndex = 0;
     var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w.content = Object.assign({}, s._selWin.content);
@@ -1413,6 +1442,8 @@ async function logAction(action, type, detail) {
     } catch(e) {}
 }
 
+
+// 【F-08】 删除房间素材（发MQTT）// async function rmRoomMat()
 async function rmRoomMat(e, mid) {
     e.stopPropagation();
     if (!s.rf) return;
@@ -1435,6 +1466,19 @@ async function rmRoomMat(e, mid) {
         body: JSON.stringify({config: JSON.stringify(cfg)})
     });
     await resp.json();
+    // 通知设备立即删除本地素材文件（必须等完成再刷新UI）
+    try {
+        var delR = await fetch('/api/rooms/' + s.rf + '/materials/' + mid + '?folder=' + s.f + '&scene=' + (s._curScene || 'A'), { method: 'DELETE' });
+        var delD = await delR.json();
+        if (delD.success) {
+            mc.innerHTML = '<div style="padding:30px;text-align:center;color:#4caf50">✅ 删除指令已发送（' + (delD.sent||0) + '台设备收到），设备将自动同步</div>';
+        } else {
+            mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 删除失败: ' + (delD.error||'') + '</div>';
+        }
+    } catch(e) {
+        mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 删除请求失败: ' + e.message + '</div>';
+    }
+    setTimeout(function() { m.classList.remove('show'); }, 2000);
     lr();
     doSyncRoom(s.rf);
     var mat = s.pm ? s.pm.find(function(x) { return x.id === mid; }) : null;
@@ -1575,8 +1619,8 @@ async function loadPushRooms() {
         var h = '<div><label style="color:#e94560;font-weight:bold;font-size:20px">选择房间（可多选）：</label></div>';
         rooms.forEach(function(room) {
             h += '<label style="display:block;padding:14px;border:1px solid #444;margin:8px 0;border-radius:4px;cursor:pointer;background:#2a2a2a;font-size:16px">';
-            h += '<input type="checkbox" class="room-check" value="' + room.id + '" data-name="' + room.name + '" style="margin-right:10px;width:18px;height:18px">';
-            h += '<span>' + room.name + '</span>';
+            h += '<input type="checkbox" class="room-check" value="' + room.id + '" data-name="' + String(room.name).replace(/"/g, '&quot;') + '" style="margin-right:10px;width:18px;height:18px">';
+            h += '<span>' + String(room.name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
             h += '</label>';
         });
         h += '<div style="margin-top:20px"><button class="btn btn-primary" onclick="doPushToRoom()">确认推送</button> <button class="btn" onclick="document.getElementById(\'m\').classList.remove(\'show\')">取消</button></div>';
@@ -1634,8 +1678,10 @@ async function doPushToRoom() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({config: JSON.stringify(config)})
         });
+        // 立即通知房间内所有设备下载新素材
+        await fetch('/api/rooms/' + roomId + '/sync', { method: 'POST' });
     }
-    alert('已推送到 ' + roomIds.length + ' 个房间（' + (scene === 'A' ? '第一幕' : '第二幕') + '），共' + totalCount + '个素材');
+    alert('已推送到 ' + roomIds.length + ' 个房间（' + (scene === 'A' ? '第一幕' : '第二幕') + '），共' + totalCount + '个素材，已通知设备同步');
     document.getElementById('m').classList.remove('show');
     // 刷新当前显示
     if (s.df) lr();

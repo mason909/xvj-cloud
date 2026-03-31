@@ -4,6 +4,19 @@
  * 架构：Node.js + Express + MySQL + MQTT
  * 端口：3000
  *
+ * 【代码索引】编辑时搜索 "【S-XX】" 快速定位
+ * ─────────────────────────────────────────────
+ * 【S-01】数据库初始化 & MySQL 连接池
+ * 【S-02】素材管理 API（/api/materials）
+ * 【S-03】预设素材 API（/api/preset/*）
+ * 【S-04】房间 CRUD API（/api/rooms*）
+ * 【S-05】授权 & 设备管理 API（/api/devices*）
+ * 【S-06】MQTT 消息处理 & 发送（mqttClient）
+ * 【S-07】素材同步 & 删除（DELETE /api/rooms/:roomId/materials/:materialId）
+ * 【S-08】日志 & 操作记录（logAction）
+ * 【S-09】静态文件 & 前端页面
+ * ─────────────────────────────────────────────
+ *
  * 核心表：
  *   materials          - 素材库（原始视频文件）
  *   preset_materials   - 预设素材（从素材库复制，可跨房间复用）
@@ -484,7 +497,8 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
 }
 
 // 发送同步命令到设备，触发素材下载
-function sendSyncCommandToDevice(deviceId, roomId, folderMappings, config) {
+// sendSyncCommandToDevice: mqttId = fingerprint（APK 订阅的 topic），若没有则 fallback 到 deviceId
+function sendSyncCommandToDevice(mqttId, roomId, folderMappings, config) {
   // scenes 结构迁移
   var scenes = {};
   if (config && config.scenes) {
@@ -507,6 +521,52 @@ function sendSyncCommandToDevice(deviceId, roomId, folderMappings, config) {
   };
   mqttClient.publish(topic, JSON.stringify(payload));
   console.log(`📦 已发送同步命令到设备 ${deviceId}, scenes=A/B, debug=${payload.debug}`);
+}
+
+/**
+ * 向指定房间的所有在线授权设备推送 sync_room_materials 命令
+ * @param {string} roomId - 房间ID
+ */
+function notifyRoomDevicesOfSync(roomId) {
+  db.query(
+    'SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
+    [roomId],
+    (err, devices) => {
+      if (err || !devices || devices.length === 0) return;
+      db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [roomId], (err2, rows) => {
+        if (err2 || !rows || rows.length === 0) return;
+        const { folder_mappings, config } = rows[0];
+        const cfg = config ? JSON.parse(config) : {};
+        // 统一从 scenes.A/B.folder_mappings 取（独立场景模式）
+        const fmA = (cfg.scenes && cfg.scenes.A && cfg.scenes.A.folder_mappings)
+          ? cfg.scenes.A.folder_mappings : {};
+        const fmB = (cfg.scenes && cfg.scenes.B && cfg.scenes.B.folder_mappings)
+          ? cfg.scenes.B.folder_mappings : {};
+        const scenes = cfg.scenes || {
+          A: { name: '第一幕', folder_mappings: fmA, windows: [] },
+          B: { name: '第二幕', folder_mappings: fmB, windows: [] }
+        };
+        devices.forEach(({ id: deviceId, fingerprint }) => {
+          try {
+            const mqttId = fingerprint || deviceId;
+            const topic = `xvj/device/${fingerprint || deviceId}/command`;
+            const payload = {
+              action: 'sync_room_materials',
+              room_id: roomId,
+              scenes: scenes,
+              folder_mappings: fmA,
+              debug: cfg.debug === true,
+              timestamp: Date.now()
+            };
+            mqttClient.publish(topic, JSON.stringify(payload));
+            console.log(`📦 [notify] 已推送 sync 到设备 ${deviceId} (房间 ${roomId})`);
+          } catch (e) {
+            console.error(`[notify] MQTT 发布失败，设备 ${deviceId}: ${e.message}`);
+          }
+        });
+      });
+    }
+  );
 }
 
 // 远程废止设备
@@ -609,7 +669,8 @@ app.post('/api/devices/:id/command', (req, res) => {
           return res.status(400).json({ error: '设备未绑定房间' });
         }
         const roomConfig = config ? JSON.parse(config) : {};
-        const topic = `xvj/device/${deviceId}/command`;
+        const mqttId = fingerprint || deviceId;
+        const topic = `xvj/device/${fingerprint || deviceId}/command`;
         const syncCmd = {
           action: 'sync_room_materials',
           room_id: room_id,
@@ -624,13 +685,16 @@ app.post('/api/devices/:id/command', (req, res) => {
     return;
   }
 
-  const topic = `xvj/device/${deviceId}/command`;
+  const mqttId = fingerprint || deviceId;
+  const topic = `xvj/device/${fingerprint || deviceId}/command`;
   mqttClient.publish(topic, JSON.stringify(cmd));
   logAction('sync', 'device', { device_id: deviceId, command: cmd });
   res.json({ success: true, command: cmd });
 });
 
 // 房间同步：向指定房间的所有授权设备发送 sync_room_materials
+
+// 【S-07f】 房间同步：同步 scenes A+B 的完整 folder_mappings（外部信号决定播放哪个文件夹，设备必须同时有A和B的数据）
 app.post('/api/rooms/:id/sync', (req, res) => {
   const roomId = req.params.id;
 
@@ -639,8 +703,12 @@ app.post('/api/rooms/:id/sync', (req, res) => {
     if (err || !rows || rows.length === 0) {
       return res.status(404).json({ error: '房间不存在' });
     }
-    const folderMappings = rows[0].folder_mappings ? JSON.parse(rows[0].folder_mappings) : {};
     const config = rows[0].config ? JSON.parse(rows[0].config) : {};
+    let folderMappings = config.scenes?.A?.folder_mappings || {};
+    // fallback 到根级 folder_mappings（兼容旧数据）
+    if (Object.keys(folderMappings).length === 0 && rows[0].folder_mappings) {
+      try { folderMappings = JSON.parse(rows[0].folder_mappings); } catch(e) {}
+    }
 
     // 迁移旧数据到 scenes 结构
     if (!config.scenes) {
@@ -651,9 +719,22 @@ app.post('/api/rooms/:id/sync', (req, res) => {
       delete config.windows;
     }
 
+    // 合并 Scene A 和 Scene B 的 folder_mappings（外部信号决定播放哪个文件夹，设备必须同时有A和B的数据）
+    const fmA = config.scenes?.A?.folder_mappings || {};
+    const fmB = config.scenes?.B?.folder_mappings || {};
+    const allFolderMappings = {};
+    Object.keys(fmA).forEach(k => { allFolderMappings[k] = [...(fmA[k] || [])]; });
+    Object.keys(fmB).forEach(k => {
+      if (allFolderMappings[k]) {
+        [...(fmB[k] || [])].forEach(id => { if (!allFolderMappings[k].includes(id)) allFolderMappings[k].push(id); });
+      } else {
+        allFolderMappings[k] = [...(fmB[k] || [])];
+      }
+    });
+
     // 查房间下所有已授权的设备
     db.query(
-      'SELECT id FROM devices WHERE room_id = ? AND authorized = 1',
+      'SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
       [roomId],
       (err2, devices) => {
         if (err2) return res.status(500).json({ error: err2.message });
@@ -663,13 +744,13 @@ app.post('/api/rooms/:id/sync', (req, res) => {
         }
 
         let sent = 0;
-        devices.forEach((d) => {
-          const topic = `xvj/device/${d.id}/command`;
+        devices.forEach((d) => { const mqttId = d.fingerprint || d.id;
+          const topic = `xvj/device/${mqttId}/command`;
           const syncCmd = {
             action: 'sync_room_materials',
             room_id: roomId,
-            scenes: config.scenes,   // 两套场景数据
-            folder_mappings: config.scenes.A.folder_mappings, // APK 用这个触发 HTTP 同步
+            scenes: config.scenes,           // 完整两套场景（APK 渲染窗口用）
+            folder_mappings: allFolderMappings, // 合并后的完整列表（设备根据外部信号从A和B中各取对应文件夹）
             debug: config.debug === true
           };
           mqttClient.publish(topic, JSON.stringify(syncCmd));
@@ -683,6 +764,104 @@ app.post('/api/rooms/:id/sync', (req, res) => {
   });
 });
 
+// 【S-07d】从房间删除素材，只从当前操作的那个场景删除（两幕完全独立）
+// 流程：清理 scene[curScene].folder_mappings → UPDATE DB → 发 MQTT → 发 sync_room_materials
+app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
+  const { roomId, materialId } = req.params;
+  const folder = req.query.folder || '01';
+  const curScene = req.query.scene || 'A';   // 明确指定场景，默认 A
+
+  // 1. 查出文件名（查 materials 和 preset_materials 两个表）
+  db.query(
+    'SELECT filename, name FROM materials WHERE id = ? UNION SELECT filename, name FROM preset_materials WHERE id = ?',
+    [materialId, materialId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const filename = (rows && rows[0]?.filename) || (rows && rows[0]?.name) || null;
+
+      // 2. 只从 curScene 的 folder_mappings 中移除该素材 ID（不动其他场景）
+      db.query('SELECT config FROM rooms WHERE id = ?', [roomId], (err2, roomRows) => {
+        if (err2 || !roomRows || roomRows.length === 0) {
+          return res.status(404).json({ error: '房间不存在' });
+        }
+
+        let config = {};
+        try { config = roomRows[0].config ? JSON.parse(roomRows[0].config) : {}; } catch(e) {}
+
+        // 从指定场景的 folder_mappings 移除（只删当前场景，不动其他场景）
+        let removed = false;
+        if (config.scenes && config.scenes[curScene] && config.scenes[curScene].folder_mappings) {
+          Object.keys(config.scenes[curScene].folder_mappings).forEach(fid => {
+            const arr = config.scenes[curScene].folder_mappings[fid] || [];
+            const before = arr.length;
+            config.scenes[curScene].folder_mappings[fid] = arr.filter(id => id !== materialId);
+            if (arr.length !== before) removed = true;
+          });
+        }
+
+        // 写回 DB
+        db.query(
+          'UPDATE rooms SET config = ? WHERE id = ?',
+          [JSON.stringify(config), roomId],
+          (err3) => {
+            if (err3) console.error('删除素材更新 room config 失败:', err3);
+            else console.log('🗑 房间', roomId, 'Scene', curScene, 'folder', folder, '移除素材', materialId, removed ? '✓' : '(未找到)');
+
+            // 3. 查房间下所有已授权设备
+            db.query(
+              'SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
+              [roomId],
+              (err4, devices) => {
+                if (err4) return res.status(500).json({ error: err4.message });
+
+                let sentDel = 0, sentSync = 0;
+                (devices || []).forEach(d => {
+                  const mqttId = d.fingerprint || d.id;
+                  const topic = `xvj/device/${mqttId}/command`;
+
+                  // 3a. delete_material：让 APK 立即删本地文件（尽力发）
+                  mqttClient.publish(topic, JSON.stringify({
+                    action: 'delete_material',
+                    material_id: materialId,
+                    folder: folder,
+                    filename: filename
+                  }));
+                  sentDel++;
+
+                  // 3b. sync_room_materials：带当前场景已更新的 folder_mappings
+                  const curFm = config.scenes?.[curScene]?.folder_mappings || {};
+                  mqttClient.publish(topic, JSON.stringify({
+                    action: 'sync_room_materials',
+                    room_id: roomId,
+                    scenes: config.scenes,
+                    folder_mappings: curFm,        // 只用当前场景，不合并其他场景
+                    debug: config.debug === true
+                  }));
+                  sentSync++;
+                });
+
+                logAction('material_delete', 'room', {
+                  room_id: roomId, material_id: materialId,
+                  folder, filename, scene: curScene,
+                  removed, devices: sentDel, synced: sentSync
+                });
+
+                res.json({
+                  success: true,
+                  sent: sentDel,
+                  synced: sentSync,
+                  removed_scene: curScene,
+                  was_removed: removed
+                });
+              }
+            );
+          }
+        );
+      });
+    }
+  );
+});
+
 // 5. 废止设备（远程禁用）
 app.post('/api/devices/:id/deauthorize', (req, res) => {
   const deviceId = req.params.id;
@@ -691,6 +870,8 @@ app.post('/api/devices/:id/deauthorize', (req, res) => {
     'UPDATE devices SET authorized = 0, status = "deauthorized" WHERE id = ?',
     [deviceId],
     (err) => {
+
+// 【S-06】 授权 & 设备管理 // POST /api/devices/:id/authorize | /deauthorize
       if (err) return res.status(500).json({ error: err.message });
       
       // 发送废止命令
@@ -750,6 +931,8 @@ app.post('/api/devices/:id/authorize', (req, res) => {
 // ============================================================================
 
 // 7. 获取素材列表
+
+// 【S-02】 素材管理 API // GET|POST /api/materials | DELETE /api/materials/:id
 app.get('/api/materials', (req, res) => {
   const { folder } = req.query;
   let sql = 'SELECT * FROM materials';
@@ -916,6 +1099,8 @@ function sendPresetMaterialsToDevice(deviceId) {
 app.get('/api/preset/folders', (req, res) => {
   getPresetMaterials((err, folders) => {
     if (err) return res.status(500).json({ error: err.message });
+
+// 【S-03】 预设素材 API // GET|POST /api/preset/* | DELETE /api/preset/materials/:id
     res.json(folders);
   });
 });
@@ -946,33 +1131,60 @@ app.delete('/api/preset/folders/:id', (req, res) => {
 });
 
 // 添加预设素材
-// 删除预设素材（级联清理所有房间的 folder_mappings）
+// 删除预设素材（级联清理所有房间的 folder_mappings，含根级和 scenes A/B）
 app.delete('/api/preset/materials/:id', (req, res) => {
   const mid = req.params.id;
   db.query('SELECT * FROM preset_materials WHERE id = ?', [mid], (err, rows) => {
     if (rows && rows[0]) logAction('delete', 'preset_material', rows[0]);
-    // 级联：从所有房间的 folder_mappings 中移除该素材 ID
-    db.query('SELECT id, folder_mappings FROM rooms', [], (err2, rooms) => {
+    // 级联：同时查询 folder_mappings 和 config，用于清理根级和 scenes A/B
+    db.query('SELECT id, folder_mappings, config FROM rooms', [], (err2, rooms) => {
       if (!err2 && rooms) {
         rooms.forEach((room) => {
-          try {
-            const fm = JSON.parse(room.folder_mappings || '{}');
-            let changed = false;
-            Object.keys(fm).forEach((folderId) => {
-              const arr = fm[folderId];
-              const idx = arr.indexOf(mid);
-              if (idx > -1) { arr.splice(idx, 1); changed = true; }
-            });
-            if (changed) {
-              db.query('UPDATE rooms SET folder_mappings=? WHERE id=?', [JSON.stringify(fm), room.id]);
-              console.log('🗑 从房间 ' + room.id + ' 的 folder_mappings 移除预设素材 ' + mid);
-            }
-          } catch (e) {}
+
+          // 2. 清理 config.scenes.A/B.folder_mappings
+          if (room.config) {
+            try {
+              const cfg = typeof room.config === 'string' ? JSON.parse(room.config) : { ...room.config };
+              if (cfg.scenes && cfg.scenes.A && cfg.scenes.A.folder_mappings) {
+                Object.values(cfg.scenes.A.folder_mappings).forEach(arr => {
+                  const idx = arr.indexOf(mid);
+                  if (idx > -1) { arr.splice(idx, 1); sceneAChanged = true; }
+                });
+              }
+              if (cfg.scenes && cfg.scenes.B && cfg.scenes.B.folder_mappings) {
+                Object.values(cfg.scenes.B.folder_mappings).forEach(arr => {
+                  const idx = arr.indexOf(mid);
+                  if (idx > -1) { arr.splice(idx, 1); sceneBChanged = true; }
+                });
+              }
+              if (sceneAChanged || sceneBChanged) {
+                db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(cfg), room.id]);
+                console.log(`🗑 从房间 ${room.id} scenes 移除预设素材 ${mid} (A:${sceneAChanged} B:${sceneBChanged})`);
+              }
+            } catch (e) {}
+          }
         });
       }
       db.query('DELETE FROM preset_materials WHERE id = ?', [mid], (err3) => {
         if (err3) return res.status(500).json({ error: err3.message });
-        res.json({ success: true });
+        // 通知所有 scenes A/B 使用了该素材的房间
+        db.query("SELECT id, config FROM rooms", [], (err, rooms) => {
+          if (!err && rooms) {
+            rooms.forEach(room => {
+              try {
+                const cfg = room.config ? JSON.parse(room.config) : {};
+                const fmA = cfg.scenes && cfg.scenes.A && cfg.scenes.A.folder_mappings ? cfg.scenes.A.folder_mappings : null;
+                const fmB = cfg.scenes && cfg.scenes.B && cfg.scenes.B.folder_mappings ? cfg.scenes.B.folder_mappings : null;
+                const inA = fmA && Object.values(fmA).flat().includes(mid);
+                const inB = fmB && Object.values(fmB).flat().includes(mid);
+                if (inA || inB) {
+                  notifyRoomDevicesOfSync(room.id);
+                }
+              } catch (e) { /* ignore */ }
+            });
+          }
+          res.json({ success: true });
+        });
       });
     });
   });
@@ -1017,6 +1229,8 @@ app.delete("/api/folders/:name", (req, res) => {
   res.json({success:true});
 });
 
+
+// 【S-02b】 素材查询别名 // GET /api/materials（重复路由）
 app.get("/api/materials", (req, res) => {
   db.query("SELECT * FROM materials", (err, rows) => res.json(err ? [] : rows));
 });
@@ -1037,6 +1251,8 @@ app.delete("/api/materials/:id", (req, res) => {
   const fs = require('fs');
   db.query("SELECT * FROM materials WHERE id=?", [id], (err, rows) => {
     if (rows && rows[0]) {
+
+// 【S-02c】 删除素材 // DELETE /api/materials/:id
       const mat = rows[0];
       logAction('delete', 'material', mat);
       // 删除物理文件（视频 + 缩略图）
@@ -1051,16 +1267,6 @@ app.delete("/api/materials/:id", (req, res) => {
         if (!err2 && rooms) {
           for (const room of rooms) {
             let rootChanged = false, sceneAChanged = false, sceneBChanged = false;
-
-            // 1. 清理根级 folder_mappings
-            try {
-              const fm = JSON.parse(room.folder_mappings || '{}');
-              rootChanged = removeFromMappings(fm, id);
-              if (rootChanged) {
-                db.query("UPDATE rooms SET folder_mappings=? WHERE id=?", [JSON.stringify(fm), room.id]);
-                console.log('🗑 从房间 ' + room.id + ' 根级 folder_mappings 移除素材 ' + id);
-              }
-            } catch (e) { console.error("清理根级 folder_mappings 失败，房间 " + room.id + ": " + e.message); }
 
             // 2. 清理 config.scenes.A/B.folder_mappings
             if (room.config) {
@@ -1082,8 +1288,30 @@ app.delete("/api/materials/:id", (req, res) => {
         }
       });
     }
-    db.query("DELETE FROM materials WHERE id=?", [id], ()=>{});
-    res.json({success:true});
+    db.query("DELETE FROM materials WHERE id=?", [id], (errDel) => {
+      if (errDel) {
+        console.error('删除素材记录失败: ' + errDel.message);
+        return res.status(500).json({ error: '删除素材失败' });
+      }
+      // 找出所有 scenes.A 或 scenes.B 使用了该素材的房间，向其设备推送 sync
+      db.query("SELECT id, config FROM rooms", [], (err, rooms) => {
+        if (!err && rooms) {
+          rooms.forEach(room => {
+            try {
+              const cfg = room.config ? JSON.parse(room.config) : {};
+              const inSceneA = cfg.scenes && cfg.scenes.A && cfg.scenes.A.folder_mappings &&
+                Object.values(cfg.scenes.A.folder_mappings).flat().includes(id);
+              const inSceneB = cfg.scenes && cfg.scenes.B && cfg.scenes.B.folder_mappings &&
+                Object.values(cfg.scenes.B.folder_mappings).flat().includes(id);
+              if (inSceneA || inSceneB) {
+                notifyRoomDevicesOfSync(room.id);
+              }
+            } catch (e) { /* ignore parse errors */ }
+          });
+        }
+        res.json({success: true});
+      });
+    });
   });
 });
 
@@ -1262,6 +1490,8 @@ app.get('/api/logs', (req, res) => {
 
 // ==================== 素材同步 v2：同时查 materials + preset_materials ====================
 // 修复: 房间 folder_mappings 存的是 preset_materials ID，但旧 API 只查 materials 表，导致 APK 拿到空列表
+
+// 【S-04a】 房间素材列表v2（当前正式版）// GET /api/room-materials-v2/:roomId
 app.get('/api/room-materials-v2/:roomId', (req, res) => {
   const roomId = req.params.roomId;
 
@@ -1270,7 +1500,25 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
       return res.status(404).json({ error: '房间不存在' });
     }
 
-    const folderMappings = rows[0].folder_mappings ? JSON.parse(rows[0].folder_mappings) : {};
+    // 合并 Scene A 和 Scene B 的 folder_mappings（确保两幕素材都能被同步）
+    let folderMappings = {};
+    try {
+      const config = JSON.parse(rows[0].config || '{}');
+      const fmA = config.scenes?.A?.folder_mappings || {};
+      const fmB = config.scenes?.B?.folder_mappings || {};
+      // 合并，A 有则用 A，B 有则追加（不去重，保持原语义）
+      Object.keys(fmA).forEach(k => { folderMappings[k] = [...(fmA[k] || [])]; });
+      Object.keys(fmB).forEach(k => {
+        if (folderMappings[k]) { [...(fmB[k] || [])].forEach(id => { if (!folderMappings[k].includes(id)) folderMappings[k].push(id); }); }
+        else { folderMappings[k] = [...(fmB[k] || [])]; }
+      });
+      // fallback 到根级（兼容旧数据）
+      if (Object.keys(folderMappings).every(k => folderMappings[k].length === 0) && rows[0].folder_mappings) {
+        try { folderMappings = JSON.parse(rows[0].folder_mappings); } catch(e2) {}
+      }
+    } catch(e) {
+      if (rows[0].folder_mappings) { try { folderMappings = JSON.parse(rows[0].folder_mappings); } catch(e2) {} }
+    }
     const result = {}; // { "01": [{id, filename, url, md5, type}], ... }
 
     // 收集所有需要查询的 material IDs
@@ -1280,32 +1528,33 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
     });
 
     if (allIds.size === 0) {
+      console.log('[DEBUG room-materials-v2] folderMappings empty, roomId:', roomId);
       return res.json(result);
     }
 
     const idList = Array.from(allIds);
     const placeholders = idList.map(() => '?').join(',');
-
     // 并行查询 materials 和 preset_materials
     db.query(
-      `SELECT id, name AS filename, url, md5, folder, type, 'material' AS source FROM materials WHERE id IN (${placeholders})`,
+      `SELECT * FROM materials WHERE id IN (${placeholders})`,
       idList,
       (err2, materialsRows) => {
-        if (err2) materialsRows = [];
-
+        console.log('[DEBUG] materialsRows count:', materialsRows?.length, 'err:', err2?.message);
+        if (err2) { console.error('[DEBUG] materials query error:', err2.message); materialsRows = []; }
+        console.log('[DEBUG] materialsRows:', JSON.stringify(materialsRows?.slice(0,2)));
         db.query(
-          `SELECT id, filename, url, md5, folder_id AS folder, 'preset' AS type, 'preset_materials' AS source FROM preset_materials WHERE id IN (${placeholders})`,
+          `SELECT * FROM preset_materials WHERE id IN (${placeholders})`,
           idList,
           (err3, presetRows) => {
-            if (err3) presetRows = [];
-
+            if (err3) { console.error('[DEBUG] preset query error:', err3.message); presetRows = []; }
+            console.log('[DEBUG] presetRows count:', presetRows?.length);
             // 合并去重（materials 优先）
             const merged = {};
             [...materialsRows, ...presetRows].forEach(row => {
               if (!merged[row.id]) {
                 merged[row.id] = {
                   id: row.id,
-                  filename: row.filename,
+                  filename: row.filename || row.name || row.fullFilename || row.fname || row.id,
                   url: row.url,
                   md5: row.md5 || '',
                   folder: row.folder || '',
@@ -1487,14 +1736,11 @@ app.put('/api/rooms/:id', (req, res) => {
     }
     updates.push('config=?'); values.push(JSON.stringify(cfg));
   }
-  // folder_mappings-only 分支（plan A：只更新「有变化的那个场景」，不做全量同步）
+  // folder_mappings-only 分支：直接更新 scenes.A.folder_mappings（根级已废止）
   if (folder_mappings !== undefined && config === undefined) {
     var newFm = typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings;
-    var newFmStr = typeof folder_mappings === 'string' ? folder_mappings : JSON.stringify(folder_mappings);
-    db.query('SELECT folder_mappings, config FROM rooms WHERE id=?', [id], (err, rows) => {
+    db.query('SELECT config FROM rooms WHERE id=?', [id], (err, rows) => {
       if (err) return res.status(500).json({error: err.message});
-      var oldRootFm = {};
-      try { oldRootFm = rows && rows[0] && rows[0].folder_mappings ? JSON.parse(rows[0].folder_mappings) : {}; } catch(e) {}
       var cfg2 = {};
       if (rows && rows[0] && rows[0].config) {
         try { cfg2 = typeof rows[0].config === 'string' ? JSON.parse(rows[0].config) : rows[0].config; } catch(e) {}
@@ -1502,23 +1748,13 @@ app.put('/api/rooms/:id', (req, res) => {
       cfg2.scenes = cfg2.scenes || {};
       cfg2.scenes.A = cfg2.scenes.A || { name: '第一幕', folder_mappings: {}, windows: [] };
       cfg2.scenes.B = cfg2.scenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
-      // 找出哪个场景被修改了：与 oldRootFm 相同的那个场景是被操作方
-      // oldRootFm 可能为 {}，此时无法判断，沿用保守策略：更新 A
-      var changedScene = null;
-      if (JSON.stringify(cfg2.scenes.A.folder_mappings) === JSON.stringify(oldRootFm) && JSON.stringify(newFm) !== JSON.stringify(oldRootFm)) {
-        changedScene = 'B';
-      } else if (JSON.stringify(cfg2.scenes.B.folder_mappings) === JSON.stringify(oldRootFm) && JSON.stringify(newFm) !== JSON.stringify(oldRootFm)) {
-        changedScene = 'A';
-      } else {
-        // 无法根据旧数据判断（root 为空或两边都空），保守策略：更新 A
-        changedScene = 'A';
-      }
-      cfg2.scenes[changedScene].folder_mappings = newFm;
-      db.query('UPDATE rooms SET folder_mappings=?, config=? WHERE id=?',
-        [newFmStr, JSON.stringify(cfg2), id],
+      cfg2.scenes.A.folder_mappings = newFm;
+      cfg2.scenes.B.folder_mappings = {};
+      db.query('UPDATE rooms SET config=? WHERE id=?',
+        [JSON.stringify(cfg2), id],
         function(err2) {
           if (err2) return res.status(500).json({error: err2.message});
-          logAction('update', 'room', { id, folder_mappings: newFm, changedScene: changedScene });
+          logAction('update', 'room', { id, folder_mappings: newFm, changedScene: 'A' });
           res.json({success: true});
         });
     });
@@ -1537,6 +1773,8 @@ app.put('/api/rooms/:id', (req, res) => {
 app.put('/api/rooms/:id/windows', (req, res) => {
   const { windows, sceneId } = req.body;   // sceneId: 'A' 或 'B'
   const id = req.params.id;
+
+// 【S-04b】 窗口配置 // PUT /api/rooms/:id/windows
   if (!Array.isArray(windows)) {
     return res.status(400).json({ error: 'windows 必须是数组' });
   }
@@ -1565,6 +1803,21 @@ app.put('/api/rooms/:id/windows', (req, res) => {
     db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(existingConfig), id], (err2) => {
       if (err2) return res.status(500).json({ error: err2.message });
       logAction('update_windows', 'room', { id, scene: targetScene, windows });
+
+      // 【S-04b-Fix】立即推送 MQTT，让 APP 立即应用新窗口配置
+      db.query('SELECT id, folder_mappings FROM rooms WHERE id = ?', [id], (err3, rows3) => {
+        if (!err3 && rows3 && rows3.length > 0) {
+          const roomFolderMappings = rows3[0].folder_mappings ? JSON.parse(rows3[0].folder_mappings) : {};
+          // 查找绑定到此房间的设备（APK MQTT clientId = fingerprint）
+          db.query('SELECT id, fingerprint FROM devices WHERE room_id = ?', [id], (err4, rows4) => {
+            if (!err4 && rows4 && rows4.length > 0) {
+              const mqttId = rows4[0].fingerprint || rows4[0].id;
+              sendSyncCommandToDevice(mqttId, id, roomFolderMappings, existingConfig);
+            }
+          });
+        }
+      });
+
       res.json({ success: true, scene: targetScene, windows });
     });
   });
@@ -1595,20 +1848,9 @@ app.get('/api/room-materials/:roomId/list', (req, res) => {
     const room = rooms[0];
     let roomConfig = { scenes: {} };
     try { if (room.config) roomConfig = JSON.parse(room.config); } catch(e) {}
-    // 读取 folder_mappings：优先 room.folder_mappings（设备同步唯一真相）
-    // 不再依赖 scenes.A.folder_mappings（可能导致取到空数据）
-    let folderMappings;
-    try {
-      folderMappings = JSON.parse(room.folder_mappings || '{}');
-    } catch(e) { folderMappings = {}; }
-    // 强制：如果 scenes.A 有数据且不为空，优先用 room.folder_mappings（兼容性）
-    const sceneMappings = roomConfig.scenes && roomConfig.scenes.A ? roomConfig.scenes.A.folder_mappings : null;
-    if (sceneMappings && Object.keys(sceneMappings).length > 0) {
-      // 两个来源都尝试合并
-      Object.entries(sceneMappings).forEach(([k, v]) => {
-        if (!folderMappings[k] || folderMappings[k].length === 0) folderMappings[k] = v;
-      });
-    }
+    // scenes.A.folder_mappings 是唯一来源（根级已废止）
+    let folderMappings = (roomConfig.scenes && roomConfig.scenes.A && roomConfig.scenes.A.folder_mappings)
+      ? roomConfig.scenes.A.folder_mappings : {};
 
     const allIds = [...new Set(Object.values(folderMappings).flat().filter(Boolean))];
     const result = {};
@@ -1659,13 +1901,32 @@ app.post('/api/rooms/:id/folder/:folder', (req, res) => {
   const { id } = req.params;
   const { folder } = req.params;
   const { material_ids } = req.body;
-  db.query('SELECT folder_mappings FROM rooms WHERE id = ?', [id], (err, results) => {
+  db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [id], (err, results) => {
     if (err) return res.status(500).json({error:err.message});
-    let mappings = results[0] ? JSON.parse(results[0].folder_mappings || '{}') : {};
+    if (!results || results.length === 0) return res.status(404).json({error:'Room not found'});
+
+    let mappings = results[0].folder_mappings ? JSON.parse(results[0].folder_mappings) : {};
     mappings[folder] = material_ids || [];
-    db.query('UPDATE rooms SET folder_mappings = ? WHERE id = ?', [JSON.stringify(mappings), id], (err) => {
-      if (err) return res.status(500).json({error:err.message});
+
+    // 同时更新 scenes A/B 的 folder_mappings（独立场景模式）
+    let cfg = results[0].config ? JSON.parse(results[0].config) : {};
+    if (!cfg.scenes) {
+      cfg.scenes = {
+        A: { name: '第一幕', folder_mappings: {}, windows: [] },
+        B: { name: '第二幕', folder_mappings: {}, windows: [] }
+      };
+    }
+    if (!cfg.scenes.A.folder_mappings) cfg.scenes.A.folder_mappings = {};
+    if (!cfg.scenes.B.folder_mappings) cfg.scenes.B.folder_mappings = {};
+    cfg.scenes.A.folder_mappings[folder] = material_ids || [];
+    cfg.scenes.B.folder_mappings[folder] = material_ids || [];
+
+    // 只更新 config.scenes A/B（根级 folder_mappings 已废止）
+    db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(cfg), id], (err2) => {
+      if (err2) return res.status(500).json({error:err2.message});
       logAction('push', 'room_material', { room_id: id, folder, material_ids });
+      // 通知该房间的设备同步
+      notifyRoomDevicesOfSync(id);
       res.json({success:true});
     });
   });
@@ -1686,6 +1947,8 @@ app.post('/api/rooms/:id/folder/:folder', (req, res) => {
 // ============================================================================
 
 // 获取房间所有素材（materials + preset_materials 合并，按文件夹分组，供APK同步使用）
+
+// 【S-04c】 房间素材（旧版）// GET /api/room-materials/:roomId
 app.get('/api/room-materials/:roomId', (req, res) => {
   const { roomId } = req.params;
   db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [roomId], (err, results) => {
@@ -1693,14 +1956,9 @@ app.get('/api/room-materials/:roomId', (req, res) => {
     if (!results || results.length === 0) return res.json({});
     const roomConfig = results[0].config ? JSON.parse(results[0].config) : {};
     const debugFlag = roomConfig.debug === true;
-    // 优先从 scenes[A] 取 folder_mappings（新版推送写入 scenes 结构）
-    // 向后兼容：如果没有 scenes 结构则回退到 root folder_mappings（旧版房间）
-    let mappings = {};
-    if (roomConfig.scenes && roomConfig.scenes.A && roomConfig.scenes.A.folder_mappings) {
-      mappings = roomConfig.scenes.A.folder_mappings;
-    } else {
-      mappings = JSON.parse(results[0].folder_mappings || '{}');
-    }
+    // scenes.A.folder_mappings 是唯一来源（根级已废止）
+    const mappings = (roomConfig.scenes && roomConfig.scenes.A && roomConfig.scenes.A.folder_mappings)
+      ? roomConfig.scenes.A.folder_mappings : {};
 
     // 收集所有需要的 material IDs
     const allIds = new Set();
@@ -1732,13 +1990,9 @@ app.get('/api/devices/:id/room-materials', (req, res) => {
       if (err) return res.status(500).json({error:err.message});
       if (!rows[0]) return res.json({});
       const roomConfig = rows[0].config ? JSON.parse(rows[0].config) : {};
-      // 优先从 scenes[A] 取 folder_mappings，向后兼容旧版 root folder_mappings
-      let mappings;
-      if (roomConfig.scenes && roomConfig.scenes.A && roomConfig.scenes.A.folder_mappings) {
-        mappings = roomConfig.scenes.A.folder_mappings;
-      } else {
-        mappings = JSON.parse(rows[0].folder_mappings || '{}');
-      }
+      // scenes.A.folder_mappings 是唯一来源（根级已废止）
+      const mappings = (roomConfig.scenes && roomConfig.scenes.A && roomConfig.scenes.A.folder_mappings)
+        ? roomConfig.scenes.A.folder_mappings : {};
       res.json(mappings);
     });
   });
@@ -1835,6 +2089,8 @@ app.post('/api/preset/folders', (req, res) => {
     [id, name, path || '', sort_order || 0],
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
+
+// 【S-03b】 预设素材（重复注册）// GET|POST /api/preset/folders | /materials
       res.json({ id, name, path, sort_order });
     }
   );
@@ -2091,7 +2347,8 @@ app.post('/api/devices/:id/push-update', (req, res) => {
     if (versions.length === 0) return res.status(404).json({error:'No APK available'});
     
     const apk = versions[0];
-    const topic = `xvj/device/${deviceId}/command`;
+    const mqttId = fingerprint || deviceId;
+    const topic = `xvj/device/${fingerprint || deviceId}/command`;
     
     const cmd = {
       action: 'update',
@@ -2168,6 +2425,8 @@ app.post('/api/devices/push-update-all', (req, res) => {
 app.post('/api/log', (req, res) => {
   const { action, type, detail } = req.body;
   logAction(action, type, detail);
+
+// 【S-08】 操作日志 // POST /api/log
   res.json({ success: true });
 });
 
