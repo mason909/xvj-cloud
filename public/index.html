@@ -939,7 +939,7 @@ function rmDevice() {
 //   保存后自动调用 doSyncRoom(id) 推送至设备
 
 /** 切换当前编辑的场景（A = 第一幕，B = 第二幕）*/
-function switchScene(id) { s._curScene = id; rmDevice(); }
+function switchScene(id) { s._curScene = id; s._winCache = null; s._selWin = null; rmDevice(); }
 
 /** 退出窗口配置模式，恢复普通房间视图 */
 function sfR(f) {
@@ -954,6 +954,7 @@ function sfR(f) {
     if (ws) { ws.style.background = '#444'; }
     if (wk) { wk.style.left = '3px'; }
     if (!s._curScene) s._curScene = 'A';
+    s._winCache = null; s._selWin = null;
     rmDevice();
 }
 
