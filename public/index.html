@@ -1000,7 +1000,7 @@ function renderWinEditorFull() {
     if (!r) return;
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-    var wins = s._winCache && s._winCache.length > 0 ? s._winCache : (cfg.windows || []);
+    var wins = s._winCache && s._winCache.length > 0 ? s._winCache : (((cfg.scenes || {})[s._curScene || 'A'] || {}).windows || []);
     if (!s._winCache || s._winCache.length === 0) s._winCache = wins;
     var area = document.getElementById('winEditorArea');
     if (!area) return;
@@ -1163,7 +1163,7 @@ function addWin() {
     if (!r) return;
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-    var wins = cfg.windows || [];
+    var wins = (((cfg.scenes || {})[curS] || {}).windows || []);
     var newId = 'win_' + Date.now();
     wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: 'SCENE_A' }, zIndex: wins.length + 1 });
     var curS = s._curScene || 'A';
