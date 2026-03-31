@@ -1161,12 +1161,14 @@ function selWin(id) {
 function addWin() {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
+    var curS = s._curScene || 'A';
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var wins = (((cfg.scenes || {})[curS] || {}).windows || []);
     var newId = 'win_' + Date.now();
-    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: 'SCENE_A' }, zIndex: wins.length + 1 });
-    var curS = s._curScene || 'A';
+    // 【Bug Fix】content type 跟随当前编辑的场景
+    var winType = curS === 'B' ? 'SCENE_B' : 'SCENE_A';
+    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: winType }, zIndex: wins.length + 1 });
     if (!cfg.scenes) { cfg.scenes = { A:{name:'第一幕',folder_mappings:{},windows:[]}, B:{name:'第二幕',folder_mappings:{},windows:[]} }; }
     cfg.scenes[curS].windows = wins;
     s._winCache = wins;
