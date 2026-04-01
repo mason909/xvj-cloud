@@ -967,25 +967,41 @@ function switchScene(id) {
     s._curScene = id;
     var newSelId = s._selWinMap[id]; // 取出切换后 scene 的选中窗口
     // 根据选中 ID 恢复 s._selWin（s._winCache 会在 renderWinEditorFull 中从 room.config 恢复）
+    // 【BugFix-20260402-v2】始终对 windows 数组做浅拷贝，打破 A/B 共享引用链
+    // 旧数据损坏形态：scenes.A.windows === scenes.B.windows（同一数组引用）
+    // 不做拷贝会导致 addWin/push 操作同时污染两个场景
+    var _loadRoomCfg = function(r) {
+        var c = {};
+        try { c = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
+        // 修复：如果 A 和 B 的 windows 数组是同一引用，各自拆成独立副本
+        if (c.scenes && c.scenes.A && c.scenes.B && c.scenes.A.windows === c.scenes.B.windows) {
+            c.scenes.A.windows = (c.scenes.A.windows || []).slice();
+            c.scenes.B.windows = (c.scenes.B.windows || []).slice();
+        }
+        return c;
+    };
+
     if (newSelId) {
         var r = s.rooms.find(function(x) { return x.id === s.rf; });
         if (r) {
-            var cfg = {};
-            try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
+            var cfg = _loadRoomCfg(r);
             var sceneData = (cfg.scenes && cfg.scenes[id]) ? cfg.scenes[id] : {};
-            var wins = sceneData.windows || [];
+            var wins = (sceneData.windows || []).slice(); // ← 浅拷贝，打破共享引用
             s._selWin = Object.assign({}, wins.find(function(w) { return w.id === newSelId; }) || null);
             s._winCache = wins;
+            cfg.scenes[id].windows = wins; // ← 用拷贝覆盖回去
+            r.config = typeof r.config === 'string' ? JSON.stringify(cfg) : cfg;
         }
     } else {
         s._selWin = null;
-        // 强制从当前 scene 的配置重新读取窗口列表，不使用旧缓存
         var r2 = s.rooms.find(function(x) { return x.id === s.rf; });
         if (r2) {
-            var cfg2 = {};
-            try { cfg2 = r2.config ? (typeof r2.config === 'string' ? JSON.parse(r2.config) : r2.config) : {}; } catch(e2) {}
+            var cfg2 = _loadRoomCfg(r2);
             var sceneData2 = (cfg2.scenes && cfg2.scenes[s._curScene]) ? cfg2.scenes[s._curScene] : {};
-            s._winCache = sceneData2.windows || [];
+            var wins2 = (sceneData2.windows || []).slice(); // ← 浅拷贝
+            s._winCache = wins2;
+            cfg2.scenes[s._curScene].windows = wins2; // ← 用拷贝覆盖回去
+            r2.config = typeof r2.config === 'string' ? JSON.stringify(cfg2) : cfg2;
         }
     }
     rmDevice();
@@ -1219,20 +1235,36 @@ function addWin() {
     var curS = s._curScene || 'A';
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-    var wins = (((cfg.scenes || {})[curS] || {}).windows || []);
+
+    // 【BugFix-20260402-v2】确保当前场景的 windows 是独立数组（不被 A/B 共享引用）
+    if (!cfg.scenes) { cfg.scenes = { A:{name:'第一幕',folder_mappings:{},windows:[]}, B:{name:'第二幕',folder_mappings:{},windows:[]} }; }
+    cfg.scenes.A = cfg.scenes.A || { name:'第一幕', folder_mappings:{}, windows:[] };
+    cfg.scenes.B = cfg.scenes.B || { name:'第二幕', folder_mappings:{}, windows:[] };
+    // 如果 A 和 B 的 windows 仍是同一引用，彻底拆开
+    if (cfg.scenes.A.windows === cfg.scenes.B.windows) {
+        cfg.scenes.A.windows = (cfg.scenes.A.windows || []).slice();
+        cfg.scenes.B.windows = (cfg.scenes.B.windows || []).slice();
+    }
+    var wins = cfg.scenes[curS].windows.slice(); // ← 永远拷贝，不直接用原数组
+
     var newId = 'win_' + Date.now();
-    // 【Bug Fix】content type 跟随当前编辑的场景
     var winType = curS === 'B' ? 'SCENE_B' : 'SCENE_A';
     wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: winType }, zIndex: wins.length + 1 });
-    if (!cfg.scenes) { cfg.scenes = { A:{name:'第一幕',folder_mappings:{},windows:[]}, B:{name:'第二幕',folder_mappings:{},windows:[]} }; }
-    cfg.scenes[curS].windows = wins;
+
+    // 双向隔离：A 的操作不动 B，反之亦然
+    cfg.scenes[curS].windows = wins; // 当前场景：用含新窗口的拷贝覆盖回去
+    var otherS = curS === 'A' ? 'B' : 'A';
+    cfg.scenes[otherS].windows = cfg.scenes[otherS].windows.slice(); // 另一场景：确保仍是独立引用
+
     s._winCache = wins;
     s._selWin = Object.assign({}, wins[wins.length - 1]);
+
     // 同步更新 s.rooms 内存
     var ridx = s.rooms.findIndex(function(r){ return r.id == s.rf; });
-    if (ridx >= 0) { s.rooms[ridx].config = JSON.stringify(cfg); }
+    if (ridx >= 0) { r.config = cfg; s.rooms[ridx].config = cfg; }
+
     // 保存到服务器
-    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: s._curScene || 'A'}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { doSyncRoom(s.rf); renderWinEditorFull(); } });
+    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { doSyncRoom(s.rf); renderWinEditorFull(); } });
 }
 
 /**
@@ -1248,12 +1280,21 @@ function delWin(e, id) {
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var curS2 = s._curScene || 'A';
+
+    // 【BugFix-20260402-v2】同样做隔离检查
+    if (cfg.scenes && cfg.scenes.A && cfg.scenes.B && cfg.scenes.A.windows === cfg.scenes.B.windows) {
+        cfg.scenes.A.windows = (cfg.scenes.A.windows || []).slice();
+        cfg.scenes.B.windows = (cfg.scenes.B.windows || []).slice();
+    }
+
     var scene2 = (cfg.scenes && cfg.scenes[curS2]) ? cfg.scenes[curS2] : {};
     var wins = (scene2.windows || []).filter(function(w) { return w.id !== id; });
-    cfg.scenes[curS2].windows = wins;
+    cfg.scenes[curS2].windows = wins; // ← 直接赋值为 filter 后的新数组（天然独立）
+
     var ridx2 = s.rooms.findIndex(function(r){ return r.id == s.rf; });
-    if (ridx2 >= 0) { s.rooms[ridx2].config = JSON.stringify(cfg); }
-    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: s._curScene || 'A'}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { s._winCache = wins; s._selWin = null; doSyncRoom(s.rf); renderWinEditorFull(); } });
+    if (ridx2 >= 0) { r.config = cfg; s.rooms[ridx2].config = cfg; }
+
+    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS2}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { s._winCache = wins; s._selWin = null; doSyncRoom(s.rf); renderWinEditorFull(); } });
 }
 
 function updWinField(field, value) {
@@ -1324,12 +1365,21 @@ async function saveWindows() {
             // 同步更新 s.rooms 内存中的 config，避免内存状态落后于服务器
             var ridx = s.rooms.findIndex(function(r){ return r.id === s.rf; });
             if (ridx >= 0) {
+                var r = s.rooms[ridx];
                 var cfg = {};
-                try { cfg = typeof s.rooms[ridx].config === 'string' ? JSON.parse(s.rooms[ridx].config) : (s.rooms[ridx].config || {}); } catch(e3) { cfg = {}; }
+                try { cfg = typeof r.config === 'string' ? JSON.parse(r.config) : (r.config || {}); } catch(e3) { cfg = {}; }
+                // 【BugFix-20260402-v2】确保 A/B windows 独立引用
+                if (cfg.scenes && cfg.scenes.A && cfg.scenes.B && cfg.scenes.A.windows === cfg.scenes.B.windows) {
+                    cfg.scenes.A.windows = (cfg.scenes.A.windows || []).slice();
+                    cfg.scenes.B.windows = (cfg.scenes.B.windows || []).slice();
+                }
+                var curS = s._curScene || 'A';
                 cfg.scenes = cfg.scenes || {};
-                cfg.scenes[s._curScene || 'A'] = cfg.scenes[s._curScene || 'A'] || {};
-                cfg.scenes[s._curScene || 'A'].windows = wins;
-                s.rooms[ridx].config = cfg;
+                cfg.scenes[curS] = cfg.scenes[curS] || {};
+                cfg.scenes[curS].windows = wins;
+                r.config = cfg;
+                // 【BugFix-20260402-v2】将 _winCache 同步为 config 中的独立副本
+                s._winCache = cfg.scenes[curS].windows.slice();
             }
             await doSyncRoom(s.rf);
             btn.textContent = '✅ 已保存并推送'; setTimeout(function(){ btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }, 2000);
