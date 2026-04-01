@@ -964,7 +964,7 @@ app.post('/api/devices/:id/authorize', (req, res) => {
 
 // 7. 获取素材列表
 
-// 【S-02】 素材管理 API // GET|POST /api/materials | DELETE /api/materials/:id
+// 【S-02】 素材管理 API：GET|POST /api/materials | DELETE /api/materials/:id（清理时序已修复：Promise.all 等候后 res.json）
 app.get('/api/materials', (req, res) => {
   const { folder } = req.query;
   let sql = 'SELECT * FROM materials';
@@ -2135,7 +2135,6 @@ app.post('/api/preset/folders', (req, res) => {
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
 
-// 【S-03b】 预设素材（重复注册）// GET|POST /api/preset/folders | /materials
       res.json({ id, name, path, sort_order });
     }
   );
