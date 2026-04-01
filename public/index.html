@@ -971,6 +971,7 @@ function switchScene(id) {
         }
     }
     rmDevice();
+    renderWinEditorFull(); // 【Bug Fix】切换场景后重渲染编辑器Body，确保窗口列表和画布同步更新
 }
 
 /** 退出窗口配置模式，恢复普通房间视图 */
@@ -1254,6 +1255,7 @@ function updWinContent(field, value) {
     var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w.content = Object.assign({}, s._selWin.content);
+    renderWinEditorFull(); // 【Bug Fix】更新属性面板类型按钮和画布标签
 }
 
 
@@ -1300,7 +1302,20 @@ async function saveWindows() {
     try {
         var res = await fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: s._curScene || 'A'}) });
         var json = await res.json();
-        if (json.success) { await doSyncRoom(s.rf); btn.textContent = '✅ 已保存并推送'; setTimeout(function(){ btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }, 2000); }
+        if (json.success) {
+            // 同步更新 s.rooms 内存中的 config，避免内存状态落后于服务器
+            var ridx = s.rooms.findIndex(function(r){ return r.id === s.rf; });
+            if (ridx >= 0) {
+                var cfg = {};
+                try { cfg = typeof s.rooms[ridx].config === 'string' ? JSON.parse(s.rooms[ridx].config) : (s.rooms[ridx].config || {}); } catch(e3) { cfg = {}; }
+                cfg.scenes = cfg.scenes || {};
+                cfg.scenes[s._curScene || 'A'] = cfg.scenes[s._curScene || 'A'] || {};
+                cfg.scenes[s._curScene || 'A'].windows = wins;
+                s.rooms[ridx].config = cfg;
+            }
+            await doSyncRoom(s.rf);
+            btn.textContent = '✅ 已保存并推送'; setTimeout(function(){ btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }, 2000);
+        }
         else { alert('保存失败: ' + json.error); btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }
     } catch(e) { alert('保存失败: ' + e.message); btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }
 }
