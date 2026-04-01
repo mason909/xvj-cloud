@@ -938,8 +938,32 @@ function rmDevice() {
 //   返回 { success: true, scene: 'A'|'B', windows: [...] }
 //   保存后自动调用 doSyncRoom(id) 推送至设备
 
-/** 切换当前编辑的场景（A = 第一幕，B = 第二幕）*/
-function switchScene(id) { s._curScene = id; s._winCache = null; s._selWin = null; rmDevice(); }
+/** 切换当前编辑的场景（A = 第一幕，B = 第二幕）
+ *  修复：切换场景时保存/恢复各场景的窗口选中状态（s._selWinMap）
+ *       不再清空 s._selWin，避免"请先选择一个窗口"按钮失效
+ */
+function switchScene(id) {
+    var oldS = s._curScene || 'A';
+    s._selWinMap = s._selWinMap || { A: null, B: null };
+    s._selWinMap[oldS] = s._selWin ? s._selWin.id : null; // 保存当前 scene 的选中窗口
+    s._curScene = id;
+    var newSelId = s._selWinMap[id]; // 取出切换后 scene 的选中窗口
+    // 根据选中 ID 恢复 s._selWin（s._winCache 会在 renderWinEditorFull 中从 room.config 恢复）
+    if (newSelId) {
+        var r = s.rooms.find(function(x) { return x.id === s.rf; });
+        if (r) {
+            var cfg = {};
+            try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
+            var sceneData = (cfg.scenes && cfg.scenes[id]) ? cfg.scenes[id] : {};
+            var wins = sceneData.windows || [];
+            s._selWin = Object.assign({}, wins.find(function(w) { return w.id === newSelId; }) || null);
+            s._winCache = wins;
+        }
+    } else {
+        s._selWin = null;
+    }
+    rmDevice();
+}
 
 /** 退出窗口配置模式，恢复普通房间视图 */
 function sfR(f) {
@@ -1151,6 +1175,9 @@ function selWin(id) {
         wins = s._winCache;
     }
     s._selWin = Object.assign({}, wins.find(function(w) { return w.id === id; }) || null);
+    // 同步更新 selWinMap（切换场景时恢复选中状态）
+    s._selWinMap = s._selWinMap || { A: null, B: null };
+    s._selWinMap[s._curScene || 'A'] = id;
     renderWinEditorFull();
 }
 
