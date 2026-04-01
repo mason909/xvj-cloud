@@ -1064,6 +1064,17 @@ var _dragging = null;
 
 // 【F-09】 窗口编辑器 // function renderWinEditorFull()
 function renderWinEditorFull() {
+    // 【BugFix-20260402-v3】渲染前检查并修复 A/B 共享数组
+    var _r = s.rooms.find(function(x) { return x.id === s.rf; });
+    if (_r) {
+        var _gc = {};
+        try { _gc = typeof _r.config === 'string' ? JSON.parse(_r.config) : (_r.config || {}); } catch(e) {}
+        if (_gc.scenes && _gc.scenes.A && _gc.scenes.B && _gc.scenes.A.windows === _gc.scenes.B.windows) {
+            _gc.scenes.A.windows = (_gc.scenes.A.windows || []).slice();
+            _gc.scenes.B.windows = (_gc.scenes.B.windows || []).slice();
+            _r.config = typeof _r.config === 'string' ? JSON.stringify(_gc) : _gc;
+        }
+    }
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
     var cfg = {};
@@ -1207,20 +1218,23 @@ function selWin(id) {
     var cfg = {};
     try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
     var curS = s._curScene || 'A';
-    var sceneData = (cfg.scenes && cfg.scenes[curS]) ? cfg.scenes[curS] : {};
-    var wins = sceneData.windows || [];
-    // 不再无条件覆盖 _winCache：只在首次（_winCache 为空）时初始化
-    // 这样 drag 后 selWin 不会把拖动结果覆盖掉
-    if (!s._winCache || s._winCache.length === 0) {
-        s._winCache = wins;
-    } else {
-        // _winCache 已有数据（可能包含拖动修改），直接用，忽略 cfg.windows
-        wins = s._winCache;
+
+    // 【BugFix-20260402-v3】A/B 隔离检查
+    if (cfg.scenes && cfg.scenes.A && cfg.scenes.B && cfg.scenes.A.windows === cfg.scenes.B.windows) {
+        cfg.scenes.A.windows = (cfg.scenes.A.windows || []).slice();
+        cfg.scenes.B.windows = (cfg.scenes.B.windows || []).slice();
+        r.config = typeof r.config === 'string' ? JSON.stringify(cfg) : cfg;
+        var ridx = s.rooms.findIndex(function(r2){ return r2.id == s.rf; });
+        if (ridx >= 0) s.rooms[ridx].config = r.config;
     }
+
+    var sceneData = (cfg.scenes && cfg.scenes[curS]) ? cfg.scenes[curS] : {};
+    var wins = (sceneData.windows || []).slice();
+
+    s._winCache = wins;
     s._selWin = Object.assign({}, wins.find(function(w) { return w.id === id; }) || null);
-    // 同步更新 selWinMap（切换场景时恢复选中状态）
     s._selWinMap = s._selWinMap || { A: null, B: null };
-    s._selWinMap[s._curScene || 'A'] = id;
+    s._selWinMap[curS] = id;
     renderWinEditorFull();
 }
 
