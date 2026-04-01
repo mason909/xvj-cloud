@@ -534,19 +534,7 @@ function sendSyncCommandToDevice(mqttId, roomId, folderMappings, config) {
   }
 
   // 给 scenes 里的 folder_mappings 键名前缀 scene 标识，避免 A/B 共用 "01" 导致物理文件夹冲突
-  var prefixedScenes = {};
-  Object.keys(scenes).forEach(function(key) {
-    var sceneData = scenes[key];
-    var prefixedMappings = {};
-    Object.keys(sceneData.folder_mappings || {}).forEach(function(folderId) {
-      prefixedMappings[key + folderId] = sceneData.folder_mappings[folderId]; // A01, B01...
-    });
-    prefixedScenes[key] = {
-      name: sceneData.name,
-      folder_mappings: prefixedMappings,
-      windows: sceneData.windows || []
-    };
-  });
+  var prefixedScenes = buildPrefixedScenes(scenes);
 
   const topic = `xvj/device/${mqttId}/command`;
   const payload = {
@@ -571,28 +559,22 @@ function notifyRoomDevicesOfSync(roomId) {
     [roomId],
     (err, devices) => {
       if (err || !devices || devices.length === 0) return;
-      db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [roomId], (err2, rows) => {
+      db.query('SELECT config FROM rooms WHERE id = ?', [roomId], (err2, rows) => {
         if (err2 || !rows || rows.length === 0) return;
-        const { folder_mappings, config } = rows[0];
+        const { config } = rows[0];
         const cfg = config ? JSON.parse(config) : {};
-        // 统一从 scenes.A/B.folder_mappings 取（独立场景模式）
-        const fmA = (cfg.scenes && cfg.scenes.A && cfg.scenes.A.folder_mappings)
-          ? cfg.scenes.A.folder_mappings : {};
-        const fmB = (cfg.scenes && cfg.scenes.B && cfg.scenes.B.folder_mappings)
-          ? cfg.scenes.B.folder_mappings : {};
-        const scenes = cfg.scenes || {
-          A: { name: '第一幕', folder_mappings: fmA, windows: [] },
-          B: { name: '第二幕', folder_mappings: fmB, windows: [] }
-        };
+        // scene-prefixed 格式（与 sendSyncCommandToDevice / buildPrefixedScenes 一致）
+        const prefixedScenes = buildPrefixedScenes(cfg.scenes || {});
+        const currentSceneFm = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
         devices.forEach(({ id: deviceId, fingerprint }) => {
           try {
             const mqttId = fingerprint || deviceId;
-            const topic = `xvj/device/${fingerprint || deviceId}/command`;
+            const topic = `xvj/device/${mqttId}/command`;
             const payload = {
               action: 'sync_room_materials',
               room_id: roomId,
-              scenes: scenes,
-              folder_mappings: fmA,
+              scenes: prefixedScenes,
+              folder_mappings: currentSceneFm,
               debug: cfg.debug === true,
               timestamp: Date.now()
             };
@@ -711,19 +693,7 @@ app.post('/api/devices/:id/command', (req, res) => {
         const topic = `xvj/device/${devFingerprint}/command`;
 
         // scene-prefixed scenes + folder_mappings（与 sendSyncCommandToDevice 完全一致）
-        var prefixedScenes = {};
-        Object.keys(roomConfig.scenes || {}).forEach(function(key) {
-          var sceneData = roomConfig.scenes[key];
-          var prefixedMappings = {};
-          Object.keys(sceneData.folder_mappings || {}).forEach(function(folderId) {
-            prefixedMappings[key + folderId] = sceneData.folder_mappings[folderId];
-          });
-          prefixedScenes[key] = {
-            name: sceneData.name,
-            folder_mappings: prefixedMappings,
-            windows: sceneData.windows || []
-          };
-        });
+        var prefixedScenes = buildPrefixedScenes(roomConfig.scenes);
         const curScene = roomConfig.current_scene || 'A';
         const syncCmd = {
           action: 'sync_room_materials',
@@ -888,25 +858,12 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
                   sentDel++;
 
                   // 3b. sync_room_materials：scene-prefixed 格式，保持和 sendSyncCommandToDevice 一致
-                  // 给 scenes 里的 folder_mappings 键名前缀 scene 标识（与 auth/sendSyncCommandToDevice 一致）
-                  var prefixedScenesDelete = {};
-                  Object.keys(config.scenes || {}).forEach(function(key) {
-                    var sceneData = config.scenes[key];
-                    var prefixedMappingsDelete = {};
-                    Object.keys(sceneData.folder_mappings || {}).forEach(function(folderId) {
-                      prefixedMappingsDelete[key + folderId] = sceneData.folder_mappings[folderId]; // A01, B01...
-                    });
-                    prefixedScenesDelete[key] = {
-                      name: sceneData.name,
-                      folder_mappings: prefixedMappingsDelete,
-                      windows: sceneData.windows || []
-                    };
-                  });
-                  const curFmDelete = prefixedScenesDelete[curScene]?.folder_mappings || {};
+                  var prefixedScenes = buildPrefixedScenes(config.scenes);
+                  const curFmDelete = prefixedScenes[curScene]?.folder_mappings || {};
                   mqttClient.publish(topic, JSON.stringify({
                     action: 'sync_room_materials',
                     room_id: roomId,
-                    scenes: prefixedScenesDelete,
+                    scenes: prefixedScenes,
                     folder_mappings: curFmDelete,    // scene-prefixed
                     debug: config.debug === true
                   }));
