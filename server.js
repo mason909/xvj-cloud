@@ -1745,27 +1745,62 @@ app.put('/api/rooms/:id', (req, res) => {
   const id = req.params.id;
   var updates = [];
   var values = [];
-  if (name !== undefined) { updates.push('name=?'); values.push(name); }
+
+  // 【Bug Fix】当 config 包含 scenes 时，先读取 DB 中现有 config，合并后再保存
+  // 避免 windows 字段被 incoming config 中的空数组覆盖
   if (config !== undefined) {
-    var cfg = typeof config === 'string' ? JSON.parse(config) : config;
-    var rootFm = folder_mappings ? (typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings) : {};
-    if (!cfg.scenes) {
-      cfg.scenes = {
-        A: { name: '第一幕', folder_mappings: rootFm, windows: cfg.windows || [] },
-        B: { name: '第二幕', folder_mappings: {}, windows: [] }
-      };
-      delete cfg.windows;
-    } else {
-      cfg.scenes.A = cfg.scenes.A || { name: '第一幕', folder_mappings: {}, windows: [] };
-      cfg.scenes.B = cfg.scenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
-    }
-    // doPushToRoom: 有 folder_mappings 时同步更新 root
-    if (folder_mappings !== undefined) {
-      var fm = typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings;
-      updates.push('folder_mappings=?'); values.push(typeof folder_mappings === 'string' ? folder_mappings : JSON.stringify(fm));
-    }
-    updates.push('config=?'); values.push(JSON.stringify(cfg));
+    db.query('SELECT config FROM rooms WHERE id=?', [id], (errDb, rowsDb) => {
+      if (errDb) return res.status(500).json({ error: errDb.message });
+      if (!rowsDb || rowsDb.length === 0) return res.status(404).json({ error: '房间不存在' });
+
+      var existingConfig = {};
+      try { existingConfig = rowsDb[0].config ? JSON.parse(rowsDb[0].config) : {}; } catch(e) {}
+
+      var cfg = typeof config === 'string' ? JSON.parse(config) : config;
+      var rootFm = folder_mappings ? (typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings) : {};
+
+      if (!cfg.scenes) {
+        cfg.scenes = {
+          A: { name: '第一幕', folder_mappings: rootFm, windows: cfg.windows || [] },
+          B: { name: '第二幕', folder_mappings: {}, windows: [] }
+        };
+        delete cfg.windows;
+      } else {
+        // 合并：保留 DB 中 scenes 的 windows（来自 /windows 接口的保存），只更新 folder_mappings
+        var existingScenes = existingConfig.scenes || {};
+        cfg.scenes.A = cfg.scenes.A || { name: '第一幕', folder_mappings: {}, windows: [] };
+        cfg.scenes.B = cfg.scenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
+        // 保留已有 windows（不被 incoming config 的空 windows 覆盖）
+        if (existingScenes.A && existingScenes.A.windows && existingScenes.A.windows.length > 0) {
+          cfg.scenes.A.windows = existingScenes.A.windows;
+        }
+        if (existingScenes.B && existingScenes.B.windows && existingScenes.B.windows.length > 0) {
+          cfg.scenes.B.windows = existingScenes.B.windows;
+        }
+        // 更新 folder_mappings
+        if (rootFm && Object.keys(rootFm).length > 0) {
+          cfg.scenes.A.folder_mappings = rootFm;
+        }
+      }
+
+      if (folder_mappings !== undefined) {
+        var fm = typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings;
+        updates.push('folder_mappings=?'); values.push(typeof folder_mappings === 'string' ? folder_mappings : JSON.stringify(fm));
+      }
+      updates.push('config=?'); values.push(JSON.stringify(cfg));
+      values.push(id);
+
+      if (updates.length === 0) return res.json({ success: true });
+      db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        logAction('update', 'room', { id, name, folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : undefined });
+        res.json({ success: true });
+      });
+    });
+    return;
   }
+
+  if (name !== undefined) { updates.push('name=?'); values.push(name); }
   // folder_mappings-only 分支：直接更新 scenes.A.folder_mappings（根级已废止）
   if (folder_mappings !== undefined && config === undefined) {
     var newFm = typeof folder_mappings === 'string' ? JSON.parse(folder_mappings) : folder_mappings;
