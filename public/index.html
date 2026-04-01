@@ -912,12 +912,27 @@ function rmDevice() {
 }
 
 // ============================================================================
-// 场景 / 窗口编辑器模块
 // ============================================================================
-// 场景（Scene）概念：
-//   每个房间有 A（第一幕）和 B（第二幕）两套配置，互不影响。
-//   场景包含：folder_mappings（素材映射）+ windows（窗口布局配置）。
-//   设备收到 sync_room_materials 时根据当前激活的场景加载对应配置。
+// 🪟 窗口配置模块（Tab D）
+//
+// 【架构】
+// 每个房间有 A（第一幕）和 B（第二幕）两套完全独立的配置，互不影响。
+//   scenes.A.folder_mappings：场景 A 的素材映射（{文件夹ID: [素材ID列表]})
+//   scenes.B.folder_mappings：场景 B 的素材映射
+//   scenes.A.windows：场景 A 的窗口布局列表（位置/尺寸/内容）
+//   scenes.B.windows：场景 B 的窗口布局列表
+//
+// 【与外部信号的关系】
+// 外部 RS485/DMX512 信号 → 切换文件夹编号（01~30）→ APP 被动更新播放内容
+// Scene A/B 是用户预先设定的内容标签，永久执行，不随外部信号切换
+//
+// 【scene-prefixed folder ID】
+// MQTT 发送时 folder ID 加场景前缀（A01, B01），APP 按前缀路由到 sceneA/sceneB 子目录
+//
+// 【Bug 修复历史（2026-04-02）】
+// Bug1: switchScene() 未调用 renderWinEditorFull() → 切换标签后编辑器列表/画布不更新
+// Bug2: saveWins() 后 s.rooms[idx].config 内存未同步 → 属性面板显示旧数据
+// Bug3: updWinContent() 改完属性后无重渲染 → 面板和画布标签不刷新
 //
 // 窗口（Window）数据模型（与 rooms.config.scenes[sceneId].windows 对应）：
 //   {
@@ -939,8 +954,11 @@ function rmDevice() {
 //   保存后自动调用 doSyncRoom(id) 推送至设备
 
 /** 切换当前编辑的场景（A = 第一幕，B = 第二幕）
- *  修复：切换场景时保存/恢复各场景的窗口选中状态（s._selWinMap）
- *       不再清空 s._selWin，避免"请先选择一个窗口"按钮失效
+ *  BugFix-20260402：末尾调用 renderWinEditorFull()，确保切换后编辑器列表和画布同步更新。
+ *  之前 Bug：Header 显示"第二幕"激活，但 Body 继续显示 Scene A 的窗口列表。
+ *
+ *  保存/恢复机制：s._selWinMap 记录每个 scene 最后选中的窗口 ID，
+ *  切换时 s._selWin 从新 scene 的 windows 数组中恢复，不再清空导致按钮失效。
  */
 function switchScene(id) {
     var oldS = s._curScene || 'A';
@@ -1255,7 +1273,7 @@ function updWinContent(field, value) {
     var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w.content = Object.assign({}, s._selWin.content);
-    renderWinEditorFull(); // 【Bug Fix】更新属性面板类型按钮和画布标签
+    renderWinEditorFull(); // 【BugFix-20260402】刷新属性面板类型按钮 + 画布窗口标签 + 列表显示
 }
 
 

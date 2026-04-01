@@ -113,6 +113,8 @@ function logAction(action, target, details) {
 
 // 将 scenes 对象中的 folder_mappings 键名前缀 scene 标识（A01, B01...）
 // 用于 MQTT 发送时统一格式，避免 A/B 场景共用 "01" 导致物理文件夹冲突
+// 【架构】Scene A 文件夹编号 A01~A30，Scene B 文件夹编号 B01~B30
+// APP 解析 MQTT payload 时按前缀路由到 sceneA/sceneB 子目录
 function buildPrefixedScenes(scenes) {
   var result = {};
   Object.keys(scenes || {}).forEach(function(key) {
@@ -1835,6 +1837,8 @@ app.put('/api/rooms/:id', (req, res) => {
 });
 // 更新房间的窗口配置（快捷接口，支持指定场景）
 // PUT /api/rooms/:id/windows  body: { windows, sceneId }
+// 【窗口配置系统】sceneId 指定保存到 scenes.A.windows 还是 scenes.B.windows
+// 保存后立即调用 sendSyncCommandToDevice() 推送 MQTT，让设备实时更新窗口
 app.put('/api/rooms/:id/windows', (req, res) => {
   const { windows, sceneId } = req.body;   // sceneId: 'A' 或 'B'
   const id = req.params.id;
