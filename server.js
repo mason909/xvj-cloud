@@ -1478,30 +1478,6 @@ app.post("/api/folders/note", (req, res) => {
 });
 
 // 获取文件夹备注
-app.get("/api/folders/notes", (req, res) => {
-    db.query("SELECT folder, note FROM folder_notes", (err, rows) => {
-        if (err) return res.status(500).json({error:err.message});
-        const notes = {};
-        rows.forEach(r => notes[r.folder] = r.note);
-        res.json(notes);
-    });
-});
-
-
-
-// ==================== 操作日志 API ====================
-
-
-app.post("/api/folders/notes", (req, res) => {
-    const { folder, note } = req.body;
-    if (!folder) return res.status(400).json({error:'folder required'});
-    db.query("INSERT INTO folder_notes (folder, note) VALUES (?, ?) ON DUPLICATE KEY UPDATE note = ?", [folder, note, note], (err) => {
-        if (err) return res.status(500).json({error:err.message});
-        res.json({success:true});
-    });
-});
-
-app.get('/api/logs', (req, res) => {
   const limit = parseInt(req.query.limit) || 20;
   db.query("SELECT * FROM operation_logs ORDER BY id DESC LIMIT ?", [limit], (err, rows) => {
     if (err) return res.status(500).json({error:err.message});
