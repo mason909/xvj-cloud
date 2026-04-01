@@ -111,6 +111,25 @@ function logAction(action, target, details) {
   );
 }
 
+// 将 scenes 对象中的 folder_mappings 键名前缀 scene 标识（A01, B01...）
+// 用于 MQTT 发送时统一格式，避免 A/B 场景共用 "01" 导致物理文件夹冲突
+function buildPrefixedScenes(scenes) {
+  var result = {};
+  Object.keys(scenes || {}).forEach(function(key) {
+    var sceneData = scenes[key];
+    var prefixedMappings = {};
+    Object.keys(sceneData.folder_mappings || {}).forEach(function(folderId) {
+      prefixedMappings[key + folderId] = sceneData.folder_mappings[folderId];
+    });
+    result[key] = {
+      name: sceneData.name,
+      folder_mappings: prefixedMappings,
+      windows: sceneData.windows || []
+    };
+  });
+  return result;
+}
+
 const app = express();
 const PORT = config.port;
 
@@ -430,6 +449,9 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             delete roomConfig.windows;
           }
 
+          // 给 scenes 的 folder_mappings 键名加 scene 前缀（A01, B01），避免物理文件夹冲突
+          var prefixedScenes = buildPrefixedScenes(roomConfig.scenes);
+
           // 构建完整的推送数据
           const payload = {
             action: 'auth_result',
@@ -437,8 +459,8 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             authorized: true,
             message: message,
             room_id: roomId || '',
-            scenes: roomConfig.scenes,   // 两套场景数据
-            folder_mappings: roomConfig.scenes.A.folder_mappings, // APK 用这个触发 HTTP 同步
+            scenes: prefixedScenes,
+            folder_mappings: prefixedScenes.A ? prefixedScenes.A.folder_mappings : {},
             debug: debugFlag,
             timestamp: Date.now()
           };
@@ -510,17 +532,33 @@ function sendSyncCommandToDevice(mqttId, roomId, folderMappings, config) {
       B: { name: '第二幕', folder_mappings: {}, windows: [] }
     };
   }
-  const topic = `xvj/device/${deviceId}/command`;
+
+  // 给 scenes 里的 folder_mappings 键名前缀 scene 标识，避免 A/B 共用 "01" 导致物理文件夹冲突
+  var prefixedScenes = {};
+  Object.keys(scenes).forEach(function(key) {
+    var sceneData = scenes[key];
+    var prefixedMappings = {};
+    Object.keys(sceneData.folder_mappings || {}).forEach(function(folderId) {
+      prefixedMappings[key + folderId] = sceneData.folder_mappings[folderId]; // A01, B01...
+    });
+    prefixedScenes[key] = {
+      name: sceneData.name,
+      folder_mappings: prefixedMappings,
+      windows: sceneData.windows || []
+    };
+  });
+
+  const topic = `xvj/device/${mqttId}/command`;
   const payload = {
     action: 'sync_room_materials',
     room_id: roomId,
-    scenes: scenes,   // 两套场景数据
-    folder_mappings: scenes.A ? scenes.A.folder_mappings : folderMappings, // APK 用这个触发 HTTP 同步
+    scenes: prefixedScenes,   // folder_mappings 键名已加 scene 前缀
+    folder_mappings: prefixedScenes.A ? prefixedScenes.A.folder_mappings : {}, // APK 用这个触发 HTTP 同步
     debug: config && config.debug === true,
     timestamp: Date.now()
   };
   mqttClient.publish(topic, JSON.stringify(payload));
-  console.log(`📦 已发送同步命令到设备 ${deviceId}, scenes=A/B, debug=${payload.debug}`);
+  console.log(`📦 已发送同步命令到设备 ${mqttId}, scenes=A/B (scene-prefixed), debug=${payload.debug}`);
 }
 
 /**
@@ -658,23 +696,40 @@ app.post('/api/devices/:id/command', (req, res) => {
   // sync 命令需要补全 room_id + folder_mappings（服务器查数据库，APK 不需要重复传）
   if (cmd.action === 'sync') {
     db.query(
-      'SELECT d.room_id, r.folder_mappings, r.config FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
+      'SELECT d.room_id, d.fingerprint, r.folder_mappings, r.config FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
       [deviceId],
       (err, rows) => {
         if (err || !rows || rows.length === 0) {
           return res.status(404).json({ error: '设备未找到' });
         }
-        const { room_id, folder_mappings, config } = rows[0];
+        const { room_id, fingerprint, folder_mappings, config } = rows[0];
         if (!room_id) {
           return res.status(400).json({ error: '设备未绑定房间' });
         }
         const roomConfig = config ? JSON.parse(config) : {};
-        const mqttId = fingerprint || deviceId;
-        const topic = `xvj/device/${fingerprint || deviceId}/command`;
+        const devFingerprint = fingerprint || deviceId;
+        const topic = `xvj/device/${devFingerprint}/command`;
+
+        // scene-prefixed scenes + folder_mappings（与 sendSyncCommandToDevice 完全一致）
+        var prefixedScenes = {};
+        Object.keys(roomConfig.scenes || {}).forEach(function(key) {
+          var sceneData = roomConfig.scenes[key];
+          var prefixedMappings = {};
+          Object.keys(sceneData.folder_mappings || {}).forEach(function(folderId) {
+            prefixedMappings[key + folderId] = sceneData.folder_mappings[folderId];
+          });
+          prefixedScenes[key] = {
+            name: sceneData.name,
+            folder_mappings: prefixedMappings,
+            windows: sceneData.windows || []
+          };
+        });
+        const curScene = roomConfig.current_scene || 'A';
         const syncCmd = {
           action: 'sync_room_materials',
           room_id: room_id,
-          folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : {},
+          scenes: prefixedScenes,
+          folder_mappings: prefixedScenes[curScene] ? prefixedScenes[curScene].folder_mappings : {},
           debug: roomConfig.debug === true
         };
         mqttClient.publish(topic, JSON.stringify(syncCmd));
@@ -685,11 +740,15 @@ app.post('/api/devices/:id/command', (req, res) => {
     return;
   }
 
-  const mqttId = fingerprint || deviceId;
-  const topic = `xvj/device/${fingerprint || deviceId}/command`;
-  mqttClient.publish(topic, JSON.stringify(cmd));
-  logAction('sync', 'device', { device_id: deviceId, command: cmd });
-  res.json({ success: true, command: cmd });
+  // 查询设备的 fingerprint 用于 MQTT topic
+  db.query('SELECT fingerprint FROM devices WHERE id = ?', [deviceId], (err, rows) => {
+    if (err || rows.length === 0) return res.status(404).json({ error: '设备未找到' });
+    const devFingerprint = rows[0].fingerprint || deviceId;
+    const topic = `xvj/device/${devFingerprint}/command`;
+    mqttClient.publish(topic, JSON.stringify(cmd));
+    logAction('sync', 'device', { device_id: deviceId, command: cmd });
+    res.json({ success: true, command: cmd });
+  });
 });
 
 // 房间同步：向指定房间的所有授权设备发送 sync_room_materials
@@ -828,13 +887,27 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
                   }));
                   sentDel++;
 
-                  // 3b. sync_room_materials：带当前场景已更新的 folder_mappings
-                  const curFm = config.scenes?.[curScene]?.folder_mappings || {};
+                  // 3b. sync_room_materials：scene-prefixed 格式，保持和 sendSyncCommandToDevice 一致
+                  // 给 scenes 里的 folder_mappings 键名前缀 scene 标识（与 auth/sendSyncCommandToDevice 一致）
+                  var prefixedScenesDelete = {};
+                  Object.keys(config.scenes || {}).forEach(function(key) {
+                    var sceneData = config.scenes[key];
+                    var prefixedMappingsDelete = {};
+                    Object.keys(sceneData.folder_mappings || {}).forEach(function(folderId) {
+                      prefixedMappingsDelete[key + folderId] = sceneData.folder_mappings[folderId]; // A01, B01...
+                    });
+                    prefixedScenesDelete[key] = {
+                      name: sceneData.name,
+                      folder_mappings: prefixedMappingsDelete,
+                      windows: sceneData.windows || []
+                    };
+                  });
+                  const curFmDelete = prefixedScenesDelete[curScene]?.folder_mappings || {};
                   mqttClient.publish(topic, JSON.stringify({
                     action: 'sync_room_materials',
                     room_id: roomId,
-                    scenes: config.scenes,
-                    folder_mappings: curFm,        // 只用当前场景，不合并其他场景
+                    scenes: prefixedScenesDelete,
+                    folder_mappings: curFmDelete,    // scene-prefixed
                     debug: config.debug === true
                   }));
                   sentSync++;
@@ -2347,20 +2420,24 @@ app.post('/api/devices/:id/push-update', (req, res) => {
     if (versions.length === 0) return res.status(404).json({error:'No APK available'});
     
     const apk = versions[0];
-    const mqttId = fingerprint || deviceId;
-    const topic = `xvj/device/${fingerprint || deviceId}/command`;
-    
-    const cmd = {
-      action: 'update',
-      version: apk.version,
-      version_code: apk.version_code,
-      url: 'http://47.102.106.237/apk/' + path.basename(apk.filepath)
-    };
+    // 先查设备 fingerprint
+    db.query('SELECT fingerprint FROM devices WHERE id = ?', [deviceId], (err2, devs) => {
+      if (err2 || devs.length === 0) return res.status(404).json({ error: '设备未找到' });
+      const devFingerprint = devs[0].fingerprint || deviceId;
+      const topic = `xvj/device/${devFingerprint}/command`;
 
-    mqttClient.publish(topic, JSON.stringify(cmd), {qos:1}, (err2) => {
-      if (err2) return res.status(500).json({error:err2.message});
-      logAction('push_update', 'device', { device_id: deviceId, version: apk.version, version_code: apk.version_code });
-      res.json({success:true, message:'Update pushed'});
+      const cmd = {
+        action: 'update',
+        version: apk.version,
+        version_code: apk.version_code,
+        url: 'http://47.102.106.237/apk/' + path.basename(apk.filepath)
+      };
+
+      mqttClient.publish(topic, JSON.stringify(cmd), {qos:1}, (err3) => {
+        if (err3) return res.status(500).json({error:err3.message});
+        logAction('push_update', 'device', { device_id: deviceId, version: apk.version, version_code: apk.version_code });
+        res.json({success:true, message:'Update pushed'});
+      });
     });
   });
 });
