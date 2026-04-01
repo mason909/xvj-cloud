@@ -1477,12 +1477,23 @@ app.post("/api/folders/note", (req, res) => {
     );
 });
 
-// 获取文件夹备注
+// ==================== 操作日志 API ====================
+app.get('/api/logs', (req, res) => {
   const limit = parseInt(req.query.limit) || 20;
   db.query("SELECT * FROM operation_logs ORDER BY id DESC LIMIT ?", [limit], (err, rows) => {
     if (err) return res.status(500).json({error:err.message});
     res.json(rows);
   });
+});
+
+// 获取文件夹备注
+app.get("/api/folders/notes", (req, res) => {
+    db.query("SELECT folder, note FROM folder_notes", (err, rows) => {
+        if (err) return res.status(500).json({error:err.message});
+        const notes = {};
+        rows.forEach(r => notes[r.folder] = r.note);
+        res.json(notes);
+    });
 });
 
 // ==================== 素材同步 v2：同时查 materials + preset_materials ====================
