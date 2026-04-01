@@ -287,6 +287,7 @@ var s = {
     folders: JSON.parse(localStorage.getItem('xfolds') || '{}'),
     p: localStorage.getItem('xp') || 'materials',
     f: localStorage.getItem('xf') || '01',
+    _windowEditorActive: false,
     fs: [],
     ms: [],
     ds: [],
@@ -805,7 +806,7 @@ function rmDevice() {
     h += '<div style="color:#888;font-size:11px;margin-bottom:6px;font-weight:bold">工作台</div>';
     h += '<div style="display:flex;gap:24px">';
     h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">调试模式</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="roomDebugToggle" onchange="toggleRoomDebug()" style="opacity:0;width:0;height:0"><span id="roomDebugSlider" style="position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:0.3s"></span><span id="roomDebugKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
-    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">窗口配置</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="winToggle" style="opacity:0;width:0;height:0" ' + (s.f === 'win' ? 'checked' : '') + ' onchange="sfW()"><span id="winSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s.f === 'win' ? '#e94560' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="winKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s.f === 'win' ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
+    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">窗口配置</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="winToggle" style="opacity:0;width:0;height:0" ' + (s._windowEditorActive ? 'checked' : '') + ' onchange="sfW()"><span id="winSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._windowEditorActive ? '#e94560' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="winKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._windowEditorActive ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
     h += '</div></div>';
 
     // 显示房间设备列表
@@ -832,7 +833,7 @@ function rmDevice() {
         h += '<div style="margin-top:15px;padding:15px;background:#2a2a2a;border-radius:8px;text-align:center;color:#666">等待设备中...</div>';
     }
     
-    var hideTabs = s.f === 'win' ? 'display:none' : '';
+    var hideTabs = s._windowEditorActive ? 'display:none' : '';
     
     // 场景选择器（第一幕/第二幕）
     var curS = s._curScene || 'A';
@@ -860,13 +861,13 @@ function rmDevice() {
     }
     h += '</div>';
     // Phase2: 窗口编辑器区域（文件夹tab下方或替代）
-    h += '<div id="winEditorArea" style="display:' + (s.f === 'win' ? 'block' : 'none') + '"></div>';
+    h += '<div id="winEditorArea" style="display:' + (s._windowEditorActive ? 'block' : 'none') + '"></div>';
     // 同步按钮
-    var hideSync = s.f === 'win' ? 'display:none' : '';
+    var hideSync = s._windowEditorActive ? 'display:none' : '';
     h += '<button class="btn btn-primary" style="margin-top:10px;width:100%;background:#28a745;font-size:16px;padding:12px;' + hideSync + '" onclick="syncCurrentRoom()">🔄 同步当前房间</button>';
     
     // Phase2: 窗口模式下直接渲染编辑器，不要继续构建任何HTML
-    if (s.f === 'win') {
+    if (s._windowEditorActive) {
         g.innerHTML = h;
         renderWinEditorFull();
         return;
@@ -953,6 +954,19 @@ function rmDevice() {
  *  保存/恢复机制：s._selWinMap 记录每个 scene 最后选中的窗口 ID，
  *  切换时 s._selWin 从新 scene 的 windows 数组中恢复，不再清空导致按钮失效。
  */
+
+// 【工具函数】加载并隔离 room config：A/B windows 数组独立引用
+// 用于所有窗口操作入口（selWin/switchScene/renderWinEditorFull）
+function _loadRoomCfg(r) {
+    var c = {};
+    try { c = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
+    if (c.scenes && c.scenes.A && c.scenes.B && c.scenes.A.windows === c.scenes.B.windows) {
+        c.scenes.A.windows = (c.scenes.A.windows || []).slice();
+        c.scenes.B.windows = (c.scenes.B.windows || []).slice();
+    }
+    return c;
+}
+
 function switchScene(id) {
     var oldS = s._curScene || 'A';
     s._selWinMap = s._selWinMap || { A: null, B: null };
@@ -963,16 +977,6 @@ function switchScene(id) {
     // 【BugFix-20260402-v2】始终对 windows 数组做浅拷贝，打破 A/B 共享引用链
     // 旧数据损坏形态：scenes.A.windows === scenes.B.windows（同一数组引用）
     // 不做拷贝会导致 addWin/push 操作同时污染两个场景
-    var _loadRoomCfg = function(r) {
-        var c = {};
-        try { c = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-        // 修复：如果 A 和 B 的 windows 数组是同一引用，各自拆成独立副本
-        if (c.scenes && c.scenes.A && c.scenes.B && c.scenes.A.windows === c.scenes.B.windows) {
-            c.scenes.A.windows = (c.scenes.A.windows || []).slice();
-            c.scenes.B.windows = (c.scenes.B.windows || []).slice();
-        }
-        return c;
-    };
 
     if (newSelId) {
         var r = s.rooms.find(function(x) { return x.id === s.rf; });
@@ -1003,7 +1007,7 @@ function switchScene(id) {
 
 /** 退出窗口配置模式，恢复普通房间视图 */
 function sfR(f) {
-    s.f = f;
+    s._windowEditorActive = false;
     var wea = document.getElementById('winEditorArea');
     if (wea) wea.style.display = 'none';
     // 重置窗口开关
@@ -1028,13 +1032,13 @@ function sfW() {
     if (!wt) return;
     if (wt.checked) {
         // 开关 ON → 进入窗口模式
-        s.f = 'win';
+        s._windowEditorActive = true;
         s._selWin = null;
         if (!s._curScene) s._curScene = 'A';
         rmDevice();
     } else {
         // 开关 OFF → 切回文件夹模式
-        s.f = '01';
+        s._windowEditorActive = false;
         rmDevice();
     }
 }
@@ -1714,16 +1718,16 @@ async function doPushToRoom() {
         }
         var folderMs = config.scenes[scene] ? config.scenes[scene].folder_mappings : {};
         // 添加素材ID到对应文件夹（按原文件夹归属，去重）
-        s.pushMs.forEach(function(m) {
-            var folder = m.folder || '01';
+        s.pushMs.forEach(function(mat) {
+            var folder = mat.folder || '01';
             if (!folderMs[folder]) folderMs[folder] = [];
             // 检查ID或URL是否已存在（同时检查素材库和预设库）
             var exists = folderMs[folder].some(function(existingId) {
                 var materialInMs = s.ms ? s.ms.find(function(x) { return x.id === existingId; }) : null;
                 var materialInPm = s.pm ? s.pm.find(function(x) { return x.id === existingId; }) : null;
-                return existingId === m.id ||
-                       (materialInMs && materialInMs.url === m.url) ||
-                       (materialInPm && materialInPm.url === m.url);
+                return existingId === mat.id ||
+                       (materialInMs && materialInMs.url === mat.url) ||
+                       (materialInPm && materialInPm.url === mat.url);
             });
             if (!exists) { folderMs[folder].push(m.id); totalCount++; }
         });
@@ -1753,8 +1757,8 @@ async function doPushToRoom() {
     });
     logAction('push', 'room', {
         room_ids: roomIds, room_names: roomNames, store_name: pushStore,
-        material_ids: s.pushMs.map(function(m) { return m.id; }),
-        material_names: s.pushMs.map(function(m) { return m.filename || m.name; }),
+        material_ids: s.pushMs.map(function(mat) { return mat.id; }),
+        material_names: s.pushMs.map(function(mat) { return mat.filename || mat.name; }),
         total: totalCount,
         scene: scene,
         scene_name: scene === 'A' ? '第一幕' : '第二幕'
