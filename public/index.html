@@ -961,6 +961,14 @@ function switchScene(id) {
         }
     } else {
         s._selWin = null;
+        // 强制从当前 scene 的配置重新读取窗口列表，不使用旧缓存
+        var r2 = s.rooms.find(function(x) { return x.id === s.rf; });
+        if (r2) {
+            var cfg2 = {};
+            try { cfg2 = r2.config ? (typeof r2.config === 'string' ? JSON.parse(r2.config) : r2.config) : {}; } catch(e2) {}
+            var sceneData2 = (cfg2.scenes && cfg2.scenes[s._curScene]) ? cfg2.scenes[s._curScene] : {};
+            s._winCache = sceneData2.windows || [];
+        }
     }
     rmDevice();
 }
