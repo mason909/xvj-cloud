@@ -1626,6 +1626,22 @@ app.post('/api/stores', (req, res) => {
   });
 });
 
+app.put('/api/stores/:name', (req, res) => {
+  const oldName = decodeURIComponent(req.params.name);
+  const { newName } = req.body;
+  if (!newName || !newName.trim()) return res.status(400).json({ error: '新名称不能为空' });
+  if (oldName === newName) return res.json({ success: true });
+  db.query('SELECT id FROM stores WHERE name = ?', [newName], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (rows.length > 0) return res.status(409).json({ error: '店铺名称已存在' });
+    db.query('UPDATE stores SET name = ? WHERE name = ?', [newName.trim(), oldName], (err2) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      logAction('rename', 'store', { oldName, newName });
+      res.json({ success: true, newName: newName.trim() });
+    });
+  });
+});
+
 app.delete('/api/stores/:name', (req, res) => {
   const storeName = decodeURIComponent(req.params.name);
   logAction('delete', 'store', { name: storeName });

@@ -1812,10 +1812,12 @@ function rs(e, oldName) {
     var newName = prompt('重命名店铺:', oldName);
     if (!newName || newName === oldName) return;
     if (s.stores.includes(newName)) { alert('店铺名称已存在'); return; }
-    fetch('/api/stores/' + encodeURIComponent(oldName), {method: 'DELETE'}).then(function() {
-        return fetch('/api/stores', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: newName})});
+    fetch('/api/stores/' + encodeURIComponent(oldName), {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({newName: newName})
     }).then(function(res) {
-        if (!res.ok) { alert('重命名失败'); return; }
+        if (!res.ok) { res.json().then(function(d) { alert(d.error || '重命名失败'); }); return; }
         var idx = s.stores.indexOf(oldName);
         s.stores[idx] = newName;
         localStorage.setItem('xstores', JSON.stringify(s.stores));
