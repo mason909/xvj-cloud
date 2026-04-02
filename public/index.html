@@ -224,6 +224,11 @@ async function syncCurrentRoom() {
     };
 }
 
+// HTML 转义（防止 XSS）
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// HTML 属性转义（转义单双引号）
+function escA(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
 function doSyncRoom(roomId) {
     var mc = document.getElementById('mc');
     var m = document.getElementById('m');
@@ -424,16 +429,16 @@ function rm() {
         var isPreset = s.pm && s.pm.some(function(p) { return p.url === x.url; });
         var thumb = '';
         if (x.type === 'video') {
-            thumb = x.thumbnail ? '<img src="' + x.thumbnail + '">' : '<div class="card-thumb">▶</div>';
+            thumb = x.thumbnail ? '<img src="' + escA(x.thumbnail) + '">' : '<div class="card-thumb">▶</div>';
         } else {
-            thumb = x.url ? '<img src="' + x.url + '">' : '<div class="card-thumb">?</div>';
+            thumb = x.url ? '<img src="' + escA(x.url) + '">' : '<div class="card-thumb">?</div>';
         }
         h += '<div class="card ' + (sel ? 'selected' : '') + (isPreset ? ' card-presetted' : '') + '">';
-        h += '<input type="checkbox" class="card-check" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();tc(\'' + x.id + '\')">';
-        h += '<button class="card-del" onclick="dm(event,\'' + x.id + '\')">x</button>';
-        h += '<button class="card-preset" onclick="event.stopPropagation();cp2p(\'' + x.id + '\')" title="复制到预设">预设</button>';
-        h += '<div ondblclick="pv(\'' + x.url + '\',\'' + x.type + '\')">' + thumb + '</div>';
-        h += '<div class="card-name">' + (x.filename || x.name) + '</div>';
+        h += '<input type="checkbox" class="card-check" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();tc(\'' + escA(x.id) + '\')">';
+        h += '<button class="card-del" onclick="dm(event,\'' + escA(x.id) + '\')">x</button>';
+        h += '<button class="card-preset" onclick="event.stopPropagation();cp2p(\'' + escA(x.id) + '\')" title="复制到预设">预设</button>';
+        h += '<div ondblclick="pv(\'' + escA(x.url) + '\',\'' + escA(x.type) + '\')">' + thumb + '</div>';
+        h += '<div class="card-name">' + esc(x.filename || x.name) + '</div>';
         h += '</div>';
     });
     g.innerHTML = h;
@@ -508,7 +513,8 @@ async function dm(e, id) {
     var m = s.ms.find(function(x) { return x.id === id; });
     var url = m ? m.url : null;
     // 删除素材
-    await fetch('/api/materials/' + id, {method: 'DELETE'});
+    var delRes = await fetch('/api/materials/' + id, {method: 'DELETE'});
+    if (!delRes.ok) { var err = await delRes.text(); alert('删除失败: ' + err); return; }
     // 1. 删除对应的预设（所有文件夹）
     if (url && s.pm) {
         var toDelete = s.pm.filter(function(p) { return p.url === url; });
@@ -637,8 +643,8 @@ function prm() {
         var type = x.type || (x.filename.match(/\.(mp4|webm|avi|mov)$/i) ? 'video' : 'image');
         var url = x.url;
         var thumbUrl = x.thumbnail || null;
-        var t = type === 'video' ? (thumbUrl ? '<img src="' + thumbUrl + '">' : '<div class="card-thumb">▶</div>') : (url ? '<img src="' + url + '">' : '<div class="card-thumb">?</div>');
-        h += '<div class="card"><button class="card-del" onclick="dpm(event,\'' + x.id + '\')">x</button><div ondblclick="pv(\'' + url + '\',\'' + type + '\')">' + t + '</div><div class="card-name">' + x.filename + '</div></div>';
+        var t = type === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '">' : '<div class="card-thumb">▶</div>') : (url ? '<img src="' + escA(url) + '">' : '<div class="card-thumb">?</div>');
+        h += '<div class="card"><button class="card-del" onclick="dpm(event,\'' + escA(x.id) + '\')">x</button><div ondblclick="pv(\'' + escA(url) + '\',\'' + escA(type) + '\')">' + t + '</div><div class="card-name">' + esc(x.filename) + '</div></div>';
     });
     g.innerHTML = h;
 }
@@ -898,8 +904,8 @@ function rmDevice() {
         all.forEach(function(m) {
             var type = m.type || (m.filename.match(/\.(mp4|webm|avi|mov)$/i) ? 'video' : 'image');
             var thumbUrl = m.thumbnail ? (m.thumbnail.startsWith('/') ? m.thumbnail : m.thumbnail) : null;
-            var t = type === 'video' ? (thumbUrl ? '<img src="' + thumbUrl + '">' : '<div class="card-thumb">▶</div>') : (m.url ? '<img src="http://47.102.106.237' + m.url + '">' : '<div class="card-thumb">?</div>');
-            h2 += '<div class="card"><button class="card-del" onclick="rmRoomMat(event,\'' + m.id + '\')">x</button><div>' + t + '</div><div class="card-name">' + m.filename + '</div></div>';
+            var t = type === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '">' : '<div class="card-thumb">▶</div>') : (m.url ? '<img src="' + escA(m.url) + '">' : '<div class="card-thumb">?</div>');
+            h2 += '<div class="card"><button class="card-del" onclick="rmRoomMat(event,\'' + escA(m.id) + '\')">x</button><div>' + t + '</div><div class="card-name">' + esc(m.filename) + '</div></div>';
         });
     }
     h2 += '</div>';
