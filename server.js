@@ -1519,32 +1519,26 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
       return res.status(404).json({ error: '房间不存在' });
     }
 
-    // 合并 Scene A 和 Scene B 的 folder_mappings（确保两幕素材都能被同步）
-    let folderMappings = {};
+    // 分别读取 Scene A 和 B 的 folder_mappings，返回 scene-prefixed keys 供 APK 正确 lookup
+    // APK syncRoomMaterials 用 scenePrefix + folderNum 构建 "A01" / "B01" key 来查 HTTP API
+    let folderMappingsA = {};
+    let folderMappingsB = {};
     try {
       const config = JSON.parse(rows[0].config || '{}');
-      const fmA = config.scenes?.A?.folder_mappings || {};
-      const fmB = config.scenes?.B?.folder_mappings || {};
-      // 合并，A 有则用 A，B 有则追加（不去重，保持原语义）
-      Object.keys(fmA).forEach(k => { folderMappings[k] = [...(fmA[k] || [])]; });
-      Object.keys(fmB).forEach(k => {
-        if (folderMappings[k]) { [...(fmB[k] || [])].forEach(id => { if (!folderMappings[k].includes(id)) folderMappings[k].push(id); }); }
-        else { folderMappings[k] = [...(fmB[k] || [])]; }
-      });
-      // fallback 到根级（兼容旧数据）
-      if (Object.keys(folderMappings).every(k => folderMappings[k].length === 0) && rows[0].folder_mappings) {
-        try { folderMappings = JSON.parse(rows[0].folder_mappings); } catch(e2) {}
-      }
+      folderMappingsA = config.scenes?.A?.folder_mappings || {};
+      folderMappingsB = config.scenes?.B?.folder_mappings || {};
     } catch(e) {
-      if (rows[0].folder_mappings) { try { folderMappings = JSON.parse(rows[0].folder_mappings); } catch(e2) {} }
+      if (rows[0].folder_mappings) {
+        try { folderMappingsA = JSON.parse(rows[0].folder_mappings); } catch(e2) {}
+      }
     }
-    const result = {}; // { "01": [{id, filename, url, md5, type}], ... }
 
-    // 收集所有需要查询的 material IDs
+    // 收集所有需要的 material IDs（来自 A 和 B）
     const allIds = new Set();
-    Object.values(folderMappings).forEach(ids => {
-      if (Array.isArray(ids)) ids.forEach(id => { if (id) allIds.add(id); });
-    });
+    Object.values(folderMappingsA).forEach(ids => { if (Array.isArray(ids)) ids.forEach(id => { if (id) allIds.add(id); }); });
+    Object.values(folderMappingsB).forEach(ids => { if (Array.isArray(ids)) ids.forEach(id => { if (id) allIds.add(id); }); });
+
+    const result = {}; // { "A01": [...], "A02": [...], "B01": [...], "B02": [...] } — scene-prefixed keys
 
     if (allIds.size === 0) {
       console.log('[DEBUG room-materials-v2] folderMappings empty, roomId:', roomId);
@@ -1582,12 +1576,15 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
               }
             });
 
-            // 按 folder 分组
-            Object.entries(folderMappings).forEach(([folderId, ids]) => {
+            // 按 scene-prefixed folder 分组（"A01", "B01"），与 APK syncRoomMaterials 的 lookup 格式对齐
+            Object.entries(folderMappingsA).forEach(([folderNum, ids]) => {
               if (Array.isArray(ids) && ids.length > 0) {
-                result[folderId] = ids
-                  .map(id => merged[id])
-                  .filter(Boolean);
+                result['A' + folderNum] = ids.map(id => merged[id]).filter(Boolean);
+              }
+            });
+            Object.entries(folderMappingsB).forEach(([folderNum, ids]) => {
+              if (Array.isArray(ids) && ids.length > 0) {
+                result['B' + folderNum] = ids.map(id => merged[id]).filter(Boolean);
               }
             });
 
@@ -1935,9 +1932,14 @@ app.get('/api/room-materials/:roomId/list', (req, res) => {
     const room = rooms[0];
     let roomConfig = { scenes: {} };
     try { if (room.config) roomConfig = JSON.parse(room.config); } catch(e) {}
-    // scenes.A.folder_mappings 是唯一来源（根级已废止）
-    let folderMappings = (roomConfig.scenes && roomConfig.scenes.A && roomConfig.scenes.A.folder_mappings)
-      ? roomConfig.scenes.A.folder_mappings : {};
+
+    // 读取 Scene A 和 B 的 folder_mappings（APK 用 scene-prefixed keys 做 HTTP API lookup）
+    const fmA = roomConfig.scenes?.A?.folder_mappings || {};
+    const fmB = roomConfig.scenes?.B?.folder_mappings || {};
+    // 构建 scene-prefixed folder_mappings（"A01", "B01" 等），与 APK syncRoomMaterials 的 lookup 格式对齐
+    const folderMappings = {};
+    Object.entries(fmA).forEach(([k, v]) => { folderMappings['A' + k] = v || []; });
+    Object.entries(fmB).forEach(([k, v]) => { folderMappings['B' + k] = v || []; });
 
     const allIds = [...new Set(Object.values(folderMappings).flat().filter(Boolean))];
     const result = {};
@@ -1961,9 +1963,10 @@ app.get('/api/room-materials/:roomId/list', (req, res) => {
             };
           }
         });
-        Object.entries(folderMappings).forEach(([folder, ids]) => {
+        // 返回 scene-prefixed keys（"A01", "B01"），供 APK syncRoomMaterials 正确 lookup
+        Object.entries(folderMappings).forEach(([folderId, ids]) => {
           if (Array.isArray(ids)) {
-            result[folder] = ids.map(id => merged[id]).filter(Boolean);
+            result[folderId] = ids.map(id => merged[id]).filter(Boolean);
           }
         });
         res.json(result);
