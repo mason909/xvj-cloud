@@ -782,12 +782,16 @@ function sr(id) {
 async function createRoom() {
     var n = prompt('请输入房间号(例: 201):');
     if (!n) return;
-    await fetch('/api/rooms', {
+    var res = await fetch('/api/rooms', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({store_name: s.df, name: n})
     });
+    if (!res.ok) { alert('创建房间失败'); return; }
     await lr();
+    // 自动选中新房间
+    var newRoom = s.rooms.find(function(r) { return r.name === n && r.store_name === s.df; });
+    if (newRoom) { s.rf = newRoom.id; localStorage.setItem('xroom', newRoom.id); rd(); rmDevice(); }
 }
 
 async function dr(e, id) {
@@ -1611,13 +1615,13 @@ function rd() {
     var h = '<div class="tabs">';
     s.stores.forEach(function(sn) {
         var act = s.df === sn ? 'active' : '';
-        h += '<div class="tab ' + act + '" onclick="sd(\'' + sn + '\')" oncontextmenu="rs(event,\'' + sn + '\');return false;"><span class="tab-n">' + sn + '</span><span class="folder-del" onclick="ds(event,\'' + sn + '\')">×</span></div>';
+        h += '<div class="tab ' + act + '" onclick="sd(\'' + escA(sn) + '\')" oncontextmenu="rs(event,\'' + escA(sn) + '\');return false;"><span class="tab-n">' + esc(sn) + '</span><span class="folder-del" onclick="ds(event,\'' + escA(sn) + '\')">×</span></div>';
     });
     h += '<div class="tab" onclick="as()" style="border-style:dashed">+</div></div>';
     h += '<div class="tabs" style="margin-top:10px">';
     s.rooms.forEach(function(rn) {
         var act = s.rf === rn.id ? 'active' : '';
-        h += '<div class="tab ' + act + '" onclick="sr(\'' + rn.id + '\')" oncontextmenu="rr(event,\'' + rn.id + '\',\'' + rn.name + '\');return false;"><span class="tab-n">' + rn.name + '</span><span class="folder-del" onclick="dr(event,\'' + rn.id + '\')">×</span></div>';
+        h += '<div class="tab ' + act + '" onclick="sr(\'' + escA(rn.id) + '\')" oncontextmenu="rr(event,\'' + escA(rn.id) + '\',\'' + escA(rn.name) + '\');return false;"><span class="tab-n">' + esc(rn.name) + '</span><span class="folder-del" onclick="dr(event,\'' + escA(rn.id) + '\')">×</span></div>';
     });
     h += '<div class="tab" onclick="createRoom()" style="border-style:dashed">+</div></div>';
     document.getElementById('df').innerHTML = h;
@@ -1632,18 +1636,19 @@ function sd(store) {
     lr();
 }
 
-function as() {
+async function as() {
     var n = prompt('新店铺:');
     if (!n) return;
     if (!s.stores) s.stores = [];
     if (!s.stores.includes(n)) {
         s.stores.push(n);
         localStorage.setItem('xstores', JSON.stringify(s.stores));
-        fetch('/api/stores', {
+        var res = await fetch('/api/stores', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({name: n})
-        }).then(x => x.json());
+        });
+        if (!res.ok) { var err = await res.text(); s.stores.pop(); localStorage.setItem('xstores', JSON.stringify(s.stores)); alert('创建失败: ' + err); return; }
     }
     s.df = n;
     rd();
@@ -1658,7 +1663,7 @@ function ds(e, store) {
         s.df = s.stores[0] || '';
         rd();
         rmDevice();
-    });
+    }).catch(function(err) { alert('删除失败: ' + err.message); });
 }
 
 // ==================== 推送 ====================
@@ -1809,14 +1814,15 @@ function rs(e, oldName) {
     if (s.stores.includes(newName)) { alert('店铺名称已存在'); return; }
     fetch('/api/stores/' + encodeURIComponent(oldName), {method: 'DELETE'}).then(function() {
         return fetch('/api/stores', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: newName})});
-    }).then(function() {
+    }).then(function(res) {
+        if (!res.ok) { alert('重命名失败'); return; }
         var idx = s.stores.indexOf(oldName);
         s.stores[idx] = newName;
         localStorage.setItem('xstores', JSON.stringify(s.stores));
         if (s.df === oldName) s.df = newName;
         rd();
         rmDevice();
-    });
+    }).catch(function(err) { alert('重命名失败: ' + err.message); });
 }
 
 // 重命名房间（右键）
@@ -1824,7 +1830,10 @@ function rr(e, id, oldName) {
     e.preventDefault();
     var newName = prompt('重命名房间:', oldName);
     if (!newName || newName === oldName) return;
-    fetch('/api/rooms/' + id, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: newName})}).then(function() { lr(); });
+    fetch('/api/rooms/' + id, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: newName})}).then(function(res) {
+        if (!res.ok) { alert('重命名失败'); return; }
+        lr();
+    }).catch(function(err) { alert('重命名失败: ' + err.message); });
 }
 
 sp(s.p);
