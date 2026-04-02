@@ -395,8 +395,12 @@ function rn(e, n) {
 function sf(f) {
     s.f = f;
     localStorage.setItem('xf', f);
-    rf();
-    rm();
+    rf(); // 始终刷新素材页的标签栏（安全）
+    if (s.df && s.rf) {
+        rmDevice(); // 在房间视图里 → 刷新整个房间视图（含标签高亮+素材列表）
+    } else {
+        rm(); // 在素材管理页 → 刷新素材网格
+    }
     // 更新文件夹信息显示
     var note = s.folders && s.folders[f] || '';
     var count = s.ms.filter(function(x) { return x.folder === f; }).length;
@@ -857,7 +861,7 @@ function rmDevice() {
         var f = i.toString().padStart(2, '0');
         var act = s.f === f ? 'active' : '';
         var ms = sceneFM[f] || [];
-        h += '<div class="tab ' + act + '" onclick="sfR(\'' + f + '\')"><span class="tab-n">' + f + '</span><span class="tab-d">' + (ms.length > 0 ? ms.length : '+') + '</span></div>';
+        h += '<div class="tab ' + act + '" onclick="sf(\'' + f + '\')"><span class="tab-n">' + f + '</span><span class="tab-d">' + (ms.length > 0 ? ms.length : '+') + '</span></div>';
     }
     h += '</div>';
     // Phase2: 窗口编辑器区域（文件夹tab下方或替代）
