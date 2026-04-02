@@ -115,6 +115,7 @@ function logAction(action, target, details) {
 // 用于 MQTT 发送时统一格式，避免 A/B 场景共用 "01" 导致物理文件夹冲突
 // 【架构】Scene A 文件夹编号 A01~A30，Scene B 文件夹编号 B01~B30
 // APP 解析 MQTT payload 时按前缀路由到 sceneA/sceneB 子目录
+// 【调试用】记录 scenes 转换输入输出
 function buildPrefixedScenes(scenes) {
   var result = {};
   Object.keys(scenes || {}).forEach(function(key) {
@@ -129,6 +130,7 @@ function buildPrefixedScenes(scenes) {
       windows: sceneData.windows || []
     };
   });
+  console.log('[DEBUG buildPrefixedScenes] 输入 scenes keys:', JSON.stringify(Object.keys(scenes || {})), '输出 folder_mappings:', JSON.stringify(result['A'] ? result['A'].folder_mappings : {}));
   return result;
 }
 
@@ -331,23 +333,33 @@ function handleMqttMessage(topic, message) {
         console.log('📨 设备命令: ' + deviceId + ' -> ' + JSON.stringify(data));
         if (data.action === 'sync') {
           db.query(
-            'SELECT d.room_id, r.folder_mappings FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
+            'SELECT d.room_id, r.folder_mappings, r.config FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
             [deviceId],
             (err, rows) => {
               if (err || !rows || rows.length === 0) {
                 console.log('⚠️ sync 命令找不到设备: ' + deviceId);
                 return;
               }
-              const { room_id, folder_mappings } = rows[0];
+              const { room_id, folder_mappings, config } = rows[0];
               if (!room_id) {
                 console.log('⚠️ sync 命令设备未绑定房间: ' + deviceId);
                 return;
               }
+              const roomConfig = config ? JSON.parse(config) : {};
+              const prefixedScenes = buildPrefixedScenes(roomConfig.scenes || {});
+              // 合并 A+B scene 的 folder_mappings，统一加 scene 前缀
+              const fmA = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
+              const fmB = prefixedScenes.B ? prefixedScenes.B.folder_mappings : {};
+              const allFolderMappings = {};
+              Object.keys(fmA).forEach(k => { allFolderMappings[k] = [...(fmA[k] || [])]; });
+              Object.keys(fmB).forEach(k => { allFolderMappings[k] = [...(fmB[k] || [])]; });
               const syncCmd = {
                 action: 'sync_room_materials',
                 room_id: room_id,
-                folder_mappings: folder_mappings ? JSON.parse(folder_mappings) : {}
+                scenes: prefixedScenes,           // scene-prefixed folder_mappings
+                folder_mappings: allFolderMappings // A01/B01 keys，与 HTTP API 一致
               };
+              console.log('[DEBUG handleMqttSync] scenes.A.fm=', JSON.stringify(prefixedScenes.A ? prefixedScenes.A.folder_mappings : {}));
               const topic = `xvj/device/${deviceId}/command`;
               mqttClient.publish(topic, JSON.stringify(syncCmd));
               console.log('📤 发送 sync_room_materials 到设备: ' + deviceId);
