@@ -224,9 +224,9 @@ async function syncCurrentRoom() {
     };
 }
 
-// HTML 转义（防止 XSS）
+// HTML 转义（防止 XSS）// 【S-10】素材/店铺/房间名全部经过此函数处理
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-// HTML 属性转义（转义单双引号）
+// HTML 属性转义（转义单双引号，防止破坏 HTML 属性结构）
 function escA(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 function doSyncRoom(roomId) {
@@ -1670,7 +1670,10 @@ function ds(e, store) {
 async function showPushDialog() {
     console.log('showPushDialog called, selected:', s.selected);
     if (!s.selected || s.selected.length === 0) { alert('请先勾选要推送的素材'); return; }
-    s.pushMs = s.ms.filter(function(x) { return s.selected.includes(x.id); });
+    // 只保留有效 UUID/preset ID，过滤掉无效残留值
+    s.pushMs = s.ms.filter(function(x) {
+        return s.selected.includes(x.id) && x.id && x.id.length > 5;
+    });
     console.log('pushMs:', s.pushMs);
     var h = '<div style="padding:24px;min-width:500px;font-size:18px"><h3 style="font-size:24px">推送到房间</h3><p style="color:#888;margin:10px 0">已选' + s.pushMs.length + '个素材（按原文件夹归属）</p>';
     // 店铺选择
@@ -1768,7 +1771,7 @@ async function doPushToRoom() {
                        (materialInMs && materialInMs.url === mat.url) ||
                        (materialInPm && materialInPm.url === mat.url);
             });
-            if (!exists) { folderMs[folder].push(m.id); totalCount++; }
+            if (!exists) { folderMs[folder].push(mat.id); totalCount++; }
         });
         // 更新目标场景的 folder_mappings，然后保存完整 config
         config.scenes[scene].folder_mappings = folderMs;

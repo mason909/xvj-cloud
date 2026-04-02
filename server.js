@@ -567,7 +567,18 @@ function notifyRoomDevicesOfSync(roomId) {
         const cfg = config ? JSON.parse(config) : {};
         // scene-prefixed 格式（与 sendSyncCommandToDevice / buildPrefixedScenes 一致）
         const prefixedScenes = buildPrefixedScenes(cfg.scenes || {});
-        const currentSceneFm = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
+        // 合并 Scene A 和 B 的 folder_mappings（设备必须同时有A和B的数据才能响应外部信号）
+        const fmA = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
+        const fmB = prefixedScenes.B ? prefixedScenes.B.folder_mappings : {};
+        const allFolderMappings = {};
+        Object.keys(fmA).forEach(k => { allFolderMappings[k] = [...(fmA[k] || [])]; });
+        Object.keys(fmB).forEach(k => {
+          if (allFolderMappings[k]) {
+            [...(fmB[k] || [])].forEach(id => { if (!allFolderMappings[k].includes(id)) allFolderMappings[k].push(id); });
+          } else {
+            allFolderMappings[k] = [...(fmB[k] || [])];
+          }
+        });
         devices.forEach(({ id: deviceId, fingerprint }) => {
           try {
             const mqttId = fingerprint || deviceId;
@@ -576,7 +587,7 @@ function notifyRoomDevicesOfSync(roomId) {
               action: 'sync_room_materials',
               room_id: roomId,
               scenes: prefixedScenes,
-              folder_mappings: currentSceneFm,
+              folder_mappings: allFolderMappings,
               debug: cfg.debug === true,
               timestamp: Date.now()
             };
@@ -1626,6 +1637,7 @@ app.post('/api/stores', (req, res) => {
   });
 });
 
+// 【S-11】店铺重命名（原子操作，避免 DELETE+POST 两步断层导致店铺丢失）
 app.put('/api/stores/:name', (req, res) => {
   const oldName = decodeURIComponent(req.params.name);
   const { newName } = req.body;
@@ -1760,20 +1772,34 @@ app.put('/api/rooms/:id', (req, res) => {
         };
         delete cfg.windows;
       } else {
-        // 合并：保留 DB 中 scenes 的 windows（来自 /windows 接口的保存），只更新 folder_mappings
+        // 合并：保留 DB 中 scenes 的 windows，只更新传入的 folder_mappings
+        // 【Bug Fix】incoming config 中未包含的 scene（如只修改 Scene A 时 B 未传入）必须保留 DB 中原有数据
         var existingScenes = existingConfig.scenes || {};
-        cfg.scenes.A = cfg.scenes.A || { name: '第一幕', folder_mappings: {}, windows: [] };
-        cfg.scenes.B = cfg.scenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
-        // 保留已有 windows（不被 incoming config 的空 windows 覆盖）
-        if (existingScenes.A && existingScenes.A.windows && existingScenes.A.windows.length > 0) {
-          cfg.scenes.A.windows = existingScenes.A.windows;
-        }
-        if (existingScenes.B && existingScenes.B.windows && existingScenes.B.windows.length > 0) {
-          cfg.scenes.B.windows = existingScenes.B.windows;
-        }
-        // 更新 folder_mappings
-        if (rootFm && Object.keys(rootFm).length > 0) {
-          cfg.scenes.A.folder_mappings = rootFm;
+        // Scene A：incoming 有就用 incoming 的，无则继承 DB 的（只合并 folder_mappings，不整体覆盖）
+        var incomingA = cfg.scenes.A;
+        cfg.scenes.A = {
+          name: incomingA ? (incomingA.name || '第一幕') : (existingScenes.A?.name || '第一幕'),
+          folder_mappings: (incomingA?.folder_mappings && Object.keys(incomingA.folder_mappings).length > 0)
+            ? incomingA.folder_mappings
+            : (existingScenes.A?.folder_mappings || {}),
+          windows: (incomingA?.windows && incomingA.windows.length > 0)
+            ? incomingA.windows
+            : (existingScenes.A?.windows || [])
+        };
+        // Scene B：未传入时保留 DB 完整数据（不被空对象覆盖）
+        if (cfg.scenes.B) {
+          cfg.scenes.B = {
+            name: cfg.scenes.B.name || '第二幕',
+            folder_mappings: (cfg.scenes.B.folder_mappings && Object.keys(cfg.scenes.B.folder_mappings).length > 0)
+              ? cfg.scenes.B.folder_mappings
+              : (existingScenes.B?.folder_mappings || {}),
+            windows: (cfg.scenes.B.windows && cfg.scenes.B.windows.length > 0)
+              ? cfg.scenes.B.windows
+              : (existingScenes.B?.windows || [])
+          };
+        } else {
+          // B 未在 incoming config 中 → 完整保留 DB 中的 B
+          cfg.scenes.B = existingScenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
         }
       }
 
