@@ -1094,7 +1094,7 @@ function renderWinEditorFull() {
     h += '<div class="win-sidebar">';
     h += '<div class="win-list"><div class="win-list-header"><span>窗口</span><button class="btn btn-primary" style="padding:2px 8px;font-size:11px" onclick="addWin()">+ 添加</button></div><div class="win-list-body" id="winListBody">';
     if (wins.length === 0) { h += '<div style="color:#555;font-size:11px;text-align:center;padding:20px 0">暂无窗口</div>'; }
-    else { wins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="selWin(\'' + w.id + '\')"><span class="win-item-name">' + (w.name||w.id) + '</span><button class="win-item-del" onclick="delWin(event,\'' + w.id + '\')">×</button></div>'; }); }
+    else { wins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="event.stopPropagation();selWin(\'' + w.id + '\')"><span class="win-item-name">' + (w.name||w.id) + '</span><button class="win-item-del" onclick="delWin(event,\'' + w.id + '\')">×</button></div>'; }); }
     h += '</div></div>';
     h += '<div class="win-prop-panel" id="winPropPanel"><div class="win-prop-title">属性</div>';
     if (s._selWin) {
@@ -1136,6 +1136,12 @@ function renderWinCanvas(wins) {
     var canvas = document.getElementById('winCanvas');
     var df = document.getElementById('winDeviceFrame');
     if (!area || !canvas) return;
+    area.onclick = function(e) {
+        if (e.target === area || e.target.id === 'winCanvas' || e.target.id === 'winDeviceFrame') {
+            s._selWin = null;
+            renderWinEditorFull();
+        }
+    };
     var deviceW = 1920, deviceH = 1080;
     var AW = area.clientWidth || 600, AH = area.clientHeight || 400;
     _canvasScale = Math.min(AW / deviceW, AH / deviceH) * 0.92;
@@ -1182,19 +1188,36 @@ function winCanvasMouseMove(e) {
     var wins = s._winCache || [], w = wins.find(function(x) { return x.id === id; });
     if (!w) return;
     if (_dragging.mode === 'move') {
-        w.x = Math.max(0, Math.round(sW.x + dx / _canvasScale));
-        w.y = Math.max(0, Math.round(sW.y + dy / _canvasScale));
+        var newX = Math.max(0, Math.round(sW.x + dx / _canvasScale));
+        var newY = Math.max(0, Math.round(sW.y + dy / _canvasScale));
+        w.x = newX; w.y = newY;
+        console.log('[MOVE] client delta=' + dx + ',' + dy + ' canvasScale=' + _canvasScale + ' → newPos=' + newX + ',' + newY);
     } else {
         var newW = Math.max(64, Math.round(sW.width + dx / _canvasScale));
         var newH = Math.max(64, Math.round(sW.height + dy / _canvasScale));
         if (s._winRatioLock && s._winRatioLock[id]) { newH = Math.round(newW * sW.height / sW.width); }
         w.width = newW; w.height = newH;
     }
+    // 实时同步到 s._selWin（mousemove 触发时 s._selWin 可能已是旧快照）
+    if (s._selWin && s._selWin.id === id) { s._selWin.x = w.x; s._selWin.y = w.y; s._selWin.width = w.width; s._selWin.height = w.height; }
     ['wpX','wpY','wpW','wpH'].forEach(function(id2, i) { var el = document.getElementById(id2); if (el) el.value = [w.x,w.y,w.width,w.height][i]; });
     _renderWinRects(wins);
 }
 
-function winCanvasMouseUp() { _dragging = null; }
+function winCanvasMouseUp() {
+    if (_dragging) {
+        // 同步拖动后的位置到 s._selWin（避免下次点击时用旧位置覆盖）
+        var wins = s._winCache || [];
+        var w = wins.find(function(x) { return x.id === _dragging.id; });
+        console.log('[MOUSEUP] _winCache id=' + _dragging.id + ' x=' + (w ? w.x : 'N/A') + ' y=' + (w ? w.y : 'N/A') + ' | s._selWin x=' + (s._selWin ? s._selWin.x : 'N/A') + ' y=' + (s._selWin ? s._selWin.y : 'N/A'));
+        if (w && s._selWin) {
+            s._selWin.x = w.x;
+            s._selWin.y = w.y;
+            console.log('[MOUSEUP] synced s._selWin x=' + s._selWin.x + ' y=' + s._selWin.y);
+        }
+        _dragging = null;
+    }
+}
 
 function _renderWinRects(wins) {
     wins.forEach(function(w) {
@@ -1234,6 +1257,7 @@ function selWin(id) {
     s._selWin = Object.assign({}, wins.find(function(w) { return w.id === id; }) || null);
     s._selWinMap = s._selWinMap || { A: null, B: null };
     s._selWinMap[curS] = id;
+    console.log('[selWin] id=' + id + ' s._selWin x=' + (s._selWin ? s._selWin.x : 'N/A') + ' y=' + (s._selWin ? s._selWin.y : 'N/A'));
     renderWinEditorFull();
 }
 
