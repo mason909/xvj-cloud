@@ -1191,7 +1191,6 @@ function winCanvasMouseMove(e) {
         var newX = Math.max(0, Math.round(sW.x + dx / _canvasScale));
         var newY = Math.max(0, Math.round(sW.y + dy / _canvasScale));
         w.x = newX; w.y = newY;
-        console.log('[MOVE] client delta=' + dx + ',' + dy + ' canvasScale=' + _canvasScale + ' → newPos=' + newX + ',' + newY);
     } else {
         var newW = Math.max(64, Math.round(sW.width + dx / _canvasScale));
         var newH = Math.max(64, Math.round(sW.height + dy / _canvasScale));
@@ -1209,11 +1208,9 @@ function winCanvasMouseUp() {
         // 同步拖动后的位置到 s._selWin（避免下次点击时用旧位置覆盖）
         var wins = s._winCache || [];
         var w = wins.find(function(x) { return x.id === _dragging.id; });
-        console.log('[MOUSEUP] _winCache id=' + _dragging.id + ' x=' + (w ? w.x : 'N/A') + ' y=' + (w ? w.y : 'N/A') + ' | s._selWin x=' + (s._selWin ? s._selWin.x : 'N/A') + ' y=' + (s._selWin ? s._selWin.y : 'N/A'));
         if (w && s._selWin) {
             s._selWin.x = w.x;
             s._selWin.y = w.y;
-            console.log('[MOUSEUP] synced s._selWin x=' + s._selWin.x + ' y=' + s._selWin.y);
         }
         _dragging = null;
     }
@@ -1250,14 +1247,17 @@ function selWin(id) {
         if (ridx >= 0) s.rooms[ridx].config = r.config;
     }
 
-    var sceneData = (cfg.scenes && cfg.scenes[curS]) ? cfg.scenes[curS] : {};
-    var wins = (sceneData.windows || []).slice();
-
+    // 【BugFix-20260402-S08c】优先使用 s._winCache（拖动后最新位置），避免从 r.config 重新读取旧坐标
+    var wins;
+    if (s._winCache && s._winCache.length > 0 && s._winCache.find(function(w){ return w.id === id; })) {
+        wins = s._winCache; // 复用缓存（拖动后最新位置）
+    } else {
+        wins = (sceneData.windows || []).slice(); // 首次进入，从配置读取
+    }
     s._winCache = wins;
     s._selWin = Object.assign({}, wins.find(function(w) { return w.id === id; }) || null);
     s._selWinMap = s._selWinMap || { A: null, B: null };
     s._selWinMap[curS] = id;
-    console.log('[selWin] id=' + id + ' s._selWin x=' + (s._selWin ? s._selWin.x : 'N/A') + ' y=' + (s._selWin ? s._selWin.y : 'N/A'));
     renderWinEditorFull();
 }
 
