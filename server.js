@@ -566,19 +566,16 @@ function notifyRoomDevicesOfSync(roomId) {
         const { config } = rows[0];
         const cfg = config ? JSON.parse(config) : {};
         // scene-prefixed 格式（与 sendSyncCommandToDevice / buildPrefixedScenes 一致）
+        // cfg.scenes 的 folder_mappings 键是未加前缀的（"01", "02"...），需要用 buildPrefixedScenes 转换
         const prefixedScenes = buildPrefixedScenes(cfg.scenes || {});
-        // 合并 Scene A 和 B 的 folder_mappings（设备必须同时有A和B的数据才能响应外部信号）
+        // 合并 Scene A 和 B 的 folder_mappings，统一加 scene 前缀（A01, B01）
         const fmA = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
         const fmB = prefixedScenes.B ? prefixedScenes.B.folder_mappings : {};
         const allFolderMappings = {};
+        // Scene A: "A01", "A02"...
         Object.keys(fmA).forEach(k => { allFolderMappings[k] = [...(fmA[k] || [])]; });
-        Object.keys(fmB).forEach(k => {
-          if (allFolderMappings[k]) {
-            [...(fmB[k] || [])].forEach(id => { if (!allFolderMappings[k].includes(id)) allFolderMappings[k].push(id); });
-          } else {
-            allFolderMappings[k] = [...(fmB[k] || [])];
-          }
-        });
+        // Scene B: "B01", "B02"...（不是 "01"，与 HTTP API 返回的 key 格式一致）
+        Object.keys(fmB).forEach(k => { allFolderMappings[k] = [...(fmB[k] || [])]; });
         devices.forEach(({ id: deviceId, fingerprint }) => {
           try {
             const mqttId = fingerprint || deviceId;
@@ -586,8 +583,8 @@ function notifyRoomDevicesOfSync(roomId) {
             const payload = {
               action: 'sync_room_materials',
               room_id: roomId,
-              scenes: prefixedScenes,
-              folder_mappings: allFolderMappings,
+              scenes: prefixedScenes,  // buildPrefixedScenes 输出：A01/B01 keys
+              folder_mappings: allFolderMappings,  // A01, B01 keys，与 HTTP API 一致
               debug: cfg.debug === true,
               timestamp: Date.now()
             };
