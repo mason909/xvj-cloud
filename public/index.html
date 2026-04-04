@@ -301,7 +301,9 @@ var s = {
     df: null,
     rf: null,
     rooms: [],
-    devicePollInterval: null
+    devicePollInterval: null,
+    loadingMaterials: false,
+    lmCallId: 0
 };
 
 function sp(p) {
@@ -342,32 +344,49 @@ function ub(p) {
 
 // 【F-03】 素材管理页初始化 // async function lm()
 async function lm() {
-    var r = await fetch('/api/materials');
-    s.ms = await r.json();
-    console.log('Loaded materials:', s.ms.length);
-    
-    // 加载预设素材用于标记
-    var pr = await fetch('/api/preset/materials');
-    s.pm = await pr.json();
-    
-    // 加载所有房间（用于删除素材时清理映射）
-    var roomsRes = await fetch('/api/rooms');
-    s.rooms = await roomsRes.json();
-    
-    var nr = await fetch('/api/folders/notes');
-    var serverNotes = await nr.json();
-    s.folders = serverNotes;
-    
-    // 30个文件夹
-    s.fs = ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','25','26','27','28','29','30'];
-    if (!s.fs.includes(s.f)) s.f = '01';
-    rf();
-    rm();
-    // 初始显示文件夹信息
-    var note = s.folders && s.folders[s.f] || '';
-    var count = s.ms.filter(function(x) { return x.folder === s.f; }).length;
-    document.getElementById('folder-info-name').innerText = s.f;
-    document.getElementById('folder-info-note').innerText = (note || '无备注') + ' (' + count + '个)';
+    if (s.loadingMaterials) {
+        console.log("lm() skipped - already loading");
+        return;
+    }
+    var callId = ++s.lmCallId;
+    s.loadingMaterials = true;
+    try {
+        var r = await fetch('/api/materials');
+        s.ms = await r.json();
+        
+        // 加载预设素材用于标记
+        var pr = await fetch('/api/preset/materials');
+        s.pm = await pr.json();
+        
+        // 加载所有房间（用于删除素材时清理映射）
+        var roomsRes = await fetch('/api/rooms');
+        s.rooms = await roomsRes.json();
+        
+        var nr = await fetch('/api/folders/notes');
+        var serverNotes = await nr.json();
+        s.folders = serverNotes;
+        
+        // 30个文件夹
+        s.fs = ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','25','26','27','28','29','30'];
+        // 不重置 s.f，保持用户当前选择的文件夹
+        rf();
+        // 只有最新调用才渲染
+        if (callId === s.lmCallId) {
+            rm();
+            // 初始显示文件夹信息
+            var note = s.folders && s.folders[s.f] || '';
+            var count = s.ms.filter(function(x) { return x.folder === s.f; }).length;
+            document.getElementById('folder-info-name').innerText = s.f;
+            document.getElementById('folder-info-note').innerText = (note || '无备注') + ' (' + count + '个)';
+        }
+    } catch (error) {
+        console.error('lm() error:', error);
+    } finally {
+        s.loadingMaterials = false;
+        if (callId === s.lmCallId) {
+            rm();
+        }
+    }
 }
 
 function rf() {
@@ -414,6 +433,10 @@ function sf(f) {
 }
 
 function rm() {
+    if (s.loadingMaterials) {
+        console.log("Skipping rm() - materials still loading, s.f=" + s.f);
+        return;
+    }
     var g = document.getElementById('g');
     console.log('Filtering folder:', s.f, 'from', s.ms.length, 'materials');
     var l = s.ms.filter(function(x) { return x.folder === s.f; });
