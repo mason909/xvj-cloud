@@ -349,6 +349,7 @@ async function lm() {
         return;
     }
     var callId = ++s.lmCallId;
+    var startFolder = s.f; // 记录开始时的文件夹
     s.loadingMaterials = true;
     try {
         var r = await fetch('/api/materials');
@@ -371,7 +372,7 @@ async function lm() {
         // 不重置 s.f，保持用户当前选择的文件夹
         rf();
         // 只有最新调用才渲染
-        if (callId === s.lmCallId) {
+        if (callId === s.lmCallId && s.f === startFolder) {
             rm();
             // 初始显示文件夹信息
             var note = s.folders && s.folders[s.f] || '';
@@ -383,7 +384,7 @@ async function lm() {
         console.error('lm() error:', error);
     } finally {
         s.loadingMaterials = false;
-        if (callId === s.lmCallId) {
+        if (callId === s.lmCallId && s.f === startFolder) {
             rm();
         }
     }
