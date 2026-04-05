@@ -15,6 +15,9 @@
  * 【S-07】素材同步 & 删除（DELETE /api/rooms/:roomId/materials/:materialId）
  * 【S-08】日志 & 操作记录（logAction）
  * 【S-09】静态文件 & 前端页面
+ * 【S-10】文件夹管理 API（/api/folders*）
+ * 【S-11】店铺管理 API（/api/stores*）
+ * 【S-12】版本管理 API（/api/versions*、/api/device/versions*）
  * ─────────────────────────────────────────────
  *
  * 核心表：
@@ -82,8 +85,15 @@ const mqtt = require('mqtt');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 
-// 故障记录
+// 故障记录文件路径
 const FAULT_LOG = '/workspace/xvj-backup/故障记录.md';
+
+/**
+ * 记录故障信息到文件和 console.error
+ * @param {string} type - 故障类型（如 '进程崩溃'）
+ * @param {string} msg - 简短消息
+ * @param {object} detail - 详细信息
+ */
 function writeFault(type, msg, detail) {
   const ts = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
   const entry = `## [${ts}] ${type}\n\n**消息**: ${msg}\n\n**详情**: \`${JSON.stringify(detail)}\`\n\n---\n`;
@@ -103,7 +113,12 @@ const fs = require('fs');
 const crypto = require('crypto');
 const config = require('./config');
 
-// 记录操作日志
+/**
+ * 记录操作日志（异步写入 operation_logs 表）
+ * @param {string} action - 操作类型（如 'upload'/'delete'/'authorize'）
+ * @param {string} target - 操作对象（如 'material'/'device'/'room'）
+ * @param {object} details - 详细信息（JSON 序列化后存储）
+ */
 function logAction(action, target, details) {
   db.query("INSERT INTO operation_logs (action, target, details) VALUES (?, ?, ?)",
     [action, target, JSON.stringify(details)],
@@ -111,11 +126,12 @@ function logAction(action, target, details) {
   );
 }
 
-// 将 scenes 对象中的 folder_mappings 键名前缀 scene 标识（A01, B01...）
-// 用于 MQTT 发送时统一格式，避免 A/B 场景共用 "01" 导致物理文件夹冲突
-// 【架构】Scene A 文件夹编号 A01~A30，Scene B 文件夹编号 B01~B30
-// APP 解析 MQTT payload 时按前缀路由到 sceneA/sceneB 子目录
-// 【调试用】记录 scenes 转换输入输出
+/**
+ * 将 scenes 对象中的 folder_mappings 键名前缀 scene 标识（A01, B01...）
+ * @param {object} scenes - { A: { folder_mappings: { "01": [...] } }, B: { ... } }
+ * @returns {object} - { A: { folder_mappings: { "A01": [...] } }, B: { "B01": [...] } }
+ * 用途：MQTT 发送时统一格式，避免 A/B 场景共用 "01" 导致物理文件夹冲突
+ */
 function buildPrefixedScenes(scenes) {
   var result = {};
   Object.keys(scenes || {}).forEach(function(key) {
@@ -137,7 +153,12 @@ function buildPrefixedScenes(scenes) {
 const app = express();
 const PORT = config.port;
 
-// API 认证中间件
+/**
+ * API 认证中间件（验证 x-api-key 或 query.apiKey）
+ * @param {object} req - Express 请求对象
+ * @param {object} res - Express 响应对象
+ * @param {function} next - 下一个中间件
+ */
 function requireAuth(req, res, next) {
   const apiKey = req.headers['x-api-key'] || req.query.apiKey;
   if (!apiKey || apiKey !== config.apiKey) {
@@ -158,7 +179,7 @@ app.get('/', (req, res) => {
 // 静态文件服务：素材文件（视频、图片、缩略图）
 app.use('/uploads', express.static(__dirname + '/public/uploads'));
 
-// 获取服务器配置 (供设备使用)
+// 【S-09a】 获取服务器配置（供设备使用，返回 serverUrl / mqttHost / mqttPort）
 app.get('/api/config', (req, res) => {
   res.json({
     serverUrl: config.serverUrl,
@@ -227,7 +248,12 @@ mqttClient.on('message', (topic, message) => {
 //    接收设备状态/注册消息，更新数据库，发授权响应
 // ============================================================================
 
-// 处理 MQTT 消息
+/**
+ * MQTT 消息分发处理器
+ * @param {string} topic - MQTT 主题（如 xvj/device/{id}/status）
+ * @param {string} message - 消息体（JSON 字符串）
+ * 处理：register/status/request/log/command 等消息类型
+ */
 function handleMqttMessage(topic, message) {
   // xvj/auth/response - 设备回复授权状态（如 deauthorize）
   if (topic === 'xvj/auth/response') {
@@ -374,7 +400,12 @@ function handleMqttMessage(topic, message) {
   }
 }
 
-// 设备注册处理 - 带授权检查
+/**
+ * 设备注册处理（MQTT register 消息入口）
+ * @param {string} deviceId - 设备 ID
+ * @param {object} data - 设备注册数据（fingerprint/model/hardware/mac 等）
+ * 流程：查询 devices 表 → 新设备待审核 / 未授权拒绝 / 已授权发送响应
+ */
 function handleDeviceRegister(deviceId, data) {
   // debug: handleDeviceRegister
   const fingerprint = data.fingerprint || deviceId;
@@ -611,7 +642,11 @@ function notifyRoomDevicesOfSync(roomId) {
   );
 }
 
-// 远程废止设备
+/**
+ * 远程废止设备（MQTT 推送 deauthorize 命令，数据库 authorized=0）
+ * @param {string} deviceId - 设备 ID
+ * @returns {boolean} 是否成功（异步操作，实际返回无意义）
+ */
 function deauthorizeDevice(deviceId) {
   db.query(
     'UPDATE devices SET authorized = 0 WHERE id = ?',
@@ -646,7 +681,7 @@ function deauthorizeDevice(deviceId) {
 
 // ==================== API 接口 ====================
 
-// 1. 获取设备列表
+// 【S-05a】 获取设备列表（支持按 room_id 筛选）
 app.get('/api/devices', (req, res) => {
   const roomId = req.query.room_id;
   let sql = 'SELECT * FROM devices ORDER BY online_time DESC';
@@ -661,7 +696,7 @@ app.get('/api/devices', (req, res) => {
   });
 });
 
-// 2. 添加设备（白名单）
+// 【S-05c】 添加设备（白名单）— 插入 devices 表
 app.post('/api/devices', (req, res) => {
   const { name, location, fingerprint, model, mac } = req.body;
   const id = uuidv4();
@@ -676,7 +711,7 @@ app.post('/api/devices', (req, res) => {
   );
 });
 
-// 3. 删除设备
+// 【S-05d】 删除设备 — 从 devices 表删除记录
 app.delete('/api/devices/:id', (req, res) => {
   const did = req.params.id;
   db.query('DELETE FROM devices WHERE id = ?', [did], (err) => {
@@ -686,7 +721,7 @@ app.delete('/api/devices/:id', (req, res) => {
   });
 });
 
-// 4. 发送指令到设备
+// 【S-05e】 发送指令到设备（MQTT command 主题下发）
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
@@ -914,16 +949,15 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
   );
 });
 
-// 5. 废止设备（远程禁用）
+// 【S-05b】 废止设备（远程禁用）
 app.post('/api/devices/:id/deauthorize', (req, res) => {
   const deviceId = req.params.id;
 
+  // 操作数据库：更新 devices 表，将授权状态设为 0
   db.query(
     'UPDATE devices SET authorized = 0, status = "deauthorized" WHERE id = ?',
     [deviceId],
     (err) => {
-
-// 【S-06】 授权 & 设备管理 // POST /api/devices/:id/authorize | /deauthorize
       if (err) return res.status(500).json({ error: err.message });
       
       // 发送废止命令
@@ -940,9 +974,9 @@ app.post('/api/devices/:id/deauthorize', (req, res) => {
   );
 });
 
-// 6. 重新授权设备
+// 【S-05f】 重新授权设备 — 更新 devices.authorized=1，MQTT 推送授权响应
 // Bug修复：MQTT topic必须使用DB中设备的真实id字段（64-char UUID），
-// 而非前端传入的格式化MAC或其他标识符，否则APK订阅的topic永远不匹配
+// 避免APK订阅的topic永远不匹配
 app.post('/api/devices/:id/authorize', (req, res) => {
   const deviceId = req.params.id;
   const store = decodeURIComponent(req.query.store || req.body.store || '默认店');
@@ -1059,7 +1093,10 @@ const PRESET_FOLDERS = [
   // TODO: 等用户发送文件夹列表后补充
 ];
 
-// 初始化预设素材表
+/**
+ * 初始化预设素材相关表（preset_materials、preset_folders）
+ * 如表不存在则 CREATE TABLE IF NOT EXISTS，如 preset_folders 为空则插入默认配置
+ */
 function initPresetMaterialsTable() {
   db.query(`
     CREATE TABLE IF NOT EXISTS preset_materials (
@@ -1099,7 +1136,11 @@ function initPresetMaterialsTable() {
   });
 }
 
-// 获取预设素材列表（按文件夹分组）
+/**
+ * 获取预设素材列表（按文件夹分组）
+ * @param {function} callback - (err, folders) => {}
+ * @returns {Array} folders - [{id, name, path, materials: [...]}]
+ */
 function getPresetMaterials(callback) {
   db.query('SELECT * FROM preset_folders WHERE enabled = 1 ORDER BY sort_order', (err, folders) => {
     if (err) return callback(err, null);
@@ -1124,7 +1165,10 @@ function getPresetMaterials(callback) {
   });
 }
 
-// 设备注册成功后，推送预设素材
+/**
+ * 设备注册成功后，推送预设素材（MQTT preset 主题）
+ * @param {string} deviceId - 设备 ID
+ */
 function sendPresetMaterialsToDevice(deviceId) {
   getPresetMaterials((err, folders) => {
     if (err) {
@@ -1249,7 +1293,7 @@ app.post('/api/preset/push/:deviceId', (req, res) => {
 });
 
 
-// 素材管理API
+// 【S-10a】 文件夹管理 — 列出 /public/uploads 下所有目录
 app.get("/api/folders", (req, res) => {
   db.query("SELECT DISTINCT folder FROM materials", (err, rows) => {
     let folders = [];
@@ -1264,6 +1308,7 @@ app.get("/api/folders", (req, res) => {
   });
 });
 
+// 【S-10b】 创建素材文件夹（物理目录 + materials 表关联）
 app.post("/api/folders", (req, res) => {
   const name = req.body.name;
   if (!name) return res.status(400).json({error:"need name"});
@@ -1272,6 +1317,7 @@ app.post("/api/folders", (req, res) => {
   res.json({success:true, name:name});
 });
 
+// 【S-10c】 删除素材文件夹（物理目录 + materials 表级联清理）
 app.delete("/api/folders/:name", (req, res) => {
   const name = req.params.name;
   if (!name || name==="default") return res.status(400).json({error:"cannot delete"});
@@ -1357,6 +1403,7 @@ app.delete("/api/materials/:id", (req, res) => {
 });
 
 const multer = require('multer');
+// 【S-02b】 上传素材文件（POST /api/upload）— ffmpeg 生成缩略图，MD5 校验，写 materials 表
 app.post("/api/upload", (req, res) => {
   const folder = req.query.folder || req.body.folder || "default";
   // 确保文件夹存在
@@ -1459,7 +1506,7 @@ app.get("/api/admin/fix-garbled", (req, res) => {
 });
 
 
-// 重命名文件夹
+// 【S-10d】 重命名素材文件夹（物理目录 + materials.folder 字段）
 app.post("/api/folders/rename", (req, res) => {
     const { oldName, newName } = req.body;
     if (!oldName || !newName) return res.status(400).json({error: "need oldName and newName"});
@@ -1481,7 +1528,7 @@ app.post("/api/folders/rename", (req, res) => {
 });
 
 
-// 保存文件夹备注
+// 【S-10e】 保存文件夹备注（写入 folder_notes 表）
 app.post("/api/folders/note", (req, res) => {
     const { folder, note } = req.body;
     if (!folder) return res.status(400).json({error:"need folder"});
@@ -1497,7 +1544,7 @@ app.post("/api/folders/note", (req, res) => {
     );
 });
 
-// ==================== 操作日志 API ====================
+// 【S-08a】 查询操作日志（从 operation_logs 表读取）
 app.get('/api/logs', (req, res) => {
   const limit = parseInt(req.query.limit) || 20;
   db.query("SELECT * FROM operation_logs ORDER BY id DESC LIMIT ?", [limit], (err, rows) => {
@@ -1506,7 +1553,7 @@ app.get('/api/logs', (req, res) => {
   });
 });
 
-// 获取文件夹备注
+// 【S-10f】 获取所有文件夹备注（从 folder_notes 表读取）
 app.get("/api/folders/notes", (req, res) => {
     db.query("SELECT folder, note FROM folder_notes", (err, rows) => {
         if (err) return res.status(500).json({error:err.message});
@@ -1606,6 +1653,7 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
 });
 
 // ==================== 设备日志 API（远程 DEBUG） ====================
+// 【S-08b】 查询设备日志（从 device_logs 表读取，支持按 device_id 筛选）
 app.get('/api/device_logs', (req, res) => {
   const limit = parseInt(req.query.limit) || 100;
   const deviceId = req.query.device_id;
@@ -1623,7 +1671,7 @@ app.get('/api/device_logs', (req, res) => {
   });
 });
 
-// ==================== 店铺管理 API ====================
+// 【S-11a】 店铺列表（从 stores 表读取）
 app.get('/api/stores', (req, res) => {
   db.query('SELECT name FROM stores ORDER BY id', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -1633,6 +1681,7 @@ app.get('/api/stores', (req, res) => {
   });
 });
 
+// 【S-11b】 创建店铺（写入 stores 表）
 app.post('/api/stores', (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: '店铺名称不能为空' });
@@ -1643,7 +1692,7 @@ app.post('/api/stores', (req, res) => {
   });
 });
 
-// 【S-11】店铺重命名（原子操作，避免 DELETE+POST 两步断层导致店铺丢失）
+// 【S-11c】 店铺重命名（原子操作 UPDATE，避免 DELETE+POST 两步断层导致店铺丢失）
 app.put('/api/stores/:name', (req, res) => {
   const oldName = decodeURIComponent(req.params.name);
   const { newName } = req.body;
@@ -1660,6 +1709,7 @@ app.put('/api/stores/:name', (req, res) => {
   });
 });
 
+// 【S-11d】 删除店铺（从 stores 表删除）
 app.delete('/api/stores/:name', (req, res) => {
   const storeName = decodeURIComponent(req.params.name);
   logAction('delete', 'store', { name: storeName });
@@ -1689,7 +1739,7 @@ db.query(`CREATE TABLE IF NOT EXISTS rooms (
   UNIQUE KEY unique_store_room (store_name, name)
 )`);
 
-// 获取房间列表（Plan A: 内存迁移，不写DB）
+// 【S-04f】 获取房间列表（从 rooms 表，内存迁移构造 scenes 结构）
 app.get('/api/rooms', (req, res) => {
   const store = req.query.store;
   let sql = 'SELECT * FROM rooms';
@@ -1715,7 +1765,7 @@ app.get('/api/rooms', (req, res) => {
   });
 });
 
-// 获取单个房间（Plan A: 内存迁移，不写DB）
+// 【S-04g】 获取单个房间详情（内存迁移构造 scenes 结构）
 app.get('/api/rooms/:id', (req, res) => {
   const id = req.params.id;
   db.query('SELECT * FROM rooms WHERE id = ?', [id], (err, results) => {
@@ -1738,7 +1788,7 @@ app.get('/api/rooms/:id', (req, res) => {
   });
 });
 
-// 创建房间
+// 【S-04h】 创建房间（插入 rooms 表）
 app.post('/api/rooms', (req, res) => {
   const { store_name, name, folder_mappings, config } = req.body;
   if (!store_name || !name) return res.status(400).json({error:'store_name and name required'});
@@ -1751,7 +1801,7 @@ app.post('/api/rooms', (req, res) => {
   });
 });
 
-// 更新房间
+// 【S-04i】 更新房间（PUT /api/rooms/:id，支持 scenes 合并保护）
 app.put('/api/rooms/:id', (req, res) => {
   const { name, folder_mappings, config } = req.body;
   const id = req.params.id;
@@ -1916,7 +1966,7 @@ app.put('/api/rooms/:id/windows', (req, res) => {
   });
 });
 
-// 删除房间
+// 【S-04j】 删除房间（DELETE rooms 表记录）
 app.delete('/api/rooms/:id', (req, res) => {
   const id = req.params.id;
   db.query('SELECT name, store_name FROM rooms WHERE id = ?', [id], (err, rows) => {
@@ -1931,8 +1981,7 @@ app.delete('/api/rooms/:id', (req, res) => {
 });
 
 // 获取房间素材
-// APK syncRoomMaterials调用的API（与/api/rooms/:id/materials等价）
-// APK syncRoomMaterials 调用的 API（带 /list 后缀）
+// 【S-04d】 房间素材列表（APK syncRoomMaterials 专用，返回 scene-prefixed keys）
 app.get('/api/room-materials/:roomId/list', (req, res) => {
   const roomId = req.params.roomId;
   db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [roomId], (err, rooms) => {
@@ -1984,7 +2033,7 @@ app.get('/api/room-materials/:roomId/list', (req, res) => {
   });
 });
 
-// 房间素材API（/api/rooms/:id/materials的内部包装）
+// 【S-04e】 房间素材映射（从 rooms.folder_mappings 读取，供前端调试用）
 app.get('/api/rooms/:id/materials', (req, res) => {
   const id = req.params.id;
   db.query('SELECT folder_mappings FROM rooms WHERE id = ?', [id], (err, results) => {
@@ -1995,7 +2044,7 @@ app.get('/api/rooms/:id/materials', (req, res) => {
   });
 });
 
-// 添加素材到房间
+// 【S-04k】 添加素材到房间（更新 rooms.config.scenes A/B.folder_mappings，触发 notifyRoomDevicesOfSync）
 app.post('/api/rooms/:id/folder/:folder', (req, res) => {
   const { id } = req.params;
   const { folder } = req.params;
@@ -2079,7 +2128,7 @@ app.get('/api/room-materials/:roomId', (req, res) => {
   });
 });
 
-// 获取设备的房间素材
+// 【S-05g】 获取指定设备的房间素材（通过 devices.room_id 查找 rooms.config.scenes.A.folder_mappings）
 app.get('/api/devices/:id/room-materials', (req, res) => {
   const id = req.params.id;
   db.query('SELECT room_id FROM devices WHERE id = ?', [id], (err, results) => {
@@ -2097,7 +2146,7 @@ app.get('/api/devices/:id/room-materials', (req, res) => {
   });
 });
 
-// 绑定设备到房间
+// 【S-05h】 绑定设备到房间（更新 devices.room_id）
 app.post('/api/devices/:id/bind-room', (req, res) => {
   const { room_id } = req.body;
   const id = req.params.id;
@@ -2117,7 +2166,7 @@ app.post('/api/devices/:id/bind-room', (req, res) => {
   });
 });
 
-// 获取未注册/未授权设备
+// 【S-05i】 获取未注册/未授权设备列表（devices.authorized=0）
 app.get('/api/unregistered', (req, res) => {
   db.query('SELECT id, name, fingerprint, model, hardware, mac, location, status, first_seen, online_time FROM devices WHERE authorized = 0 ORDER BY online_time DESC', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -2126,7 +2175,8 @@ app.get('/api/unregistered', (req, res) => {
 });
 
 
-// ==================== 默认素材 API ====================
+// ==================== 默认素材 API（default_materials 表）====================
+// 【S-13a】 获取默认素材列表（从 default_materials 表读取）
 app.get('/api/default-materials', (req, res) => {
   db.query('SELECT * FROM default_materials ORDER BY id DESC', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -2134,6 +2184,7 @@ app.get('/api/default-materials', (req, res) => {
   });
 });
 
+// 【S-13b】 添加默认素材（写入 default_materials 表）
 app.post('/api/default-materials', (req, res) => {
   const { name, url, type, thumbnail } = req.body;
   const id = 'def_' + Date.now();
@@ -2147,6 +2198,7 @@ app.post('/api/default-materials', (req, res) => {
   );
 });
 
+// 【S-13c】 删除默认素材（从 default_materials 表删除）
 app.delete('/api/default-materials/:id', (req, res) => {
   db.query('DELETE FROM default_materials WHERE id = ?', [req.params.id], (err) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -2172,7 +2224,8 @@ db.query(`CREATE TABLE IF NOT EXISTS default_materials (
 
 
 
-// ==================== 预设素材 API ====================
+// ==================== 预设素材 API（备用 / 兼容段）====================
+// 【S-03b】 获取预设素材文件夹列表（从 preset_folders 表读取）
 app.get('/api/preset/folders', (req, res) => {
   db.query('SELECT * FROM preset_folders ORDER BY sort_order', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -2180,6 +2233,7 @@ app.get('/api/preset/folders', (req, res) => {
   });
 });
 
+// 【S-03c】 创建预设素材文件夹（写入 preset_folders 表）
 app.post('/api/preset/folders', (req, res) => {
   const { name, path, sort_order } = req.body;
   const id = 'preset_' + Date.now();
@@ -2194,6 +2248,7 @@ app.post('/api/preset/folders', (req, res) => {
   );
 });
 
+// 【S-03d】 删除预设素材文件夹（级联删除 preset_materials + preset_folders）
 app.delete('/api/preset/folders/:id', (req, res) => {
   db.query('DELETE FROM preset_materials WHERE folder_id = ?', [req.params.id], (err) => {
     db.query('DELETE FROM preset_folders WHERE id = ?', [req.params.id], (err) => {
@@ -2203,6 +2258,7 @@ app.delete('/api/preset/folders/:id', (req, res) => {
   });
 });
 
+// 【S-03e】 获取预设素材列表（从 preset_materials 表读取）
 app.get('/api/preset/materials', (req, res) => {
   db.query('SELECT * FROM preset_materials ORDER BY folder_id, filename', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -2210,6 +2266,7 @@ app.get('/api/preset/materials', (req, res) => {
   });
 });
 
+// 【S-03f】 添加预设素材（写入 preset_materials 表）
 app.post('/api/preset/materials', (req, res) => {
   const { folder_id, filename, url, type, thumbnail } = req.body;
   const id = 'pm_' + Date.now();
@@ -2252,6 +2309,10 @@ app.listen(PORT, () => {
   initPresetMaterialsTable();
 });
 
+/**
+ * 数据库初始化 — 建表（devices / materials / operation_logs / folder_notes / apk_versions / device_versions）
+ * 全部使用 CREATE TABLE IF NOT EXISTS，安全幂等
+ */
 function initDatabase() {
   db.query(`
     CREATE TABLE IF NOT EXISTS devices (
@@ -2335,7 +2396,7 @@ function initDatabase() {
 
 // ==================== 版本管理 API ====================
 
-// 获取版本列表
+// 【S-12a】 获取版本列表（从 apk_versions 表读取）
 app.get('/api/versions', (req, res) => {
   db.query('SELECT * FROM apk_versions ORDER BY version_code DESC', (err, results) => {
     if (err) return res.status(500).json({error:err.message});
@@ -2343,7 +2404,7 @@ app.get('/api/versions', (req, res) => {
   });
 });
 
-// 获取最新版本
+// 【S-12b】 获取最新版本（is_latest=1，计算文件 MD5 校验）
 app.get('/api/version/latest', (req, res) => {
   db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', (err, results) => {
     if (err) return res.status(500).json({error:err.message});
@@ -2372,6 +2433,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({storage, limits:{fileSize:200*1024*1024}});
 
+// 【S-12c】 上传 APK 新版本（写入 apk_versions 表，标记 is_latest=1）
 app.post('/api/versions/upload', upload.single('apk'), (req, res) => {
   if (!req.file) return res.status(400).json({error:'No file uploaded'});
   
@@ -2392,7 +2454,7 @@ app.post('/api/versions/upload', upload.single('apk'), (req, res) => {
   });
 });
 
-// 删除版本
+// 【S-12d】 删除 APK 版本（物理文件 + apk_versions 表记录）
 app.delete('/api/versions/:id', (req, res) => {
   const id = req.params.id;
   db.query('SELECT filepath FROM apk_versions WHERE id = ?', [id], (err, results) => {
@@ -2408,7 +2470,7 @@ app.delete('/api/versions/:id', (req, res) => {
   });
 });
 
-// 设备上报版本
+// 【S-12e】 设备上报版本（写入 device_versions 表）
 app.post('/api/device/version', (req, res) => {
   const {device_id, version, version_code} = req.body;
   if (!device_id) return res.status(400).json({error:'device_id required'});
@@ -2423,7 +2485,7 @@ app.post('/api/device/version', (req, res) => {
   );
 });
 
-// 获取设备版本列表
+// 【S-12f】 获取设备版本列表（JOIN devices + device_versions 表）
 app.get('/api/device/versions', (req, res) => {
   db.query(`
     SELECT d.id, d.name, d.store, d.room_id, d.status, dv.version, dv.version_code, dv.updated_at
@@ -2436,7 +2498,7 @@ app.get('/api/device/versions', (req, res) => {
   });
 });
 
-// 推送更新到设备
+// 【S-12g】 推送更新到指定设备（MQTT command 主题下发 APK 下载链接）
 app.post('/api/devices/:id/push-update', (req, res) => {
   const deviceId = req.params.id;
   
@@ -2467,8 +2529,7 @@ app.post('/api/devices/:id/push-update', (req, res) => {
   });
 });
 
-// 批量推送更新
-// 推送指定版本到所有已授权设备
+// 【S-12h】 推送指定版本到所有已授权设备（MQTT 批量下发）
 app.post('/api/versions/:id/push-to-all', (req, res) => {
   const versionId = req.params.id;
   db.query('SELECT * FROM apk_versions WHERE id = ?', [versionId], (err, versions) => {
@@ -2495,6 +2556,7 @@ app.post('/api/versions/:id/push-to-all', (req, res) => {
   });
 });
 
+// 【S-12i】 推送最新版本到所有已授权设备（MQTT 批量下发）
 app.post('/api/devices/push-update-all', (req, res) => {
   db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', (err, versions) => {
     if (err) return res.status(500).json({error:err.message});

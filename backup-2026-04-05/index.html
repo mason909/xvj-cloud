@@ -2,33 +2,6 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<!--
-  ╔═══════════════════════════════════════════════════════════════════════════════╗
-  ║                        XVJ 云控系统 - 前端 (index.html)                        ║
-  ╠═══════════════════════════════════════════════════════════════════════════════╣
-  ║  系统名称    │  XVJ 云控系统 - 前端                                             ║
-  ║  架构说明    │  单页面应用（SPA），前后端分离架构                                 ║
-  ║              │  后端：Express.js，提供 REST API 和 WebSocket 通知               ║
-  ║              │  前端：原生 JavaScript + MQTT.js，无框架依赖                    ║
-  ║              │  通信：HTTP REST API（素材/设备/房间管理）+ MQTT（实时推送）         ║
-  ║  核心数据结构│  s（全局状态对象）                                                ║
-  ║              │  rooms.config（房间配置，含 scenes[A/B].folder_mappings/windows） ║
-  ╠═══════════════════════════════════════════════════════════════════════════════╣
-  ║  【F-01】全局状态对象 // var s = {...}                                        ║
-  ║  【F-02】菜单切换 // function sp(p)                                            ║
-  ║  【F-03】素材管理 // async function lm()                                       ║
-  ║  【F-04】设备管理 // async function ld() / lu()                                ║
-  ║  【F-05】设备授权 // async function ar() / confirmAuth()                       ║
-  ║  【F-06】房间视图 // function sr(id) / rmDevice()                             ║
-  ║  【F-07】素材推送 // async function showPushDialog() / doPushToRoom()          ║
-  ║  【F-08】房间同步与素材移除 // async function doSyncRoom() / rmRoomMat()        ║
-  ║  【F-09】窗口编辑器 // function renderWinEditorFull() / saveWindows()          ║
-  ║  【F-10】工具函数 // esc() / escA() / logAction()                             ║
-  ║  【F-11】日志查看 // async function loadDeviceLogs()                           ║
-  ║  【F-12】版本管理 // async function lv() / lvd() / uv()                       ║
-  ╚═══════════════════════════════════════════════════════════════════════════════╝
--->
-<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>XVJ 云后台</title>
 <style>
@@ -231,12 +204,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="modal" id="m" onclick="if(event.target === this) this.classList.remove('show')"><button class="modal-close" onclick="dc()">×</button><div id="mc"></div></div>
 <script src="/mqtt.min.js"></script>
 <script>
-// 【F-08】同步当前房间设备 // async function syncCurrentRoom()
-/**
- * 弹出确认框后向当前房间所有设备发送同步命令
- * - 显示确认对话框，用户确认后调用 doSyncRoom(s.rf)
- * - 若未选择房间（!s.df || !s.rf）则弹出提示
- */
+// 同步当前房间的设备
+async function syncCurrentRoom() {
     if (!s.df) { showAlert('请先选择一个客户'); return; }
     if (!s.rf) { showAlert('请先选择一个房间'); return; }
     var mc = document.getElementById('mc');
@@ -255,19 +224,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     };
 }
 
-// 【F-10】HTML转义 // function esc(s) | escA(s)
-// 素材/店铺/房间名全部经过此函数处理（防止XSS）
+// HTML 转义（防止 XSS）// 【S-10】素材/店铺/房间名全部经过此函数处理
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 // HTML 属性转义（转义单双引号，防止破坏 HTML 属性结构）
 function escA(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
-// 【F-08】推送同步命令到房间 // function doSyncRoom(roomId)
-/**
- * 向指定房间发送同步命令，通知设备下载最新素材
- * @param {string} roomId - 房间ID
- * - POST /api/rooms/:id/sync?scene=
- * - 设备将自动下载最新素材并播放
- */
+function doSyncRoom(roomId) {
     var mc = document.getElementById('mc');
     var m = document.getElementById('m');
     mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">📡 发送中...</div>';
@@ -288,7 +250,6 @@ function escA(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quo
 }
 
 
-// 【F-10】创建图片/视频播放器 // function createPlayer(url, type, container)
 function createPlayer(url, type, container) {
     container.innerHTML = '';
     if (type === 'video') {
@@ -314,18 +275,16 @@ function createPlayer(url, type, container) {
 /* ============================================================
  * 【代码索引】搜索 "【F-XX】" 快速定位
  * ─────────────────────────────────────────────────────────
- * 【F-01】全局状态对象 // var s = {...}
- * 【F-02】菜单切换 // function sp(p)
- * 【F-03】素材管理 // async function lm() / lp() / rf() / sf()
- * 【F-04】设备管理 // async function ld() / lu()
- * 【F-05】设备授权 // async function ar() / confirmAuth()
- * 【F-06】房间视图 // function sr() / rmDevice() / lr()
- * 【F-07】素材推送 // async function showPushDialog() / doPushToRoom()
- * 【F-08】房间同步与素材移除 // async function doSyncRoom() / rmRoomMat()
- * 【F-09】窗口编辑器 // function renderWinEditorFull() / saveWindows()
- * 【F-10】工具函数 // esc() / escA() / logAction()
- * 【F-11】日志查看 // async function loadDeviceLogs()
- * 【F-12】版本管理 // async function lv() / lvd() / uv()
+ * 【F-01】全局状态对象 var s = {...}
+ * 【F-02】菜单切换 sp(p) & 各页初始化
+ * 【F-03】素材管理页 lm() / lp() / lr()
+ * 【F-04】设备管理 ld() & 未注册设备 lu()
+ * 【F-05】授权 & 设备绑定 ar() / bindDev()
+ * 【F-06】房间视图 sr() & rmDevice()
+ * 【F-07】素材推送 showPushDialog() & doPushToRoom()
+ * 【F-08】房间内素材 doSyncRoom() & rmRoomMat()
+ * 【F-09】窗口编辑器 renderWinEditorFull() & saveWindows()
+ * 【F-10】日志 & 操作记录 logAction() | loadDeviceLogs()
  * ─────────────────────────────────────────────────────────
  */
 
@@ -349,7 +308,6 @@ var s = {
     _lastLmCallId: ''
 };
 
-// 【F-02】菜单页面切换 // function sp(p)
 function sp(p) {
     s.p = p;
     localStorage.setItem('xp', p);
@@ -381,7 +339,6 @@ function sp(p) {
     else if (p === 'logs') { loadDeviceLogs(); }
 }
 
-// 【F-02】更新按钮栏 // function ub(p)
 function ub(p) {
     var b = document.getElementById('btns');
     if (p === 'materials') {
@@ -392,14 +349,8 @@ function ub(p) {
 }
 
 
-// 【F-03】素材管理 // async function lm()
-/**
- * 素材管理页初始化
- * - 获取素材列表（/api/materials）、预设素材（/api/preset/materials）、房间列表（/api/rooms）
- * - 加载文件夹备注（/api/folders/notes）
- * - 更新全局状态：s.ms, s.pm, s.rooms, s.folders, s.fs
- * - 防重复调用：s.loadingMaterials 锁 + callId 追踪最新调用
- */
+// 【F-03】 素材管理页初始化 // async function lm()
+async function lm() {
     if (s.loadingMaterials) {
         console.log("lm() skipped - already loading");
         return;
@@ -447,7 +398,6 @@ function ub(p) {
     }
 }
 
-// 【F-03】渲染文件夹标签栏 // function rf()
 function rf() {
     var b = document.getElementById('fb');
     var h = '<div class="tabs">';
@@ -459,7 +409,6 @@ function rf() {
     b.innerHTML = h;
 }
 
-// 【F-03】重命名文件夹备注 // function rn(e, n)
 function rn(e, n) {
     e.stopPropagation();
     var note = prompt('输入备注:', s.folders && s.folders[n] || '');
@@ -476,7 +425,6 @@ function rn(e, n) {
     document.getElementById('folder-info-note').innerText = (note || '无备注') + ' (' + count + '个)';
 }
 
-// 【F-03】切换文件夹 // function sf(f)
 function sf(f) {
     console.log('sf() called with folder:', f, 'current s.f:', s.f);
     s.f = f;
@@ -494,7 +442,6 @@ function sf(f) {
     document.getElementById('folder-info-note').innerText = (note || '无备注') + ' (' + count + '个)';
 }
 
-// 【F-03】渲染素材网格 // function rm()
 function rm() {
     var g = document.getElementById('g');
     console.log('Filtering folder:', s.f, 'from', s.ms.length, 'materials');
@@ -531,7 +478,6 @@ function rm() {
     g.innerHTML = h;
 }
 
-// 【F-03】素材勾选切换 // function tc(id)
 function tc(id) {
     var idx = s.selected.indexOf(id);
     if (idx > -1) s.selected.splice(idx, 1);
@@ -540,7 +486,6 @@ function tc(id) {
     rm();
 }
 
-// 【F-03】预览素材（图片/视频）// function pv(u, t)
 function pv(u, t) {
     // 编码URL确保兼容
     var encodedUrl = encodeURI(u);
@@ -548,12 +493,10 @@ function pv(u, t) {
     document.getElementById('m').classList.add('show');
 }
 
-// 【F-03】关闭预览弹窗 // function dc()
 function dc() {
     document.getElementById('m').classList.remove('show');
 }
 
-// 【F-03】上传素材文件 // function ul(files)
 function ul(files) {
     if (!files.length) return;
     var folder = s.f;
@@ -598,7 +541,6 @@ function ul(files) {
     uploadOne(0);
 }
 
-// 【F-03】删除素材 // async function dm(e, id)
 async function dm(e, id) {
     e.stopPropagation();
     if (!confirm('确定删除?')) return;
@@ -644,7 +586,6 @@ async function dm(e, id) {
     modifiedRooms.forEach(function(rid) { doSyncRoom(rid); });
 }
 
-// 【F-03】复制到预设素材 // async function cp2p(id)
 async function cp2p(id) {
     var m = s.ms.find(function(x) { return x.id === id; });
     if (!m) { alert('素材未找到，请刷新页面后重试'); return; }
@@ -673,13 +614,8 @@ async function cp2p(id) {
 
 // ==================== 设备管理 ====================
 
-// 【F-04】设备管理 // async function ld()
-/**
- * 设备列表加载
- * - 获取已授权设备列表（/api/devices）、素材列表（/api/materials）、店铺列表（/api/stores）
- * - 更新全局状态：s.ds, s.ms, s.stores
- * - 调用 rd() 渲染店铺/房间列表
- */
+// 【F-04b】 设备列表 // async function ld()
+async function ld() {
     var r = await fetch('/api/devices');
     s.ds = await r.json();
     var mr = await fetch('/api/materials');
@@ -701,7 +637,7 @@ async function cp2p(id) {
 
 // 预设素材
 
-// 【F-03】预设素材 // async function lp()
+// 【F-03b】 预设素材页初始化 // async function lp()
 async function lp() {
     var r = await fetch('/api/preset/materials');
     s.pm = await r.json();
@@ -710,7 +646,6 @@ async function lp() {
     prm();
 }
 
-// 【F-03】预设素材页-渲染文件夹标签 // function prf()
 function prf() {
     var b = document.getElementById('pfb');
     var h = '<div class="tabs">';
@@ -723,7 +658,6 @@ function prf() {
     b.innerHTML = h;
 }
 
-// 【F-03】预设素材页-切换文件夹 // function spf(f)
 function spf(f) {
     s.pf = f;
     localStorage.setItem('xpf', f);
@@ -731,7 +665,6 @@ function spf(f) {
     prm();
 }
 
-// 【F-03】预设素材页-渲染素材网格 // function prm()
 function prm() {
     var g = document.getElementById('pg');
     var l = s.pm.filter(function(x) { return x.folder_id === s.pf; });
@@ -750,7 +683,6 @@ function prm() {
     g.innerHTML = h;
 }
 
-// 【F-03】删除预设素材 // async function dpm(e, id)
 async function dpm(e, id) {
     e.stopPropagation();
     if (!confirm('确定删除?')) return;
@@ -758,13 +690,8 @@ async function dpm(e, id) {
 }
 
 
-// 【F-04】未注册设备 // async function lu()
-/**
- * 未注册设备页初始化
- * - 获取未注册设备列表（/api/unregistered）
- * - 渲染设备卡片，包含设备ID、在线状态、首次发现时间
- * - 提供授权入口（调用 ar()）
- */
+// 【F-04】 未注册设备 // async function lu()
+async function lu() {
     var r = await fetch('/api/unregistered');
     var ds = await r.json();
     var g = document.getElementById('ur');
@@ -791,13 +718,8 @@ async function dpm(e, id) {
 }
 
 
-// 【F-05】设备授权 // async function ar()
-/**
- * 设备授权弹窗
- * @param {string} id - 设备ID
- * - 获取店铺的房间列表，供用户选择设备绑定到哪个房间
- * - 弹出授权确认框，选择后调用 confirmAuth() 完成授权
- */
+// 【F-05】 设备授权 // async function ar()
+async function ar(id) {
     var store = document.getElementById('store_' + id).value;
     
     // 获取该店铺的房间列表
@@ -824,7 +746,6 @@ async function dpm(e, id) {
     document.getElementById('m').classList.add('show');
 }
 
-// 【F-05】确认设备授权 // async function confirmAuth(id, store)
 async function confirmAuth(id, store) {
     var roomId = document.getElementById('room_select').value;
     var modal = document.getElementById('m');
@@ -838,7 +759,6 @@ async function confirmAuth(id, store) {
     lu();
 }
 
-// 【F-05】解绑设备 // async function unbind(id)
 async function unbind(id) {
     if (!confirm('确定解绑该设备？')) return;
     await fetch('/api/devices/' + id + '/deauthorize', {method: 'POST'});
@@ -847,7 +767,6 @@ async function unbind(id) {
     ld();
 }
 
-// 【F-05】解绑房间设备 // async function unbindRoom(id)
 async function unbindRoom(id) {
     if (!confirm('确定解绑该设备？设备将回到未授权状态')) return;
     await fetch('/api/devices/' + id + '/deauthorize', {method: 'POST'});
@@ -861,13 +780,7 @@ async function unbindRoom(id) {
 
 // ==================== 房间管理 ====================
 
-// 【F-06】房间列表刷新 // async function lr()
-/**
- * 刷新房间列表
- * - 获取当前店铺下的所有房间（/api/rooms?store=）
- * - 同步预设素材（/api/preset/materials）
- * - 若当前选中房间不在列表中，清空 s.rf
- */
+// 【F-06】 房间列表刷新 // async function lr()
 async function lr() {
     if (!s.df) return;
     var r = await fetch('/api/rooms?store=' + encodeURIComponent(s.df));
@@ -884,14 +797,8 @@ async function lr() {
 }
 
 
-// 【F-06】选择房间渲染 // function sr(id)
-/**
- * 选择房间
- * @param {string} id - 房间ID
- * - 从服务器拉取完整房间数据（含 scenes 配置）
- * - 更新 s.rf 和 s._curScene（默认 'A'）
- * - 调用 rd() 和 rmDevice() 刷新视图
- */
+// 【F-06b】 选择房间渲染 // function sr(id)
+function sr(id) {
     s.rf = id;
     localStorage.setItem('xroom', id);
     // 拉取完整房间数据（含 scenes 配置）
@@ -906,7 +813,6 @@ async function lr() {
     });
 }
 
-// 【F-06】创建新房间 // async function createRoom()
 async function createRoom() {
     var n = prompt('请输入房间号(例: 201):');
     if (!n) return;
@@ -922,7 +828,6 @@ async function createRoom() {
     if (newRoom) { s.rf = newRoom.id; localStorage.setItem('xroom', newRoom.id); rd(); rmDevice(); }
 }
 
-// 【F-06】删除房间 // async function dr(e, id)
 async function dr(e, id) {
     e.stopPropagation();
     if (!confirm('删除此房间?')) return;
@@ -931,7 +836,6 @@ async function dr(e, id) {
     await lr();
 }
 
-// 【F-06】渲染房间设备视图 // function rmDevice()
 function rmDevice() {
     var g = document.getElementById('dg');
     if (!s.rf) {
@@ -1101,7 +1005,6 @@ function rmDevice() {
 
 // 【工具函数】加载并隔离 room config：A/B windows 数组独立引用
 // 用于所有窗口操作入口（selWin/switchScene/renderWinEditorFull）
-// 【F-09】加载并隔离房间配置（A/B windows独立）// function _loadRoomCfg(r)
 function _loadRoomCfg(r) {
     var c = {};
     try { c = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
@@ -1112,7 +1015,6 @@ function _loadRoomCfg(r) {
     return c;
 }
 
-// 【F-09】切换场景A/B // function switchScene(id)
 function switchScene(id) {
     var oldS = s._curScene || 'A';
     s._selWinMap = s._selWinMap || { A: null, B: null };
@@ -1152,7 +1054,6 @@ function switchScene(id) {
 }
 
 /** 退出窗口配置模式，恢复普通房间视图 */
-// 【F-09】退出窗口配置模式 // function sfR(f)
 function sfR(f) {
     s._windowEditorActive = false;
     var wea = document.getElementById('winEditorArea');
@@ -1174,7 +1075,6 @@ function sfR(f) {
  * 开启 → 切换到 win 视图模式，渲染窗口编辑器
  * 关闭 → 切回普通文件夹模式
  */
-// 【F-09】窗口配置开关 // function sfW()
 function sfW() {
     var wt = document.getElementById('winToggle');
     if (!wt) return;
@@ -1207,16 +1107,8 @@ var _dragging = null;
  *   - 保存并推送按钮
  */
 
-// 【F-09】窗口编辑器 // function renderWinEditorFull()
-/**
- * 渲染完整窗口编辑器界面（Phase2）
- * 包含：可视化画布（1920×1080）、窗口列表、属性编辑面板
- * - 从 room.config.scenes[currentScene].windows 加载窗口数据
- * - 支持窗口拖拽移动、缩放resize
- * - 属性面板：名称、位置、尺寸、内容类型（第一幕/第二幕/HDMI/测试背景）
- * - 比例预设（16:9/4:3/1:1/9:16）、Z序、比例锁定
- * - 保存后调用 saveWindows()
- */
+// 【F-09】 窗口编辑器 // function renderWinEditorFull()
+function renderWinEditorFull() {
     // 【BugFix-20260402-v3】渲染前检查并修复 A/B 共享数组
     var _r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (_r) {
@@ -1287,7 +1179,6 @@ var _dragging = null;
     renderWinCanvas(wins);
 }
 
-// 【F-09】渲染窗口画布 // function renderWinCanvas(wins)
 function renderWinCanvas(wins) {
     var area = document.getElementById('winCanvasArea');
     var canvas = document.getElementById('winCanvas');
@@ -1338,7 +1229,6 @@ function renderWinCanvas(wins) {
     if (info) info.textContent = deviceW + ' × ' + deviceH + ' (×' + _canvasScale.toFixed(2) + ')';
 }
 
-// 【F-09】画布鼠标移动处理 // function winCanvasMouseMove(e)
 function winCanvasMouseMove(e) {
     if (!_dragging) return;
     var dx = e.clientX - _dragging.startX, dy = e.clientY - _dragging.startY;
@@ -1361,7 +1251,6 @@ function winCanvasMouseMove(e) {
     _renderWinRects(wins);
 }
 
-// 【F-09】画布鼠标释放处理 // function winCanvasMouseUp()
 function winCanvasMouseUp() {
     if (_dragging) {
         // 同步拖动后的位置到 s._selWin（避免下次点击时用旧位置覆盖）
@@ -1390,7 +1279,6 @@ function _renderWinRects(wins) {
  * 选中指定窗口（高亮显示，打开属性编辑面板）
  * @param {string} id - 窗口 ID
  */
-// 【F-09】选中窗口 // function selWin(id)
 function selWin(id) {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
@@ -1426,7 +1314,6 @@ function selWin(id) {
  * 自动生成唯一 ID，插入 windows 数组，触发 renderWinEditorFull()
  * 窗口默认：主屏名、全屏尺寸(1920x1080)、zIndex=1、type=VIDEO
  */
-// 【F-09】添加新窗口 // function addWin()
 function addWin() {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
@@ -1470,7 +1357,6 @@ function addWin() {
  * @param {Event} e - 冒泡事件（用于阻止传播）
  * @param {string} id - 窗口 ID
  */
-// 【F-09】删除窗口 // function delWin(e, id)
 function delWin(e, id) {
     e.stopPropagation();
     if (!confirm('删除此窗口？')) return;
@@ -1496,7 +1382,6 @@ function delWin(e, id) {
     fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS2}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { s._winCache = wins; s._selWin = null; doSyncRoom(s.rf); renderWinEditorFull(); } });
 }
 
-// 【F-09】更新窗口属性字段 // function updWinField(field, value)
 function updWinField(field, value) {
     if (!s._selWin) return;
     s._selWin[field] = value;
@@ -1507,7 +1392,6 @@ function updWinField(field, value) {
     if (field === 'name') { var items = document.querySelectorAll('.win-item'); items.forEach(function(it){ if (it.querySelector('.win-item-name').textContent !== (s._selWin&&s._selWin.name)) it.querySelector('.win-item-name').textContent = value; }); }
 }
 
-// 【F-09】更新窗口内容属性 // function updWinContent(field, value)
 function updWinContent(field, value) {
     if (!s._selWin) return;
     if (!s._selWin.content) s._selWin.content = {};
@@ -1519,7 +1403,6 @@ function updWinContent(field, value) {
 }
 
 
-// 【F-09】设置窗口内容类型 // function setWinContentType(type)
 function setWinContentType(type) {
     if (!s._selWin) return;
     s._selWin.content = { type: type };
@@ -1529,7 +1412,6 @@ function setWinContentType(type) {
     renderWinEditorFull();
 }
 
-// 【F-09】切换窗口比例锁定 // function toggleWinRatio(id)
 function toggleWinRatio(id) {
     if (!s._winRatioLock) s._winRatioLock = {};
     s._winRatioLock[id] = !s._winRatioLock[id];
@@ -1537,7 +1419,6 @@ function toggleWinRatio(id) {
     if (btn) { btn.className = 'lock-btn' + (s._winRatioLock[id] ? ' active' : ''); btn.textContent = (s._winRatioLock[id] ? '🔒' : '🔓') + ' 锁定'; }
 }
 
-// 【F-09】设置窗口比例 // function setWinRatio(ratioStr)
 function setWinRatio(ratioStr) {
     if (!s._selWin) return;
     var parts = ratioStr.split(','), rw = parseInt(parts[0]), rh = parseInt(parts[1]);
@@ -1557,7 +1438,6 @@ function setWinRatio(ratioStr) {
  * 流程：PUT /api/rooms/:id/windows → doSyncRoom() → 设备收到新的 scenes 数据
  * 保存成功后自动刷新编辑器状态
  */
-// 【F-09】保存窗口配置并推送 // async function saveWindows()
 async function saveWindows() {
     var btn = document.getElementById('winSaveBtn');
     if (!btn) return;
@@ -1593,7 +1473,6 @@ async function saveWindows() {
     } catch(e) { alert('保存失败: ' + e.message); btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }
 }
 
-// 【F-06】映射预设素材到房间 // async function mapPreset()
 async function mapPreset() {
     console.log('mapPreset called, s.rf:', s.rf, 's.f:', s.f);
     if (!s.rf) { alert('请先选择房间'); return; }
@@ -1640,7 +1519,6 @@ async function mapPreset() {
 }
 
 // 更新调试模式按钮状态
-// 【F-06】更新房间调试模式按钮状态 // async function updateRoomDebugToggle()
 async function updateRoomDebugToggle() {
     var el = document.getElementById('roomDebugToggle');
     var slider = document.getElementById('roomDebugSlider');
@@ -1671,7 +1549,6 @@ async function updateRoomDebugToggle() {
 }
 
 // 切换房间调试模式
-// 【F-06】切换房间调试模式 // async function toggleRoomDebug()
 async function toggleRoomDebug() {
     if (!s.rf) return;
     var cb = document.getElementById('roomDebugToggle');
@@ -1708,13 +1585,8 @@ async function toggleRoomDebug() {
     }
 }
 
-// 【F-10】记录操作日志 // async function logAction(action, type, detail)
-/**
- * 记录用户操作日志到服务器
- * @param {string} action - 操作类型（如 'push', 'cp2p', 'preset_map', 'room_remove'）
- * @param {string} type - 对象类型（如 'room', 'preset'）
- * @param {Object} detail - 操作详情（room_id, material_id 等）
- */
+// 操作日志
+async function logAction(action, type, detail) {
     try {
         await fetch('/api/log', {
             method: 'POST',
@@ -1725,7 +1597,7 @@ async function toggleRoomDebug() {
 }
 
 
-// 【F-08】删除房间素材 // async function rmRoomMat()
+// 【F-08】 删除房间素材（发MQTT）// async function rmRoomMat()
 async function rmRoomMat(e, mid) {
     e.stopPropagation();
     if (!s.rf) return;
@@ -1771,7 +1643,6 @@ async function rmRoomMat(e, mid) {
     });
 }
 
-// 【F-04】渲染店铺和房间列表 // function rd()
 function rd() {
     var g = document.getElementById('dg');
     if (!s.df && s.stores.length > 0) s.df = s.stores[0];
@@ -1792,7 +1663,6 @@ function rd() {
     g.innerHTML = '<div class="empty">请选择或创建房间</div><button class="btn btn-primary" style="margin-top:10px" onclick="createRoom()">+ 新建房间</button>';
 }
 
-// 【F-04】选择店铺 // function sd(store)
 function sd(store) {
     s.df = store;
     localStorage.setItem('xstore', store);
@@ -1800,7 +1670,6 @@ function sd(store) {
     lr();
 }
 
-// 【F-04】添加新店铺 // async function as()
 async function as() {
     var n = prompt('新店铺:');
     if (!n) return;
@@ -1819,7 +1688,6 @@ async function as() {
     rd();
 }
 
-// 【F-04】删除店铺 // function ds(e, store)
 function ds(e, store) {
     e.stopPropagation();
     if (!confirm('删除店铺 ' + store + '?')) return;
@@ -1833,14 +1701,7 @@ function ds(e, store) {
 }
 
 // ==================== 推送 ====================
-// 【F-07】显示素材推送弹窗 // async function showPushDialog()
-/**
- * 弹出素材推送对话框
- * - 显示已选中的素材数量（s.selected）
- * - 支持选择目标店铺、目标场景（A/B）
- * - 加载目标房间列表供多选
- * - 点击确认后调用 doPushToRoom()
- */
+async function showPushDialog() {
     console.log('showPushDialog called, selected:', s.selected);
     if (!s.selected || s.selected.length === 0) { alert('请先勾选要推送的素材'); return; }
     // 只保留有效 UUID/preset ID，过滤掉无效残留值
@@ -1881,7 +1742,6 @@ function selectPushScene(scene) {
     document.getElementById('pushSceneB').classList.toggle('active', scene === 'B');
 }
 
-// 【F-07】加载推送目标房间列表 // async function loadPushRooms()
 async function loadPushRooms() {
     var store = document.getElementById('pushStore').value;
     var div = document.getElementById('pushRoomsDiv');
@@ -1907,7 +1767,6 @@ async function loadPushRooms() {
     }
 }
 
-// 【F-07】执行素材推送 // async function doPushToRoom()
 async function doPushToRoom() {
     console.log('doPushToRoom called');
     var checks = document.querySelectorAll('.room-check:checked');
@@ -1984,7 +1843,7 @@ async function doPushToRoom() {
 
 document.onkeydown = function(e) { if (e.key === 'Escape') { document.getElementById('m').classList.remove('show'); } };
 
-// 【F-04】重命名店铺 // function rs(e, oldName)
+// 重命名店铺（右键）
 function rs(e, oldName) {
     e.preventDefault();
     var newName = prompt('重命名店铺:', oldName);
@@ -2005,7 +1864,7 @@ function rs(e, oldName) {
     }).catch(function(err) { alert('重命名失败: ' + err.message); });
 }
 
-// 【F-04】重命名房间 // function rr(e, id, oldName)
+// 重命名房间（右键）
 function rr(e, id, oldName) {
     e.preventDefault();
     var newName = prompt('重命名房间:', oldName);
@@ -2019,13 +1878,7 @@ function rr(e, id, oldName) {
 sp(s.p);
 
 // ==================== 版本管理 ====================
-// 【F-12】版本列表 // async function lv()
-/**
- * 版本管理页初始化
- * - 获取所有版本列表（/api/versions）
- * - 渲染版本卡片：版本号、版本Code、APK大小、更新日志、上传时间
- * - 支持操作：推送版本到所有设备、下载APK、删除版本
- */
+async function lv() {
     var r = await fetch('/api/versions');
     var versions = await r.json();
     var h = '';
@@ -2044,7 +1897,6 @@ sp(s.p);
     document.getElementById('vl').innerHTML = h;
 }
 
-// 【F-12】设备版本列表 // async function lvd()
 async function lvd() {
     var r = await fetch('/api/device/versions');
     var devices = await r.json();
@@ -2064,7 +1916,6 @@ async function lvd() {
     document.getElementById('dev').innerHTML = h;
 }
 
-// 【F-12】上传新版本APK // async function uv()
 async function uv() {
     var version = document.getElementById('vcode').value;
     var version_code = document.getElementById('vcode2').value;
@@ -2086,7 +1937,6 @@ async function uv() {
     }
 }
 
-// 【F-12】删除版本 // async function dv(id)
 async function dv(id) {
     if (!confirm('确定删除此版本?')) return;
     var r = await fetch('/api/versions/' + id, {method: 'DELETE'});
@@ -2094,7 +1944,6 @@ async function dv(id) {
     if (res.success) lv();
 }
 
-// 【F-12】推送版本更新到设备 // async function pushUpdate(deviceId)
 async function pushUpdate(deviceId) {
     var r = await fetch('/api/devices/' + deviceId + '/push-update', {method: 'POST'});
     var res = await r.json();
@@ -2105,7 +1954,6 @@ async function pushUpdate(deviceId) {
     }
 }
 
-// 【F-12】推送版本到所有设备 // async function pushVersionToAll(versionId)
 async function pushVersionToAll(versionId) {
     if (!confirm('确定向所有在线设备推送此版本？')) return;
     var r = await fetch('/api/versions/' + versionId + '/push-to-all', {method: 'POST'});
@@ -3261,14 +3109,7 @@ body {
 var s = s || {};
 s.logAutoRefreshTimer = null;
 
-// 【F-11】加载设备日志 // async function loadDeviceLogs()
-/**
- * 加载设备日志
- * - GET /api/device_logs?limit=200&device_id=
- * - 支持按设备ID筛选（logDeviceFilter 下拉框）
- * - 实时显示：时间、设备ID、级别（error/warn/info）、消息内容
- * - 支持自动刷新（toggleLogAutoRefresh，5秒间隔）
- */
+async function loadDeviceLogs() {
     var container = document.getElementById('logList');
     if (!container) return;
     container.innerHTML = '<div style="padding:30px;text-align:center;color:#666">加载中...</div>';
@@ -3315,7 +3156,6 @@ s.logAutoRefreshTimer = null;
     }
 }
 
-// 【F-11】切换日志自动刷新 // function toggleLogAutoRefresh()
 function toggleLogAutoRefresh() {
     var cb = document.getElementById('logAutoRefresh');
     if (!cb) return;
