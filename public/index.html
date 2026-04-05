@@ -303,7 +303,9 @@ var s = {
     rooms: [],
     devicePollInterval: null,
     loadingMaterials: false,
-    lmCallId: 0
+    lmCallId: 0,
+    _lmCallCounter: 0,
+    _lastLmCallId: ''
 };
 
 function sp(p) {
@@ -318,7 +320,12 @@ function sp(p) {
     document.getElementById('pl').style.display = p === 'logs' ? 'block' : 'none';
     document.getElementById('title').innerText = p === 'materials' ? '素材管理' : (p === 'devices' ? '客户管理' : (p === 'unregistered' ? '未注册设备' : (p === 'presets' ? '预设素材' : (p === 'logs' ? '设备日志' : '版本管理'))));
     ub(p);
-    if (p === 'materials') lm();
+    if (p === 'materials') {
+        // 切换到素材管理页时，清除设备相关的状态
+        s.df = null;
+        s.rf = null;
+        lm();
+    }
     else if (p === 'devices') {
         if (s.devicePollInterval) clearInterval(s.devicePollInterval);
         s.df = localStorage.getItem('xstore') || '默认店';
@@ -348,9 +355,10 @@ async function lm() {
         console.log("lm() skipped - already loading");
         return;
     }
-    var callId = ++s.lmCallId;
+    var callId = Date.now() + '_' + (s._lmCallCounter = (s._lmCallCounter || 0) + 1);
     var startFolder = s.f; // 记录开始时的文件夹
     s.loadingMaterials = true;
+    s._lastLmCallId = callId;
     try {
         var r = await fetch('/api/materials');
         s.ms = await r.json();
@@ -372,7 +380,7 @@ async function lm() {
         // 不重置 s.f，保持用户当前选择的文件夹
         rf();
         // 只有最新调用才渲染
-        if (callId === s.lmCallId && s.f === startFolder) {
+        if (callId === s._lastLmCallId && s.f === startFolder) {
             rm();
             // 初始显示文件夹信息
             var note = s.folders && s.folders[s.f] || '';
@@ -384,7 +392,7 @@ async function lm() {
         console.error('lm() error:', error);
     } finally {
         s.loadingMaterials = false;
-        if (callId === s.lmCallId && s.f === startFolder) {
+        if (callId === s._lastLmCallId && s.f === startFolder) {
             rm();
         }
     }
@@ -418,6 +426,7 @@ function rn(e, n) {
 }
 
 function sf(f) {
+    console.log('sf() called with folder:', f, 'current s.f:', s.f);
     s.f = f;
     localStorage.setItem('xf', f);
     rf(); // 始终刷新素材页的标签栏（安全）
@@ -434,12 +443,13 @@ function sf(f) {
 }
 
 function rm() {
-    if (s.loadingMaterials) {
-        console.log("Skipping rm() - materials still loading, s.f=" + s.f);
-        return;
-    }
     var g = document.getElementById('g');
     console.log('Filtering folder:', s.f, 'from', s.ms.length, 'materials');
+    // 调试：检查前几个素材的folder值
+    if (s.ms.length > 0) {
+        console.log('First material folder:', s.ms[0].folder);
+        console.log('All material folders:', s.ms.map(function(x) { return x.folder; }));
+    }
     var l = s.ms.filter(function(x) { return x.folder === s.f; });
     console.log('Found:', l.length, 'materials in folder', s.f);
     if (l.length === 0) {
