@@ -151,6 +151,26 @@ function buildPrefixedScenes(scenes) {
   return result;
 }
 
+/**
+ * 合并 prefixedScenes 的 A+B folder_mappings 为一个对象（键 A01/B01）
+ * sync 命令的 folder_mappings 字段统一用这个（A+B 全量），
+ * 消除各发送方语义不一致（曾出现 A-only / curScene-only 导致 APK 误清另一幕文件）
+ */
+function mergePrefixedMappings(prefixedScenes) {
+  const fmA = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
+  const fmB = prefixedScenes.B ? prefixedScenes.B.folder_mappings : {};
+  const merged = {};
+  Object.keys(fmA).forEach(k => { merged[k] = [...(fmA[k] || [])]; });
+  Object.keys(fmB).forEach(k => {
+    if (merged[k]) {
+      [...(fmB[k] || [])].forEach(id => { if (!merged[k].includes(id)) merged[k].push(id); });
+    } else {
+      merged[k] = [...(fmB[k] || [])];
+    }
+  });
+  return merged;
+}
+
 const app = express();
 const PORT = config.port;
 
@@ -476,12 +496,12 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             message: message,
             room_id: roomId || '',
             scenes: prefixedScenes,
-            folder_mappings: prefixedScenes.A ? prefixedScenes.A.folder_mappings : {},
+            folder_mappings: mergePrefixedMappings(prefixedScenes),
             debug: debugFlag,
             timestamp: Date.now()
           };
 
-          mqttClient.publish(topic, JSON.stringify(payload));
+          mqttClient.publish(topic, JSON.stringify(payload), { qos: 1 });
           console.log(`📤 已推送授权+素材配置到设备 ${deviceId}, 房间: ${roomId}, 文件夹: ${JSON.stringify(prefixedScenes.A ? prefixedScenes.A.folder_mappings : {})}`);
 
           // 触发设备同步素材
@@ -545,11 +565,11 @@ function sendSyncCommandToDevice(mqttId, roomId, config) {
     action: 'sync_room_materials',
     room_id: roomId,
     scenes: prefixedScenes,   // folder_mappings 键名已加 scene 前缀
-    folder_mappings: prefixedScenes.A ? prefixedScenes.A.folder_mappings : {}, // APK 用这个触发 HTTP 同步
+    folder_mappings: mergePrefixedMappings(prefixedScenes), // A+B 全量（A01/B01 键），各发送方统一
     debug: config && config.debug === true,
     timestamp: Date.now()
   };
-  mqttClient.publish(topic, JSON.stringify(payload));
+  mqttClient.publish(topic, JSON.stringify(payload), { qos: 1 });
   console.log(`📦 已发送同步命令到设备 ${mqttId}, scenes=A/B (scene-prefixed), debug=${payload.debug}`);
 }
 
@@ -570,14 +590,7 @@ function notifyRoomDevicesOfSync(roomId) {
         // scene-prefixed 格式（与 sendSyncCommandToDevice / buildPrefixedScenes 一致）
         // cfg.scenes 的 folder_mappings 键是未加前缀的（"01", "02"...），需要用 buildPrefixedScenes 转换
         const prefixedScenes = buildPrefixedScenes(cfg.scenes || {});
-        // 合并 Scene A 和 B 的 folder_mappings，统一加 scene 前缀（A01, B01）
-        const fmA = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
-        const fmB = prefixedScenes.B ? prefixedScenes.B.folder_mappings : {};
-        const allFolderMappings = {};
-        // Scene A: "A01", "A02"...
-        Object.keys(fmA).forEach(k => { allFolderMappings[k] = [...(fmA[k] || [])]; });
-        // Scene B: "B01", "B02"...（不是 "01"，与 HTTP API 返回的 key 格式一致）
-        Object.keys(fmB).forEach(k => { allFolderMappings[k] = [...(fmB[k] || [])]; });
+        const allFolderMappings = mergePrefixedMappings(prefixedScenes);
         devices.forEach(({ id: deviceId, fingerprint }) => {
           try {
             const mqttId = fingerprint || deviceId;
@@ -590,7 +603,7 @@ function notifyRoomDevicesOfSync(roomId) {
               debug: cfg.debug === true,
               timestamp: Date.now()
             };
-            mqttClient.publish(topic, JSON.stringify(payload));
+            mqttClient.publish(topic, JSON.stringify(payload), { qos: 1 });
             console.log(`📦 [notify] 已推送 sync 到设备 ${deviceId} (房间 ${roomId})`);
           } catch (e) {
             console.error(`[notify] MQTT 发布失败，设备 ${deviceId}: ${e.message}`);
@@ -753,17 +766,7 @@ app.post('/api/rooms/:id/sync', (req, res) => {
     // scene-prefixed 统一格式（与 sendSyncCommandToDevice / notifyRoomDevicesOfSync 一致；
     // APK 落盘目录与播放解析均以 A01/B01 形态为准，无前缀格式会导致播放指向根目录 01）
     const prefixedScenes = buildPrefixedScenes(config.scenes);
-    const fmA = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
-    const fmB = prefixedScenes.B ? prefixedScenes.B.folder_mappings : {};
-    const allFolderMappings = {};
-    Object.keys(fmA).forEach(k => { allFolderMappings[k] = [...(fmA[k] || [])]; });
-    Object.keys(fmB).forEach(k => {
-      if (allFolderMappings[k]) {
-        [...(fmB[k] || [])].forEach(id => { if (!allFolderMappings[k].includes(id)) allFolderMappings[k].push(id); });
-      } else {
-        allFolderMappings[k] = [...(fmB[k] || [])];
-      }
-    });
+    const allFolderMappings = mergePrefixedMappings(prefixedScenes);
 
     // 查房间下所有已授权的设备
     db.query(
@@ -786,7 +789,7 @@ app.post('/api/rooms/:id/sync', (req, res) => {
             folder_mappings: allFolderMappings, // A01/B01 键，与 HTTP API 返回格式一致
             debug: config.debug === true
           };
-          mqttClient.publish(topic, JSON.stringify(syncCmd));
+          mqttClient.publish(topic, JSON.stringify(syncCmd), { qos: 1 });
           sent++;
         });
 
@@ -797,8 +800,8 @@ app.post('/api/rooms/:id/sync', (req, res) => {
   });
 });
 
-// 【S-07d】从房间删除素材，只从当前操作的那个场景删除（两幕完全独立）
-// 流程：清理 scene[curScene].folder_mappings → UPDATE DB → 发 MQTT → 发 sync_room_materials
+// 【S-07d】从房间删除素材：A/B 两幕同编号文件夹一起清（与添加时写双幕对称）
+// 流程：清理 scenes A/B folder_mappings → UPDATE DB → 发 delete_material + sync_room_materials
 app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
   const { roomId, materialId } = req.params;
   const folder = req.query.folder || '01';
@@ -821,14 +824,19 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
         let config = {};
         try { config = roomRows[0].config ? JSON.parse(roomRows[0].config) : {}; } catch(e) {}
 
-        // 从指定场景的 folder_mappings 移除（只删当前场景，不动其他场景）
+        // 从 folder_mappings 移除该素材：A/B 两幕同编号文件夹一起清（与添加素材到房间时写双幕对称，
+        // 否则会出现"B 幕删了 A 幕还有"的幻影素材）
         let removed = false;
-        if (config.scenes && config.scenes[curScene] && config.scenes[curScene].folder_mappings) {
-          Object.keys(config.scenes[curScene].folder_mappings).forEach(fid => {
-            const arr = config.scenes[curScene].folder_mappings[fid] || [];
-            const before = arr.length;
-            config.scenes[curScene].folder_mappings[fid] = arr.filter(id => id !== materialId);
-            if (arr.length !== before) removed = true;
+        if (config.scenes) {
+          ['A', 'B'].forEach(scene => {
+            if (config.scenes[scene] && config.scenes[scene].folder_mappings) {
+              Object.keys(config.scenes[scene].folder_mappings).forEach(fid => {
+                const arr = config.scenes[scene].folder_mappings[fid] || [];
+                const before = arr.length;
+                config.scenes[scene].folder_mappings[fid] = arr.filter(id => id !== materialId);
+                if (arr.length !== before) removed = true;
+              });
+            }
           });
         }
 
@@ -852,25 +860,25 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
                   const mqttId = d.fingerprint || d.id;
                   const topic = `xvj/device/${mqttId}/command`;
 
-                  // 3a. delete_material：让 APK 立即删本地文件（尽力发）
+                  // 3a. delete_material：让 APK 立即删本地文件（尽力发）。
+                  // folder 带场景前缀（"A01"），APK deleteMaterialFile 按前缀解析物理目录 scenea/01
                   mqttClient.publish(topic, JSON.stringify({
                     action: 'delete_material',
                     material_id: materialId,
-                    folder: folder,
+                    folder: curScene + folder,
                     filename: filename
-                  }));
+                  }), { qos: 1 });
                   sentDel++;
 
-                  // 3b. sync_room_materials：scene-prefixed 格式，保持和 sendSyncCommandToDevice 一致
+                  // 3b. sync_room_materials：folder_mappings 统一 A+B 全量（mergePrefixedMappings）
                   var prefixedScenes = buildPrefixedScenes(config.scenes);
-                  const curFmDelete = prefixedScenes[curScene]?.folder_mappings || {};
                   mqttClient.publish(topic, JSON.stringify({
                     action: 'sync_room_materials',
                     room_id: roomId,
                     scenes: prefixedScenes,
-                    folder_mappings: curFmDelete,    // scene-prefixed
+                    folder_mappings: mergePrefixedMappings(prefixedScenes),
                     debug: config.debug === true
-                  }));
+                  }), { qos: 1 });
                   sentSync++;
                 });
 
@@ -1731,14 +1739,14 @@ app.put('/api/rooms/:id', (req, res) => {
       } else {
         // 合并：保留 DB 中 scenes 的 windows，只更新传入的 folder_mappings
         // 【Bug Fix】incoming config 中未包含的 scene（如只修改 Scene A 时 B 未传入）必须保留 DB 中原有数据
+        // folder_mappings 区分「未提供」与「显式空对象」：传 {} 表示清空该场景映射（否则永远无法清空）
         var existingScenes = existingConfig.scenes || {};
-        // Scene A：incoming 有就用 incoming 的，无则继承 DB 的（只合并 folder_mappings，不整体覆盖）
         var incomingA = cfg.scenes.A;
         cfg.scenes.A = {
           name: incomingA ? (incomingA.name || '第一幕') : (existingScenes.A?.name || '第一幕'),
-          folder_mappings: (incomingA?.folder_mappings && Object.keys(incomingA.folder_mappings).length > 0)
+          folder_mappings: (incomingA && incomingA.folder_mappings && typeof incomingA.folder_mappings === 'object')
             ? incomingA.folder_mappings
-            : (existingScenes.A?.folder_mappings || {}),
+            : (incomingA && incomingA.folder_mappings === null ? {} : (existingScenes.A?.folder_mappings || {})),
           windows: (incomingA?.windows && incomingA.windows.length > 0)
             ? incomingA.windows
             : (existingScenes.A?.windows || []),
@@ -1750,9 +1758,9 @@ app.put('/api/rooms/:id', (req, res) => {
         if (cfg.scenes.B) {
           cfg.scenes.B = {
             name: cfg.scenes.B.name || '第二幕',
-            folder_mappings: (cfg.scenes.B.folder_mappings && Object.keys(cfg.scenes.B.folder_mappings).length > 0)
+            folder_mappings: (cfg.scenes.B.folder_mappings && typeof cfg.scenes.B.folder_mappings === 'object')
               ? cfg.scenes.B.folder_mappings
-              : (existingScenes.B?.folder_mappings || {}),
+              : (cfg.scenes.B.folder_mappings === null ? {} : (existingScenes.B?.folder_mappings || {})),
             windows: (cfg.scenes.B.windows && cfg.scenes.B.windows.length > 0)
               ? cfg.scenes.B.windows
               : (existingScenes.B?.windows || []),
