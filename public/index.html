@@ -211,6 +211,34 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="modal" id="m" onclick="if(event.target === this) this.classList.remove('show')"><button class="modal-close" onclick="dc()">×</button><div id="mc"></div></div>
 <script src="/mqtt.min.js"></script>
 <script>
+// 【F-00】API 密钥注入：服务端对写操作（POST/PUT/DELETE）要求 x-api-key，这里为所有请求统一附加
+(function () {
+    var K = 'xvj_secret_key_2024';
+    var _fetch = window.fetch;
+    window.fetch = function (input, init) {
+        try {
+            var url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (url.indexOf('/api/') === 0) {
+                init = init || {};
+                init.headers = init.headers || {};
+                init.headers['x-api-key'] = K;
+            }
+        } catch (e) {}
+        return _fetch.call(window, input, init);
+    };
+    var _open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+        this._xvjApi = typeof url === 'string' && url.indexOf('/api/') === 0;
+        return _open.apply(this, arguments);
+    };
+    var _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function () {
+        if (this._xvjApi) { try { this.setRequestHeader('x-api-key', K); } catch (e) {} }
+        return _send.apply(this, arguments);
+    };
+})();
+</script>
+<script>
 // 同步当前房间的设备
 async function syncCurrentRoom() {
     if (!s.df) { showAlert('请先选择一个客户'); return; }
@@ -551,19 +579,9 @@ function ul(files) {
 async function dm(e, id) {
     e.stopPropagation();
     if (!confirm('确定删除?')) return;
-    var m = s.ms.find(function(x) { return x.id === id; });
-    var url = m ? m.url : null;
-    // 删除素材
+    // 服务端级联：物理文件 + 同URL预设素材 + 房间映射清理 + 设备同步通知
     var delRes = await fetch('/api/materials/' + id, {method: 'DELETE'});
     if (!delRes.ok) { var err = await delRes.text(); alert('删除失败: ' + err); return; }
-    // 1. 删除对应的预设（所有文件夹）
-    if (url && s.pm) {
-        var toDelete = s.pm.filter(function(p) { return p.url === url; });
-        for (var i = 0; i < toDelete.length; i++) {
-            await fetch('/api/preset/materials/' + toDelete[i].id, {method: 'DELETE'});
-        }
-    }
-    // 2. 房间 scenes A/B 的映射清理由服务端 DELETE /api/materials 完成（含设备同步通知）
     // 刷新显示
     lm();
     lp();
@@ -582,7 +600,8 @@ async function cp2p(id) {
         filename: m.filename || m.name,
         url: m.url,
         type: m.type || 'video',
-        thumbnail: m.thumbnail || null
+        thumbnail: m.thumbnail || null,
+        md5: m.md5 || null
     };
     console.log('Preset data:', JSON.stringify(preset));
     var res = await fetch('/api/preset/materials', {
@@ -1595,12 +1614,13 @@ async function mapPreset() {
     var presetInFolder = pm;
     if (presetInFolder.length === 0) { alert('预设素材库为空，请先在预设素材页面添加'); return; }
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
-    // 基于 scenes.A.folder_mappings 合并（保留已映射的素材库素材），只写当前场景 A
+    // 基于 scenes[curS].folder_mappings 合并（保留已映射的素材），只写当前场景
+    var curS = s._curScene || 'A';
     var cfg = {};
     try { cfg = r.config ? JSON.parse(r.config) : {}; } catch(e) {}
     if (!cfg.scenes) { cfg.scenes = { A:{name:'第一幕',folder_mappings:{},windows:[]}, B:{name:'第二幕',folder_mappings:{},windows:[]} }; }
-    cfg.scenes.A = cfg.scenes.A || { name:'第一幕', folder_mappings:{}, windows:[] };
-    var folderMs = cfg.scenes.A.folder_mappings || {};
+    cfg.scenes[curS] = cfg.scenes[curS] || { name: curS === 'A' ? '第一幕' : '第二幕', folder_mappings:{}, windows:[] };
+    var folderMs = cfg.scenes[curS].folder_mappings || {};
     // 添加所有预设素材到对应文件夹（按ID或URL去重）
     var count = 0;
     presetInFolder.forEach(function(m) {
@@ -1620,7 +1640,7 @@ async function mapPreset() {
         });
         if (!alreadyAdded) { folderMs[fid].push(m.id); count++; }
     });
-    cfg.scenes.A.folder_mappings = folderMs;
+    cfg.scenes[curS].folder_mappings = folderMs;
     await fetch('/api/rooms/' + s.rf, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},

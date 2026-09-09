@@ -192,6 +192,12 @@ function requireAuth(req, res, next) {
 app.use(cors());
 app.use(express.json());
 
+// 写操作统一要求 API 密钥（GET 保持开放：设备端/APK 只做 GET）
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'OPTIONS' || req.method === 'HEAD') return next();
+  requireAuth(req, res, next);
+});
+
 // Serve static files (index.html)
 app.get('/', (req, res) => {
   res.sendFile('/var/www/xvj/index.html');
@@ -455,9 +461,6 @@ function handleDeviceRegister(deviceId, data) {
           );
           
           sendAuthResponse(deviceId, true, '欢迎回来', device.room_id || '');
-          
-          // 已授权设备上线，推送预设素材
-          sendPresetMaterialsToDevice(deviceId);
         }
       }
     }
@@ -1003,20 +1006,6 @@ app.get('/api/materials', (req, res) => {
   });
 });
 
-// 8. 上传素材（简化版）
-app.post('/api/materials', (req, res) => {
-  const { name, url, type } = req.body;
-  const id = uuidv4();
-  db.query(
-    'INSERT INTO materials (id, name, url, type) VALUES (?, ?, ?, ?)',
-    [id, name, url, type || 'video'],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id, name, url, type });
-    }
-  );
-});
-
 // 9. 获取配置
 app.get('/api/config/:deviceId', (req, res) => {
   db.query('SELECT config FROM devices WHERE id = ?', [req.params.deviceId], (err, results) => {
@@ -1038,213 +1027,88 @@ app.post('/api/config/:deviceId', (req, res) => {
   });
 });
 
-// ==================== 预设素材管理 ====================
-
-// 预设素材文件夹配置（等用户发送具体文件夹后修改）
-const PRESET_FOLDERS = [
-  { id: 'ad', name: '广告', path: '/storage/emulated/0/videos/ad' },
-  { id: 'intro', name: '开场', path: '/storage/emulated/0/videos/intro' },
-  { id: 'loop', name: '循环', path: '/storage/emulated/0/videos/loop' }
-  // TODO: 等用户发送文件夹列表后补充
-];
+// ==================== 素材引用清理 ====================
 
 /**
- * 初始化预设素材相关表（preset_materials、preset_folders）
- * 如表不存在则 CREATE TABLE IF NOT EXISTS，如 preset_folders 为空则插入默认配置
+ * 从所有房间的 config.scenes.A/B.folder_mappings 中移除指定素材 ID（数组或单个）
+ * 有变更的房间写回 DB 并收集其 ID，全部写完后回调 done(affectedRoomIds)
  */
-function initPresetMaterialsTable() {
-  db.query(`
-    CREATE TABLE IF NOT EXISTS preset_materials (
-      id VARCHAR(36) PRIMARY KEY,
-      folder_id VARCHAR(50) NOT NULL,
-      folder_name VARCHAR(100),
-      filename VARCHAR(255) NOT NULL,
-      url VARCHAR(512) NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_folder_id (folder_id)
-    )
-  `);
-  
-  // 初始化预设素材文件夹配置表
-  db.query(`
-    CREATE TABLE IF NOT EXISTS preset_folders (
-      id VARCHAR(50) PRIMARY KEY,
-      name VARCHAR(100) NOT NULL,
-      path VARCHAR(255) NOT NULL,
-      sort_order INT DEFAULT 0,
-      enabled TINYINT(1) DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  
-  // 如果配置表为空，插入默认配置
-  db.query('SELECT COUNT(*) as cnt FROM preset_folders', (err, results) => {
-    if (results[0].cnt === 0) {
-      PRESET_FOLDERS.forEach((folder, index) => {
-        db.query(
-          'INSERT INTO preset_folders (id, name, path, sort_order) VALUES (?, ?, ?, ?)',
-          [folder.id, folder.name, folder.path, index]
-        );
+function removeMaterialIdsFromAllRooms(ids, done) {
+  const killIds = Array.isArray(ids) ? ids : [ids];
+  db.query('SELECT id, config FROM rooms', [], (err, rooms) => {
+    const affected = [];
+    if (err || !rooms || rooms.length === 0) return done(affected);
+    let pending = 0;
+    rooms.forEach(room => {
+      let cfg = {};
+      try { cfg = room.config ? JSON.parse(room.config) : {}; } catch (e) { return; }
+      let changed = false;
+      ['A', 'B'].forEach(sc => {
+        const fm = cfg.scenes && cfg.scenes[sc] && cfg.scenes[sc].folder_mappings;
+        if (!fm) return;
+        Object.keys(fm).forEach(k => {
+          const arr = fm[k];
+          if (!Array.isArray(arr)) return;
+          const filtered = arr.filter(x => !killIds.includes(x));
+          if (filtered.length !== arr.length) { fm[k] = filtered; changed = true; }
+        });
       });
-      console.log('✅ 预设素材文件夹已初始化');
-    }
-  });
-}
-
-/**
- * 获取预设素材列表（按文件夹分组）
- * @param {function} callback - (err, folders) => {}
- * @returns {Array} folders - [{id, name, path, materials: [...]}]
- */
-function getPresetMaterials(callback) {
-  db.query('SELECT * FROM preset_folders WHERE enabled = 1 ORDER BY sort_order', (err, folders) => {
-    if (err) return callback(err, null);
-    
-    db.query('SELECT * FROM preset_materials ORDER BY folder_id, filename', (err, materials) => {
-      if (err) return callback(err, null);
-      
-      // 按文件夹分组
-      const result = folders.map(folder => ({
-        id: folder.id,
-        name: folder.name,
-        path: folder.path,
-        materials: materials.filter(m => m.folder_id === folder.id).map(m => ({
-          id: m.id,
-          filename: m.filename,
-          url: m.url
-        }))
-      }));
-      
-      callback(null, result);
+      if (!changed) return;
+      affected.push(room.id);
+      pending++;
+      db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(cfg), room.id], () => {
+        pending--;
+        if (pending === 0) done(affected);
+      });
     });
-  });
-}
-
-/**
- * 设备注册成功后，推送预设素材（MQTT preset 主题）
- * @param {string} deviceId - 设备 ID
- */
-function sendPresetMaterialsToDevice(deviceId) {
-  getPresetMaterials((err, folders) => {
-    if (err) {
-      console.error('获取预设素材失败:', err);
-      return;
-    }
-    
-    // 通过 MQTT 推送预设素材列表
-    const topic = `xvj/device/${deviceId}/preset`;
-    const payload = JSON.stringify({
-      action: 'preset_sync',
-      folders: folders,
-      timestamp: Date.now()
-    });
-    
-    mqttClient.publish(topic, payload);
-    console.log(`📦 已推送预设素材到设备 ${deviceId}, ${folders.length} 个文件夹`);
+    if (pending === 0) done(affected);
   });
 }
 
 // ==================== 预设素材 API ====================
+// 前端模型：预设"文件夹"即 01-30 数字编号（folder_id），与素材库文件夹编号对齐
 
-// 获取预设素材列表
-app.get('/api/preset/folders', (req, res) => {
-  getPresetMaterials((err, folders) => {
+// 【S-03】 获取预设素材列表
+app.get('/api/preset/materials', (req, res) => {
+  db.query('SELECT * FROM preset_materials ORDER BY folder_id, filename', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
-
-// 【S-03】 预设素材 API // GET|POST /api/preset/* | DELETE /api/preset/materials/:id
-    res.json(folders);
+    res.json(results || []);
   });
 });
 
-// 添加预设素材文件夹
-app.post('/api/preset/folders', (req, res) => {
-  const { id, name, path } = req.body;
+// 【S-03f】 添加预设素材（复制素材库条目的引用，共享同一物理文件）
+app.post('/api/preset/materials', (req, res) => {
+  const { folder_id, filename, url, type, thumbnail, md5 } = req.body;
+  if (!folder_id || !url) return res.status(400).json({ error: 'need folder_id and url' });
+  const id = 'pm_' + Date.now();
+  const safeName = filename || url.split('/').pop() || '未知文件';
+  const fileType = type || (safeName.endsWith('.mp4') || safeName.endsWith('.avi') ? 'video' : 'image');
   db.query(
-    'INSERT INTO preset_folders (id, name, path) VALUES (?, ?, ?)',
-    [id, name, path],
+    'INSERT INTO preset_materials (id, folder_id, filename, url, type, thumbnail, md5) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, folder_id, safeName, url, fileType, thumbnail || null, md5 || null],
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true, id, name, path });
+      logAction('create', 'preset_material', { id, folder_id, filename: safeName, url });
+      res.json({ id, folder_id, filename: safeName, url, type: fileType, thumbnail: thumbnail || null, md5: md5 || null });
     }
   );
 });
 
-// 删除预设素材文件夹
-app.delete('/api/preset/folders/:id', (req, res) => {
-  const folderId = req.params.id;
-  db.query('DELETE FROM preset_materials WHERE folder_id = ?', [folderId], (err) => {
-    if (err) return res.status(500).json({ error: err.message });
-    db.query('DELETE FROM preset_folders WHERE id = ?', [folderId], (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true });
-    });
-  });
-});
-
-// 添加预设素材
-// 删除预设素材（级联清理所有房间的 folder_mappings，含根级和 scenes A/B）
+// 删除预设素材（级联清理所有房间的 scenes A/B 映射并通知设备同步）
 app.delete('/api/preset/materials/:id', (req, res) => {
   const mid = req.params.id;
   db.query('SELECT * FROM preset_materials WHERE id = ?', [mid], (err, rows) => {
-    if (rows && rows[0]) logAction('delete', 'preset_material', rows[0]);
-    // 级联：同时查询 folder_mappings 和 config，用于清理根级和 scenes A/B
-    db.query('SELECT id, folder_mappings, config FROM rooms', [], (err2, rooms) => {
-      if (!err2 && rooms) {
-        rooms.forEach((room) => {
-
-          // 2. 清理 config.scenes.A/B.folder_mappings
-          if (room.config) {
-            try {
-              const cfg = typeof room.config === 'string' ? JSON.parse(room.config) : { ...room.config };
-              if (cfg.scenes && cfg.scenes.A && cfg.scenes.A.folder_mappings) {
-                Object.values(cfg.scenes.A.folder_mappings).forEach(arr => {
-                  const idx = arr.indexOf(mid);
-                  if (idx > -1) { arr.splice(idx, 1); sceneAChanged = true; }
-                });
-              }
-              if (cfg.scenes && cfg.scenes.B && cfg.scenes.B.folder_mappings) {
-                Object.values(cfg.scenes.B.folder_mappings).forEach(arr => {
-                  const idx = arr.indexOf(mid);
-                  if (idx > -1) { arr.splice(idx, 1); sceneBChanged = true; }
-                });
-              }
-              if (sceneAChanged || sceneBChanged) {
-                db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(cfg), room.id]);
-                console.log(`🗑 从房间 ${room.id} scenes 移除预设素材 ${mid} (A:${sceneAChanged} B:${sceneBChanged})`);
-              }
-            } catch (e) {}
-          }
-        });
-      }
+    if (err) return res.status(500).json({ error: err.message });
+    if (!rows || !rows[0]) return res.status(404).json({ error: '预设素材不存在' });
+    logAction('delete', 'preset_material', rows[0]);
+    removeMaterialIdsFromAllRooms(mid, (affected) => {
       db.query('DELETE FROM preset_materials WHERE id = ?', [mid], (err3) => {
         if (err3) return res.status(500).json({ error: err3.message });
-        // 通知所有 scenes A/B 使用了该素材的房间
-        db.query("SELECT id, config FROM rooms", [], (err, rooms) => {
-          if (!err && rooms) {
-            rooms.forEach(room => {
-              try {
-                const cfg = room.config ? JSON.parse(room.config) : {};
-                const fmA = cfg.scenes && cfg.scenes.A && cfg.scenes.A.folder_mappings ? cfg.scenes.A.folder_mappings : null;
-                const fmB = cfg.scenes && cfg.scenes.B && cfg.scenes.B.folder_mappings ? cfg.scenes.B.folder_mappings : null;
-                const inA = fmA && Object.values(fmA).flat().includes(mid);
-                const inB = fmB && Object.values(fmB).flat().includes(mid);
-                if (inA || inB) {
-                  notifyRoomDevicesOfSync(room.id);
-                }
-              } catch (e) { /* ignore */ }
-            });
-          }
-          res.json({ success: true });
-        });
+        affected.forEach(rid => notifyRoomDevicesOfSync(rid));
+        res.json({ success: true, rooms_notified: affected.length });
       });
     });
   });
-});
-
-// 手动触发推送到设备
-app.post('/api/preset/push/:deviceId', (req, res) => {
-  sendPresetMaterialsToDevice(req.params.deviceId);
-  res.json({ success: true, message: '推送已发送' });
 });
 
 
@@ -1272,14 +1136,27 @@ app.post("/api/folders", (req, res) => {
   res.json({success:true, name:name});
 });
 
-// 【S-10c】 删除素材文件夹（物理目录 + materials 表级联清理）
+// 【S-10c】 删除素材文件夹（级联：物理目录 + materials + 同 URL 预设 + 房间映射清理 + 设备同步）
 app.delete("/api/folders/:name", (req, res) => {
   const name = req.params.name;
   if (!name || name==="default") return res.status(400).json({error:"cannot delete"});
-  const dir = __dirname + "/public/uploads/"+name;
-  if (require('fs').existsSync(dir)) require('fs').rmSync(dir, {recursive:true});
-  db.query("DELETE FROM materials WHERE folder=?", [name], ()=>{});
-  res.json({success:true});
+  db.query("SELECT id, url FROM materials WHERE folder=?", [name], (err, mats) => {
+    const list = mats || [];
+    const ids = list.map(m => m.id);
+    const urls = list.map(m => m.url).filter(Boolean);
+    removeMaterialIdsFromAllRooms(ids, (affected) => {
+      const dir = __dirname + "/public/uploads/"+name;
+      if (require('fs').existsSync(dir)) require('fs').rmSync(dir, {recursive:true});
+      db.query("DELETE FROM materials WHERE folder=?", [name], ()=>{});
+      if (urls.length > 0) {
+        const ph = urls.map(() => '?').join(',');
+        db.query(`DELETE FROM preset_materials WHERE url IN (${ph})`, urls, ()=>{});
+      }
+      affected.forEach(rid => notifyRoomDevicesOfSync(rid));
+      logAction('delete', 'folder', { folder: name, materials: ids.length, rooms_notified: affected.length });
+      res.json({success:true, removed_materials: ids.length, rooms_notified: affected.length});
+    });
+  });
 });
 
 
@@ -1287,55 +1164,31 @@ app.delete("/api/materials/:id", (req, res) => {
   const id = req.params.id;
   const fs = require('fs');
 
-  // 步骤1：查素材记录，删除物理文件
+  // 步骤1：查素材记录
   db.query("SELECT * FROM materials WHERE id=?", [id], (err, rows) => {
     if (err || !rows || !rows[0]) {
       return res.status(404).json({ error: '素材不存在' });
     }
     const mat = rows[0];
     logAction('delete', 'material', mat);
-    const base = __dirname + '/public';
-    for (const f of [mat.url, mat.thumbnail]) {
-      if (f) { try { fs.unlinkSync(base + f); } catch (e) { /* ignore */ } }
-    }
 
-    // 步骤2：清理所有 rooms 的 config.scenes（A/B 的 folder_mappings 中移除该素材）
-    db.query("SELECT id, config FROM rooms", [], (err2, rooms) => {
-      const promises = [];
-      if (!err2 && rooms) {
-        rooms.forEach(room => {
-          let changed = false;
-          const cfg = {};
-          try { Object.assign(cfg, room.config ? JSON.parse(room.config) : {}); } catch(e) {}
-
-          // 清理 scenes A/B folder_mappings
-          let sceneChanged = false;
-          ['A','B'].forEach(scene => {
-            if (cfg.scenes && cfg.scenes[scene] && cfg.scenes[scene].folder_mappings) {
-              Object.values(cfg.scenes[scene].folder_mappings).forEach(arr => {
-                const idx = arr.indexOf(id);
-                if (idx > -1) { arr.splice(idx, 1); sceneChanged = true; }
-              });
-              if (sceneChanged) {
-                const roomId2 = room.id;
-                promises.push(new Promise(resolve => {
-                  db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(cfg), roomId2], () => {
-                    notifyRoomDevicesOfSync(roomId2);
-                    resolve();
-                  });
-                }));
-              }
-            }
-          });
-        });
-      }
-
-      // 步骤3：所有清理完成后，删素材记录，再等通知发完，最后返回
-      Promise.all(promises).then(() => {
-        db.query("DELETE FROM materials WHERE id=?", [id], errDel => {
+    // 步骤2：房间映射按「素材ID + 同URL预设ID」级联清理（映射里存的是 pm_* 预设ID）
+    db.query("SELECT id FROM preset_materials WHERE url=?", [mat.url], (err1, presets) => {
+      const presetIds = (presets || []).map(p => p.id);
+      const killIds = [id, ...presetIds];
+      removeMaterialIdsFromAllRooms(killIds, (affected) => {
+        // 步骤3：删物理文件（预设与素材库共享同一文件，级联后一起删）
+        const base = __dirname + '/public';
+        for (const f of [mat.url, mat.thumbnail]) {
+          if (f) { try { fs.unlinkSync(base + f); } catch (e) { /* ignore */ } }
+        }
+        // 步骤4：删表记录，通知受影响房间的设备同步
+        const ph = killIds.map(() => '?').join(',');
+        db.query(`DELETE FROM materials WHERE id IN (${ph})`, killIds, (errDel) => {
           if (errDel) return res.status(500).json({ error: '删除素材失败' });
-          db.query("DELETE FROM room_materials WHERE material_id=?", [id], () => {});
-          res.json({ success: true });
+          db.query(`DELETE FROM preset_materials WHERE id IN (${ph})`, killIds, () => {});
+          affected.forEach(rid => notifyRoomDevicesOfSync(rid));
+          res.json({ success: true, removed_presets: presetIds.length, rooms_notified: affected.length });
         });
       });
     });
@@ -1343,130 +1196,109 @@ app.delete("/api/materials/:id", (req, res) => {
 });
 
 const multer = require('multer');
-// 【S-02b】 上传素材文件（POST /api/upload）— ffmpeg 生成缩略图，MD5 校验，写 materials 表
-app.post("/api/upload", (req, res) => {
-  const folder = req.query.folder || req.body.folder || "default";
-  // 确保文件夹存在
-  const fs = require("fs");
-  const uploadDir = __dirname + "/public/uploads/" + folder;
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  }
-  const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, __dirname + "/public/uploads/" + folder),
-    filename: (req, file, cb) => {
-      // 直接使用原始文件名，不做编码转换（浏览器已发送UTF-8编码）
-      cb(null, file.originalname);
-    }
+
+// 【S-02b】 上传素材文件（POST /api/upload）
+// 安全约定：磁盘文件名服务端生成（时间戳+uuid+清洗后的 ASCII 基名），原始文件名只存 DB
+const UPLOAD_VIDEO_EXT = ['.mp4', '.webm', '.mov', '.avi', '.mkv'];
+const UPLOAD_IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+const UPLOAD_MAX_SIZE = 500 * 1024 * 1024;
+
+function uploadFolderOf(req) {
+  const folder = req.query.folder || req.body.folder || 'default';
+  return /^[A-Za-z0-9_-]{1,20}$/.test(folder) ? folder : null;
+}
+
+function buildSafeUploadName(originalname) {
+  const extMatch = originalname.match(/\.[A-Za-z0-9]+$/);
+  const ext = extMatch ? extMatch[0].toLowerCase() : '';
+  const base = originalname.replace(/\.[^.]*$/, '').replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+  return Date.now() + '_' + uuidv4().slice(0, 8) + '_' + (base || 'file') + ext;
+}
+
+// 流式计算 MD5（避免大视频整体读入内存）
+function md5FileStream(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = require('crypto').createHash('md5');
+    require('fs').createReadStream(filePath)
+      .on('data', d => hash.update(d))
+      .on('end', () => resolve(hash.digest('hex')))
+      .on('error', reject);
   });
-  const upload = multer({storage}).single("file");
-  upload(req, res, (err) => {
-    if (err) return res.status(500).json({error:err.message});
-    if (!req.file) return res.status(400).json({error:"no file"});
-    const id = uuidv4();
-    // multer 直接存储原始文件名（UTF-8 不需要额外编码处理）
-    const fullFilename = req.file.originalname || 'file_' + Date.now();
-    const displayName = fullFilename.replace(/\.[^.]+$/, ''); // 去扩展名后的纯文件名
-    const type = fullFilename.endsWith(".mp4") || req.file.mimetype.startsWith("video") ? "video" :
-                 fullFilename.endsWith(".gif") ? "gif" :
-                 req.file.mimetype.startsWith("image") ? "image" : "other";
+}
+
+// multer 实例全局单例（destination 从 req.query.folder 读取）
+const uploadMiddleware = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const folder = uploadFolderOf(req);
+      if (!folder) return cb(new Error('invalid folder'));
+      const dir = __dirname + "/public/uploads/" + folder;
+      if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => cb(null, buildSafeUploadName(file.originalname))
+  }),
+  limits: { fileSize: UPLOAD_MAX_SIZE }
+}).single("file");
+
+app.post("/api/upload", (req, res) => {
+  const folder = uploadFolderOf(req);
+  if (!folder) return res.status(400).json({ error: "invalid folder" });
+  uploadMiddleware(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    if (!req.file) return res.status(400).json({ error: "no file" });
+
+    const originalName = req.file.originalname || 'file';
+    const extMatch = originalName.match(/\.[A-Za-z0-9]+$/);
+    const ext = extMatch ? extMatch[0].toLowerCase() : '';
+    let type = null;
+    if (UPLOAD_VIDEO_EXT.includes(ext) || req.file.mimetype.startsWith("video")) type = "video";
+    else if (UPLOAD_IMAGE_EXT.includes(ext) || req.file.mimetype.startsWith("image")) type = "image";
+    if (!type) {
+      try { require('fs').unlinkSync(req.file.path); } catch (e) {}
+      return res.status(400).json({ error: "unsupported file type: " + ext });
+    }
+
+    const displayName = originalName.replace(/\.[^.]+$/, '');
+    const url = "/uploads/" + folder + "/" + req.file.filename;
     let thumbnail = null;
     let resolution = null;
-    let md5 = null;
-    if (type === "video") {
-      const thumbPath = __dirname + "/public/uploads/" + folder + "/" + fullFilename.replace(".mp4",".jpg");
-      try {
-        require('child_process').execSync("ffmpeg -i '" + __dirname + "/public/uploads/"+folder+"/"+fullFilename + "' -ss 00:00:01 -vframes 1 -q:v 2 -y '" + thumbPath + "'", {stdio:"ignore"});
-        thumbnail = "/uploads/"+folder+"/"+fullFilename.replace(".mp4",".jpg");
-        const ffprobe = require('child_process').execSync("ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 '" + __dirname + "/public/uploads/"+folder+"/"+fullFilename + "'", {encoding:"utf8"});
-        resolution = ffprobe.trim();
-      } catch(e) {}
 
-      // 计算MD5
-      try {
-        const fs = require('fs');
-        const fileBuffer = fs.readFileSync(__dirname + "/public/uploads/" + folder + "/" + fullFilename);
-        const crypto = require('crypto');
-        md5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
-      } catch(e) {}
-    }
-    const url = "/uploads/" + folder + "/" + fullFilename;
-    db.query("INSERT INTO materials (id,name,url,type,folder,thumbnail,resolution,filename) VALUES (?,?,?,?,?,?,?,?)",
-      [id, displayName, url, type, folder, thumbnail, resolution, fullFilename],
-      e => {
-        if (e) return res.status(500).json({error:e.message});
-        logAction('upload', 'material', {id, name: displayName, folder, type, md5});
-        res.json({id, name: displayName, url, type, folder, thumbnail, resolution, md5});
-      }
-    );
-  });
-});
-
-// 临时修复：修正 materials 表中的乱码记录 + 补全空 name
-app.get("/api/admin/fix-garbled", (req, res) => {
-  const fs = require('fs');
-  const { execSync } = require('child_process');
-  const uploadDir = __dirname + '/public/uploads/01/';
-  let fixed = 0, nameFixed = 0;
-  db.query('SELECT id, name, url, thumbnail FROM materials', (err, rows) => {
-    if (err) return res.json({error: err.message});
-    const files = fs.readdirSync(uploadDir).filter(f => f.endsWith('.mp4'));
-
-    // 1. 修复乱码 URL/Name（双重编码的记录）
-    const garbled = rows.filter(r => r.url && (r.url.includes('%3') || r.name.includes('%3')));
-    garbled.forEach(r => {
-      const match = files.find(f => {
-        const base = f.replace('.mp4', '');
-        return base.startsWith('3') && base.includes('月');
-      });
-      if (match) {
-        const correctUrl = '/uploads/01/' + match;
-        const correctName = match.replace(/\.[^.]+$/, '');
-        const correctThumb = '/uploads/01/' + match.replace('.mp4', '.jpg');
-        try { execSync(`ffmpeg -i '${uploadDir}${match}' -ss 00:00:01 -vframes 1 -q:v 2 -y '${uploadDir}${match.replace('.mp4','.jpg')}'`, {stdio:'ignore'}); } catch(e) {}
-        db.query('UPDATE materials SET name=?, url=?, thumbnail=? WHERE id=?',
-          [correctName, correctUrl, correctThumb, r.id], (e2) => { if (!e2) fixed++; });
-      }
-    });
-
-    // 2. 补全空 name（从 URL 提取文件名）
-    rows.forEach(r => {
-      if ((!r.name || r.name === '') && r.url) {
-        const fname = decodeURIComponent(r.url.split('/').pop().replace(/\.[^.]+$/, ''));
-        if (fname && fname.length > 0) {
-          db.query('UPDATE materials SET name=? WHERE id=?', [fname, r.id], (e2) => {
-            if (!e2) nameFixed++;
-          });
+    const finish = (md5) => {
+      const id = uuidv4();
+      db.query("INSERT INTO materials (id,name,filename,url,type,folder,thumbnail,resolution,md5) VALUES (?,?,?,?,?,?,?,?,?)",
+        [id, displayName, originalName, url, type, folder, thumbnail, resolution, md5 || null],
+        (e) => {
+          if (e) {
+            try { require('fs').unlinkSync(req.file.path); } catch (e2) {}
+            if (thumbnail) { try { require('fs').unlinkSync(__dirname + thumbnail); } catch (e2) {} }
+            return res.status(500).json({ error: e.message });
+          }
+          logAction('upload', 'material', { id, name: displayName, folder, type, md5 });
+          res.json({ id, name: displayName, url, type, folder, thumbnail, resolution, md5: md5 || null });
         }
-      }
-    });
+      );
+    };
 
-    setTimeout(() => res.json({fixed, nameFixed, garbled: garbled.length}), 2000);
+    if (type === "video") {
+      try {
+        const thumbFile = req.file.filename.replace(/\.[^.]+$/, '') + '.jpg';
+        const thumbPath = __dirname + "/public/uploads/" + folder + "/" + thumbFile;
+        require('child_process').execFileSync('ffmpeg',
+          ['-i', req.file.path, '-ss', '00:00:01', '-vframes', '1', '-q:v', '2', '-y', thumbPath],
+          { stdio: 'ignore' });
+        thumbnail = "/uploads/" + folder + "/" + thumbFile;
+        const ffprobe = require('child_process').execFileSync('ffprobe',
+          ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', req.file.path],
+          { encoding: 'utf8' });
+        resolution = ffprobe.trim();
+      } catch (e) { /* 缩略图/分辨率失败不阻断上传 */ }
+      md5FileStream(req.file.path).then(finish).catch(() => finish(null));
+    } else {
+      finish(null);
+    }
   });
 });
-
-
-// 【S-10d】 重命名素材文件夹（物理目录 + materials.folder 字段）
-app.post("/api/folders/rename", (req, res) => {
-    const { oldName, newName } = req.body;
-    if (!oldName || !newName) return res.status(400).json({error: "need oldName and newName"});
-    
-    const fs = require("fs");
-    const oldDir = __dirname + "/public/uploads/" + oldName;
-    const newDir = __dirname + "/public/uploads/" + newName;
-    
-    // 重命名文件夹
-    if (fs.existsSync(oldDir)) {
-        fs.renameSync(oldDir, newDir);
-    }
-    
-    // 更新数据库
-    db.query("UPDATE materials SET folder=? WHERE folder=?", [newName, oldName], (err) => {
-        if (err) return res.status(500).json({error: err.message});
-        res.json({success: true});
-    });
-});
-
 
 // 【S-10e】 保存文件夹备注（写入 folder_notes 表）
 app.post("/api/folders/note", (req, res) => {
@@ -1533,7 +1365,6 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
     const result = {}; // { "A01": [...], "A02": [...], "B01": [...], "B02": [...] } — scene-prefixed keys
 
     if (allIds.size === 0) {
-      console.log('[DEBUG room-materials-v2] folderMappings empty, roomId:', roomId);
       return res.json(result);
     }
 
@@ -1544,15 +1375,12 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
       `SELECT * FROM materials WHERE id IN (${placeholders})`,
       idList,
       (err2, materialsRows) => {
-        console.log('[DEBUG] materialsRows count:', materialsRows?.length, 'err:', err2?.message);
-        if (err2) { console.error('[DEBUG] materials query error:', err2.message); materialsRows = []; }
-        console.log('[DEBUG] materialsRows:', JSON.stringify(materialsRows?.slice(0,2)));
+        if (err2) materialsRows = [];
         db.query(
           `SELECT * FROM preset_materials WHERE id IN (${placeholders})`,
           idList,
           (err3, presetRows) => {
-            if (err3) { console.error('[DEBUG] preset query error:', err3.message); presetRows = []; }
-            console.log('[DEBUG] presetRows count:', presetRows?.length);
+            if (err3) presetRows = [];
             // 合并去重（materials 优先）
             const merged = {};
             [...materialsRows, ...presetRows].forEach(row => {
@@ -1879,158 +1707,6 @@ app.delete('/api/rooms/:id', (req, res) => {
   });
 });
 
-// 获取房间素材
-// 【S-04d】 房间素材列表（APK syncRoomMaterials 专用，返回 scene-prefixed keys）
-app.get('/api/room-materials/:roomId/list', (req, res) => {
-  const roomId = req.params.roomId;
-  db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [roomId], (err, rooms) => {
-    if (err) return res.status(500).json({error: err.message});
-    if (!rooms[0]) return res.status(404).json({error: 'room not found'});
-    const room = rooms[0];
-    let roomConfig = { scenes: {} };
-    try { if (room.config) roomConfig = JSON.parse(room.config); } catch(e) {}
-
-    // 读取 Scene A 和 B 的 folder_mappings（APK 用 scene-prefixed keys 做 HTTP API lookup）
-    const fmA = roomConfig.scenes?.A?.folder_mappings || {};
-    const fmB = roomConfig.scenes?.B?.folder_mappings || {};
-    // 构建 scene-prefixed folder_mappings（"A01", "B01" 等），与 APK syncRoomMaterials 的 lookup 格式对齐
-    const folderMappings = {};
-    Object.entries(fmA).forEach(([k, v]) => { folderMappings['A' + k] = v || []; });
-    Object.entries(fmB).forEach(([k, v]) => { folderMappings['B' + k] = v || []; });
-
-    const allIds = [...new Set(Object.values(folderMappings).flat().filter(Boolean))];
-    const result = {};
-    if (allIds.length === 0) { res.json(result); return; }
-
-    const inClause = allIds.map(() => '?').join(',');
-    db.query(`SELECT id, name AS filename, url, md5, type, folder FROM materials WHERE id IN (${inClause})`, allIds, (err2, materialsRows) => {
-      materialsRows = materialsRows || [];
-      db.query(`SELECT id, filename, url, md5, 'preset' AS type, folder_id AS folder FROM preset_materials WHERE id IN (${inClause})`, allIds, (err3, presetRows) => {
-        presetRows = presetRows || [];
-        const merged = {};
-        [...materialsRows, ...presetRows].forEach(row => {
-          if (!merged[row.id]) {
-            merged[row.id] = {
-              id: row.id,
-              filename: row.filename || row.name || '',
-              url: row.url || '',
-              md5: row.md5 || '',
-              type: row.type || 'video',
-              folder: row.folder || ''
-            };
-          }
-        });
-        // 返回 scene-prefixed keys（"A01", "B01"），供 APK syncRoomMaterials 正确 lookup
-        Object.entries(folderMappings).forEach(([folderId, ids]) => {
-          if (Array.isArray(ids)) {
-            result[folderId] = ids.map(id => merged[id]).filter(Boolean);
-          }
-        });
-        res.json(result);
-      });
-    });
-  });
-});
-
-// 【S-04k】 添加素材到房间（更新 rooms.config.scenes A/B.folder_mappings，触发 notifyRoomDevicesOfSync）
-app.post('/api/rooms/:id/folder/:folder', (req, res) => {
-  const { id } = req.params;
-  const { folder } = req.params;
-  const { material_ids } = req.body;
-  db.query('SELECT config FROM rooms WHERE id = ?', [id], (err, results) => {
-    if (err) return res.status(500).json({error:err.message});
-    if (!results || results.length === 0) return res.status(404).json({error:'Room not found'});
-
-    // 同时更新 scenes A/B 的 folder_mappings（独立场景模式）
-    let cfg = results[0].config ? JSON.parse(results[0].config) : {};
-    if (!cfg.scenes) {
-      cfg.scenes = {
-        A: { name: '第一幕', folder_mappings: {}, windows: [] },
-        B: { name: '第二幕', folder_mappings: {}, windows: [] }
-      };
-    }
-    if (!cfg.scenes.A.folder_mappings) cfg.scenes.A.folder_mappings = {};
-    if (!cfg.scenes.B.folder_mappings) cfg.scenes.B.folder_mappings = {};
-    cfg.scenes.A.folder_mappings[folder] = material_ids || [];
-    cfg.scenes.B.folder_mappings[folder] = material_ids || [];
-
-    // 只更新 config.scenes A/B（根级 folder_mappings 已废止）
-    db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(cfg), id], (err2) => {
-      if (err2) return res.status(500).json({error:err2.message});
-      logAction('push', 'room_material', { room_id: id, folder, material_ids });
-      // 通知该房间的设备同步
-      notifyRoomDevicesOfSync(id);
-      res.json({success:true});
-    });
-  });
-});
-
-// ============================================================================
-// 📺 房间素材同步 API — APK 专用接口
-//    GET /api/room-materials/:roomId
-//    合并查 materials + preset_materials，按 folder_mappings 过滤后返回
-//    这是设备同步时调用的核心接口
-// ============================================================================
-
-// ============================================================================
-// 📺 房间素材同步 API — APK 专用
-//    GET /api/room-materials/:roomId
-//    合并查 materials + preset_materials，按 folder_mappings 过滤
-//    这是设备同步时调用的核心接口
-// ============================================================================
-
-// 获取房间所有素材（materials + preset_materials 合并，按文件夹分组，供APK同步使用）
-
-// 【S-04c】 房间素材（旧版）// GET /api/room-materials/:roomId
-app.get('/api/room-materials/:roomId', (req, res) => {
-  const { roomId } = req.params;
-  db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [roomId], (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!results || results.length === 0) return res.json({});
-    const roomConfig = results[0].config ? JSON.parse(results[0].config) : {};
-    const debugFlag = roomConfig.debug === true;
-    // scenes.A.folder_mappings 是唯一来源（根级已废止）
-    const mappings = (roomConfig.scenes && roomConfig.scenes.A && roomConfig.scenes.A.folder_mappings)
-      ? roomConfig.scenes.A.folder_mappings : {};
-
-    // 收集所有需要的 material IDs
-    const allIds = new Set();
-    Object.values(mappings).forEach(ids => (ids || []).forEach(id => allIds.add(id)));
-
-    // 同时查询两个表
-    db.query('SELECT id, name AS filename, url, type, folder, thumbnail FROM materials', (err, materials) => {
-      if (err) return res.status(500).json({ error: err.message });
-      db.query('SELECT id, filename, url, type, thumbnail FROM preset_materials', (err, presets) => {
-        if (err) return res.status(500).json({ error: err.message });
-        const all = [...materials, ...presets];
-        const result = { debug: debugFlag };
-        Object.entries(mappings).forEach(([folder, ids]) => {
-          result[folder] = (ids || []).map(id => all.find(m => m.id === id)).filter(Boolean);
-        });
-        res.json(result);
-      });
-    });
-  });
-});
-
-// 【S-05g】 获取指定设备的房间素材（通过 devices.room_id 查找 rooms.config.scenes.A.folder_mappings）
-app.get('/api/devices/:id/room-materials', (req, res) => {
-  const id = req.params.id;
-  db.query('SELECT room_id FROM devices WHERE id = ?', [id], (err, results) => {
-    if (err) return res.status(500).json({error:err.message});
-    if (!results[0] || !results[0].room_id) return res.json({});
-    db.query('SELECT folder_mappings, config FROM rooms WHERE id = ?', [results[0].room_id], (err, rows) => {
-      if (err) return res.status(500).json({error:err.message});
-      if (!rows[0]) return res.json({});
-      const roomConfig = rows[0].config ? JSON.parse(rows[0].config) : {};
-      // scenes.A.folder_mappings 是唯一来源（根级已废止）
-      const mappings = (roomConfig.scenes && roomConfig.scenes.A && roomConfig.scenes.A.folder_mappings)
-        ? roomConfig.scenes.A.folder_mappings : {};
-      res.json(mappings);
-    });
-  });
-});
-
 // 【S-05h】 绑定设备到房间（更新 devices.room_id）
 app.post('/api/devices/:id/bind-room', (req, res) => {
   const { room_id } = req.body;
@@ -2106,68 +1782,6 @@ db.query(`CREATE TABLE IF NOT EXISTS default_materials (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )`);
 
-
-
-
-// ==================== 预设素材 API（备用 / 兼容段）====================
-// 【S-03b】 获取预设素材文件夹列表（从 preset_folders 表读取）
-app.get('/api/preset/folders', (req, res) => {
-  db.query('SELECT * FROM preset_folders ORDER BY sort_order', (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(results || []);
-  });
-});
-
-// 【S-03c】 创建预设素材文件夹（写入 preset_folders 表）
-app.post('/api/preset/folders', (req, res) => {
-  const { name, path, sort_order } = req.body;
-  const id = 'preset_' + Date.now();
-  db.query(
-    'INSERT INTO preset_folders (id, name, path, sort_order) VALUES (?, ?, ?, ?)',
-    [id, name, path || '', sort_order || 0],
-    (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-
-      res.json({ id, name, path, sort_order });
-    }
-  );
-});
-
-// 【S-03d】 删除预设素材文件夹（级联删除 preset_materials + preset_folders）
-app.delete('/api/preset/folders/:id', (req, res) => {
-  db.query('DELETE FROM preset_materials WHERE folder_id = ?', [req.params.id], (err) => {
-    db.query('DELETE FROM preset_folders WHERE id = ?', [req.params.id], (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true });
-    });
-  });
-});
-
-// 【S-03e】 获取预设素材列表（从 preset_materials 表读取）
-app.get('/api/preset/materials', (req, res) => {
-  db.query('SELECT * FROM preset_materials ORDER BY folder_id, filename', (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(results || []);
-  });
-});
-
-// 【S-03f】 添加预设素材（写入 preset_materials 表）
-app.post('/api/preset/materials', (req, res) => {
-  const { folder_id, filename, url, type, thumbnail } = req.body;
-  const id = 'pm_' + Date.now();
-  const safeName = filename || url.split('/').pop() || '未知文件';
-  const fileType = type || (safeName.endsWith('.mp4') || safeName.endsWith('.avi') ? 'video' : 'image');
-  db.query(
-    'INSERT INTO preset_materials (id, folder_id, filename, url, type, thumbnail) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, folder_id, safeName, url, fileType, thumbnail || null],
-    (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id, folder_id, filename, url, type: fileType, thumbnail });
-    }
-  );
-});
-
-
 // 设备心跳超时检测（默认 60 秒）
 const DEVICE_TIMEOUT_SECONDS = process.env.DEVICE_TIMEOUT || 60;
 
@@ -2191,7 +1805,6 @@ setInterval(() => {
 app.listen(PORT, () => {
   console.log(`🚀 XVJ 云后台服务启动: http://localhost:${PORT}`);
   initDatabase();
-  initPresetMaterialsTable();
 });
 
 /**
@@ -2220,6 +1833,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS materials (
       id VARCHAR(36) PRIMARY KEY,
       name VARCHAR(255),
+      filename VARCHAR(255),
       url VARCHAR(512),
       type VARCHAR(50),
       folder VARCHAR(10),
@@ -2227,6 +1841,22 @@ function initDatabase() {
       resolution VARCHAR(50),
       md5 VARCHAR(32),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 预设素材表（前端"复制到预设"的目标，folder_id 为 01-30 数字编号）
+  db.query(`
+    CREATE TABLE IF NOT EXISTS preset_materials (
+      id VARCHAR(36) PRIMARY KEY,
+      folder_id VARCHAR(50) NOT NULL,
+      folder_name VARCHAR(100),
+      filename VARCHAR(255) NOT NULL,
+      url VARCHAR(512) NOT NULL,
+      type VARCHAR(20) DEFAULT 'video',
+      thumbnail VARCHAR(512),
+      md5 VARCHAR(32),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_folder_id (folder_id)
     )
   `);
 
