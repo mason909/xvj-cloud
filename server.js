@@ -351,12 +351,24 @@ function handleMqttMessage(topic, message) {
         const payload = message.toString();
         const spaceIdx = payload.indexOf(' ');
         const logTime = spaceIdx > 0 ? payload.substring(0, spaceIdx) : payload;
-        const logMsg = spaceIdx > 0 ? payload.substring(spaceIdx + 1) : payload;
-        console.log('📝 写日志: deviceId=' + deviceId + ' time=' + logTime + ' msg=' + logMsg.substring(0, 60));
+        // APK payload 格式: "time LEVEL module action msg..."，time 已剥离，首段为级别
+        let logMsg = spaceIdx > 0 ? payload.substring(spaceIdx + 1) : payload;
+        let level = 'info';
+        const lvSeg = logMsg.split(' ')[0];
+        if (['ERROR', 'WARN', 'INFO', 'DEBUG'].includes(lvSeg)) {
+          level = lvSeg.toLowerCase();
+        }
+        console.log('📝 写日志: deviceId=' + deviceId + ' time=' + logTime + ' level=' + level + ' msg=' + logMsg.substring(0, 60));
         db.query(
           'INSERT INTO device_logs (device_id, log_time, level, message) VALUES (?, ?, ?, ?)',
-          [deviceId, logTime, 'info', logMsg],
-          (err) => { if (err) console.error('写device_logs失败:', err.message); else console.log('✅ 日志写入成功 id=' + deviceId); }
+          [deviceId, logTime, level, logMsg],
+          (err) => {
+            if (err) return console.error('写device_logs失败:', err.message);
+            // 防膨胀：约2%概率触发，保留最新 5000 条
+            if (Math.random() < 0.02) {
+              db.query('DELETE FROM device_logs WHERE id < (SELECT * FROM (SELECT id FROM device_logs ORDER BY id DESC LIMIT 1 OFFSET 4999) t)');
+            }
+          }
         );
         break;
       }
@@ -1569,16 +1581,17 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
 });
 
 // ==================== 设备日志 API（远程 DEBUG） ====================
-// 【S-08b】 查询设备日志（从 device_logs 表读取，支持按 device_id 筛选）
+// 【S-08b】 查询设备日志（从 device_logs 表读取，支持按 device_id / level 筛选）
 app.get('/api/device_logs', (req, res) => {
   const limit = parseInt(req.query.limit) || 100;
   const deviceId = req.query.device_id;
+  const level = (req.query.level || '').toUpperCase();
   let sql = "SELECT * FROM device_logs";
   let params = [];
-  if (deviceId) {
-    sql += " WHERE device_id = ?";
-    params.push(deviceId);
-  }
+  const conds = [];
+  if (deviceId) { conds.push("device_id = ?"); params.push(deviceId); }
+  if (level && ['ERROR', 'WARN', 'INFO', 'DEBUG'].includes(level)) { conds.push("level = ?"); params.push(level); }
+  if (conds.length) sql += " WHERE " + conds.join(' AND ');
   sql += " ORDER BY id DESC LIMIT ?";
   params.push(limit);
   db.query(sql, params, (err, rows) => {

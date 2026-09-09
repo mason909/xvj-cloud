@@ -3243,7 +3243,8 @@ async function loadDeviceLogs() {
 
     var deviceId = sel ? sel.value : '';
     var levelFilter = document.getElementById('logLevelFilter') ? document.getElementById('logLevelFilter').value : '';
-    var url = '/api/device_logs?limit=200' + (deviceId ? '&device_id=' + encodeURIComponent(deviceId) : '');
+    // level 服务端过滤：稀疏级别（如 ERROR）不会被 200 条窗口稀释成空列表
+    var url = '/api/device_logs?limit=200' + (deviceId ? '&device_id=' + encodeURIComponent(deviceId) : '') + (levelFilter ? '&level=' + encodeURIComponent(levelFilter) : '');
     try {
         var r = await fetch(url);
         var logs = await r.json();
