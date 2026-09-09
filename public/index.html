@@ -1035,6 +1035,10 @@ function _loadRoomCfg(r) {
         c.scenes.A.windows = (c.scenes.A.windows || []).slice();
         c.scenes.B.windows = (c.scenes.B.windows || []).slice();
     }
+    // 新房间 config='{}' 无 scenes 结构，切场景/写窗口前补齐骨架，避免 cfg.scenes[X] 抛 TypeError
+    if (!c.scenes) c.scenes = {};
+    if (!c.scenes.A) c.scenes.A = { name: '第一幕', folder_mappings: {}, windows: [], master: { brightness: 1 } };
+    if (!c.scenes.B) c.scenes.B = { name: '第二幕', folder_mappings: {}, windows: [], master: { brightness: 1 } };
     return c;
 }
 
