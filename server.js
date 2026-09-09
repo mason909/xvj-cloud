@@ -1436,51 +1436,77 @@ app.get('/api/device_logs', (req, res) => {
   });
 });
 
-// 【S-11a】 店铺列表（从 stores 表读取）
+// 【S-11a】 店铺列表（含房间/设备计数；设备数按 设备→房间→店铺 链路 JOIN，不依赖 devices.store 冗余字段）
 app.get('/api/stores', (req, res) => {
-  db.query('SELECT name FROM stores ORDER BY id', (err, results) => {
+  db.query(`
+    SELECT s.name,
+      (SELECT COUNT(*) FROM rooms r WHERE r.store_name = s.name) AS room_count,
+      (SELECT COUNT(*) FROM devices d JOIN rooms r2 ON d.room_id = r2.id
+        WHERE r2.store_name = s.name AND d.authorized = 1) AS device_count
+    FROM stores s ORDER BY s.id`, (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
-    const stores = results.map(r => r.name);
-    if (stores.length === 0) stores.push('默认店');
+    var stores = (results || []).map(r => ({ name: r.name, room_count: r.room_count, device_count: r.device_count }));
+    if (stores.length === 0) stores.push({ name: '默认店', room_count: 0, device_count: 0 });
     res.json(stores);
   });
 });
 
-// 【S-11b】 创建店铺（写入 stores 表）
+// 【S-11b】 创建店铺（重名幂等，existed=true 表示已存在未新建）
 app.post('/api/stores', (req, res) => {
   const { name } = req.body;
-  if (!name) return res.status(400).json({ error: '店铺名称不能为空' });
-  db.query('INSERT INTO stores (name) VALUES (?) ON DUPLICATE KEY UPDATE name=name', [name], (err) => {
+  if (!name || !name.trim()) return res.status(400).json({ error: '店铺名称不能为空' });
+  const n = name.trim();
+  db.query('SELECT id FROM stores WHERE name = ?', [n], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    logAction('create', 'store', { name });
-    res.json({ success: true, name });
-  });
-});
-
-// 【S-11c】 店铺重命名（原子操作 UPDATE，避免 DELETE+POST 两步断层导致店铺丢失）
-app.put('/api/stores/:name', (req, res) => {
-  const oldName = decodeURIComponent(req.params.name);
-  const { newName } = req.body;
-  if (!newName || !newName.trim()) return res.status(400).json({ error: '新名称不能为空' });
-  if (oldName === newName) return res.json({ success: true });
-  db.query('SELECT id FROM stores WHERE name = ?', [newName], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (rows.length > 0) return res.status(409).json({ error: '店铺名称已存在' });
-    db.query('UPDATE stores SET name = ? WHERE name = ?', [newName.trim(), oldName], (err2) => {
+    if (rows && rows.length > 0) return res.json({ success: true, name: n, existed: true });
+    db.query('INSERT INTO stores (name) VALUES (?)', [n], (err2) => {
       if (err2) return res.status(500).json({ error: err2.message });
-      logAction('rename', 'store', { oldName, newName });
-      res.json({ success: true, newName: newName.trim() });
+      logAction('create', 'store', { name: n });
+      res.json({ success: true, name: n, existed: false });
     });
   });
 });
 
-// 【S-11d】 删除店铺（从 stores 表删除）
+// 【S-11c】 店铺重命名（级联同步 rooms.store_name 与 devices.store，防止产生孤儿房间）
+app.put('/api/stores/:name', (req, res) => {
+  const oldName = decodeURIComponent(req.params.name);
+  const { newName } = req.body;
+  if (!newName || !newName.trim()) return res.status(400).json({ error: '新名称不能为空' });
+  const target = newName.trim();
+  if (oldName === target) return res.json({ success: true, rooms_updated: 0 });
+  db.query('SELECT id FROM stores WHERE name = ?', [target], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (rows.length > 0) return res.status(409).json({ error: '店铺名称已存在' });
+    // 存在 store_name 已是目标名的房间时，改名会触发 rooms(store_name,name) 唯一键冲突，提前拦截
+    db.query('SELECT id FROM rooms WHERE store_name = ? LIMIT 1', [target], (errR, rowsR) => {
+      if (errR) return res.status(500).json({ error: errR.message });
+      if (rowsR && rowsR.length > 0) return res.status(409).json({ error: '已存在归属于「' + target + '」的房间，无法重命名到该名称' });
+      db.query('UPDATE rooms SET store_name = ? WHERE store_name = ?', [target, oldName], (err1, r1) => {
+        if (err1) return res.status(500).json({ error: err1.message });
+        db.query('UPDATE stores SET name = ? WHERE name = ?', [target, oldName], (err2) => {
+          if (err2) return res.status(500).json({ error: err2.message });
+          db.query('UPDATE devices SET store = ? WHERE store = ?', [target, oldName], (err3) => {
+            if (err3) return res.status(500).json({ error: err3.message });
+            logAction('rename', 'store', { oldName, newName: target });
+            res.json({ success: true, newName: target, rooms_updated: r1.affectedRows });
+          });
+        });
+      });
+    });
+  });
+});
+
+// 【S-11d】 删除店铺（名下还有房间时拒绝，防止产生孤儿房间）
 app.delete('/api/stores/:name', (req, res) => {
   const storeName = decodeURIComponent(req.params.name);
-  logAction('delete', 'store', { name: storeName });
-  db.query('DELETE FROM stores WHERE name = ?', [storeName], (err) => {
+  db.query('SELECT COUNT(*) AS c FROM rooms WHERE store_name = ?', [storeName], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ success: true });
+    if (rows[0].c > 0) return res.status(409).json({ error: '该客户下还有 ' + rows[0].c + ' 个房间，请先删除或移动房间' });
+    db.query('DELETE FROM stores WHERE name = ?', [storeName], (err2) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      logAction('delete', 'store', { name: storeName });
+      res.json({ success: true });
+    });
   });
 });
 
@@ -1526,22 +1552,28 @@ app.get('/api/rooms/:id', (req, res) => {
   });
 });
 
-// 【S-04h】 创建房间（插入 rooms 表）
+// 【S-04h】 创建房间（插入 rooms 表；客户名自动落库，防孤儿房间）
 app.post('/api/rooms', (req, res) => {
   const { store_name, name, config } = req.body;
   if (!store_name || !name) return res.status(400).json({error:'store_name and name required'});
   const id = 'room_' + Date.now();
-  db.query('INSERT INTO rooms (id, store_name, name, folder_mappings, config) VALUES (?, ?, ?, ?, ?)',
-    [id, store_name, name, '{}', config || '{}'], (err, result) => {
-    if (err) return res.status(500).json({error:err.message});
-    logAction('create', 'room', { id, store_name, name });
-    res.json({success:true, id});
+  db.query('INSERT INTO stores (name) VALUES (?) ON DUPLICATE KEY UPDATE name=name', [store_name], (errStore) => {
+    if (errStore) return res.status(500).json({error:errStore.message});
+    db.query('INSERT INTO rooms (id, store_name, name, folder_mappings, config) VALUES (?, ?, ?, ?, ?)',
+      [id, store_name, name, '{}', config || '{}'], (err, result) => {
+      if (err) {
+        if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({error:'该客户下已存在同名房间'});
+        return res.status(500).json({error:err.message});
+      }
+      logAction('create', 'room', { id, store_name, name });
+      res.json({success:true, id});
+    });
   });
 });
 
 // 【S-04i】 更新房间（PUT /api/rooms/:id，支持 scenes 合并保护）
 app.put('/api/rooms/:id', (req, res) => {
-  const { name, config } = req.body;
+  const { name, config, store_name } = req.body;
   const id = req.params.id;
   var updates = [];
   var values = [];
@@ -1549,12 +1581,16 @@ app.put('/api/rooms/:id', (req, res) => {
   // 【Bug Fix】当 config 包含 scenes 时，先读取 DB 中现有 config，合并后再保存
   // 避免 windows 字段被 incoming config 中的空数组覆盖
   if (config !== undefined) {
-    db.query('SELECT config FROM rooms WHERE id=?', [id], (errDb, rowsDb) => {
+    db.query('SELECT config, name, store_name FROM rooms WHERE id=?', [id], (errDb, rowsDb) => {
       if (errDb) return res.status(500).json({ error: errDb.message });
       if (!rowsDb || rowsDb.length === 0) return res.status(404).json({ error: '房间不存在' });
 
       var existingConfig = {};
       try { existingConfig = rowsDb[0].config ? JSON.parse(rowsDb[0].config) : {}; } catch(e) {}
+      var roomName = rowsDb[0].name;
+      var currentStore = rowsDb[0].store_name;
+      var targetStore = (store_name !== undefined && store_name !== currentStore) ? store_name : null;
+      var targetName = (name !== undefined && name !== roomName) ? name : null;
 
       var cfg = typeof config === 'string' ? JSON.parse(config) : config;
 
@@ -1602,24 +1638,73 @@ app.put('/api/rooms/:id', (req, res) => {
         }
       }
 
-      updates.push('config=?'); values.push(JSON.stringify(cfg));
-      values.push(id);
+      var proceedConfigUpdate = () => {
+        if (targetStore) { updates.push('store_name=?'); values.push(targetStore); }
+        if (targetName) { updates.push('name=?'); values.push(targetName); }
+        updates.push('config=?'); values.push(JSON.stringify(cfg));
+        values.push(id);
+        db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
+          if (err) {
+            if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '目标客户下已存在同名房间' });
+            return res.status(500).json({ error: err.message });
+          }
+          if (targetStore) db.query('UPDATE devices SET store=? WHERE room_id=?', [targetStore, id], () => {});
+          logAction('update', 'room', { id, name: targetName || roomName, store_moved: targetStore || undefined });
+          res.json({ success: true });
+        });
+      };
 
-      if (updates.length === 0) return res.json({ success: true });
-      db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        logAction('update', 'room', { id, name });
-        res.json({ success: true });
-      });
+      if (targetStore) {
+        // 房间移动到另一客户：校验客户存在 + 唯一键冲突
+        db.query('SELECT id FROM stores WHERE name = ?', [targetStore], (errS, rowsS) => {
+          if (errS) return res.status(500).json({ error: errS.message });
+          if (rowsS.length === 0) return res.status(400).json({ error: '目标客户不存在: ' + targetStore });
+          db.query('SELECT id FROM rooms WHERE store_name=? AND name=? AND id<>?', [targetStore, targetName || roomName, id], (errC, rowsC) => {
+            if (errC) return res.status(500).json({ error: errC.message });
+            if (rowsC.length > 0) return res.status(409).json({ error: '目标客户下已存在同名房间' });
+            proceedConfigUpdate();
+          });
+        });
+      } else {
+        proceedConfigUpdate();
+      }
     });
     return;
   }
 
   if (name !== undefined) { updates.push('name=?'); values.push(name); }
+  if (store_name !== undefined) { updates.push('store_name=?'); values.push(store_name); }
   if (updates.length === 0) return res.json({success: true});
+
+  if (store_name !== undefined) {
+    db.query('SELECT id FROM stores WHERE name = ?', [store_name], (errS, rowsS) => {
+      if (errS) return res.status(500).json({ error: errS.message });
+      if (rowsS.length === 0) return res.status(400).json({ error: '目标客户不存在: ' + store_name });
+      db.query('SELECT name FROM rooms WHERE id = ?', [id], (errR, rowsR) => {
+        if (errR || !rowsR || !rowsR[0]) return res.status(404).json({ error: '房间不存在' });
+        const checkName = name !== undefined ? name : rowsR[0].name;
+        db.query('SELECT id FROM rooms WHERE store_name=? AND name=? AND id<>?', [store_name, checkName, id], (errC, rowsC) => {
+          if (errC) return res.status(500).json({ error: errC.message });
+          if (rowsC.length > 0) return res.status(409).json({ error: '目标客户下已存在同名房间' });
+          values.push(id);
+          db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
+            if (err) return res.status(500).json({error: err.message});
+            db.query('UPDATE devices SET store=? WHERE room_id=?', [store_name, id], () => {});
+            logAction('update', 'room', { id, name: checkName, store_moved: store_name });
+            res.json({success: true});
+          });
+        });
+      });
+    });
+    return;
+  }
+
   values.push(id);
   db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
-    if (err) return res.status(500).json({error: err.message});
+    if (err) {
+      if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '该客户下已存在同名房间' });
+      return res.status(500).json({error: err.message});
+    }
     logAction('update', 'room', { id, name });
     res.json({success: true});
   });
@@ -1699,10 +1784,22 @@ app.delete('/api/rooms/:id', (req, res) => {
   db.query('SELECT name, store_name FROM rooms WHERE id = ?', [id], (err, rows) => {
     if (err) return res.status(500).json({error: err.message});
     const room = rows[0];
-    db.query('DELETE FROM rooms WHERE id = ?', [id], (err2) => {
-      if (err2) return res.status(500).json({error: err2.message});
-      logAction('delete', 'room', { id, name: room ? room.name : null, store_name: room ? room.store_name : null });
-      res.json({success:true});
+    // 解绑前通知房间内设备停止播放（设备只认 fingerprint，缺省回退设备 id，与 push-update 一致）
+    db.query('SELECT id, fingerprint FROM devices WHERE room_id = ?', [id], (errD, devs) => {
+      if (errD) return res.status(500).json({error: errD.message});
+      var bound = devs || [];
+      bound.forEach(d => {
+        var fp = d.fingerprint || d.id;
+        mqttClient.publish(`xvj/device/${fp}/command`, JSON.stringify({ action: 'stop' }), { qos: 1 });
+      });
+      db.query('UPDATE devices SET room_id = NULL WHERE room_id = ?', [id], (errU) => {
+        if (errU) return res.status(500).json({error: errU.message});
+        db.query('DELETE FROM rooms WHERE id = ?', [id], (err2) => {
+          if (err2) return res.status(500).json({error: err2.message});
+          logAction('delete', 'room', { id, name: room ? room.name : null, store_name: room ? room.store_name : null, devices_unbound: bound.length });
+          res.json({success:true, devices_unbound: bound.length});
+        });
+      });
     });
   });
 });
@@ -2003,8 +2100,9 @@ app.post('/api/device/version', (req, res) => {
 // 【S-12f】 获取设备版本列表（JOIN devices + device_versions 表）
 app.get('/api/device/versions', (req, res) => {
   db.query(`
-    SELECT d.id, d.name, d.store, d.room_id, d.status, dv.version, dv.version_code, dv.updated_at
-    FROM devices d 
+    SELECT d.id, d.name, r.store_name AS store, d.room_id, d.status, dv.version, dv.version_code, dv.updated_at
+    FROM devices d
+    LEFT JOIN rooms r ON d.room_id = r.id
     LEFT JOIN device_versions dv ON d.id = dv.device_id
     ORDER BY dv.updated_at DESC
   `, (err, results) => {

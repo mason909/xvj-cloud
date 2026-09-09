@@ -623,18 +623,18 @@ async function ld() {
     s.ds = await r.json();
     var mr = await fetch('/api/materials');
     s.ms = await mr.json();
-    var sr = await fetch('/api/stores');
-    var serverStores = await sr.json();
-    // 只更新数据，不改变localStorage的排序
-    if (serverStores && serverStores.length > 0) {
-        // 保持localStorage中的顺序，只更新存在的数据
-        var localStores = JSON.parse(localStorage.getItem('xstores') || '[]');
-        var newStores = localStores.filter(function(s) { return serverStores.includes(s); });
-        // 添加服务器上新创建的
-        serverStores.forEach(function(s) { if (!newStores.includes(s)) newStores.push(s); });
-        s.stores = newStores;
-        localStorage.setItem('xstores', JSON.stringify(s.stores));
-    }
+    // 客户列表以服务端为准（含房间/设备计数），不再合并 localStorage 历史数据
+    await loadStores();
+}
+
+// 拉取客户列表：s.storeDetails 存对象数组（含计数），s.stores 存名称数组
+async function loadStores() {
+    var r = await fetch('/api/stores');
+    var list = await r.json();
+    if (!Array.isArray(list)) list = [];
+    s.storeDetails = list;
+    s.stores = list.map(function(x) { return x.name; });
+    localStorage.setItem('xstores', JSON.stringify(s.stores));
     rd();
 }
 
@@ -698,10 +698,9 @@ async function lu() {
     var r = await fetch('/api/unregistered');
     var ds = await r.json();
     var g = document.getElementById('ur');
-    var sr = await fetch('/api/stores');
-    var serverStores = await sr.json();
-    s.stores = serverStores.length ? serverStores : ['默认店'];
-    var storeOptions = s.stores.map(function(st) { return '<option value="' + st + '">' + st + '</option>'; }).join('');
+    await loadStores();
+    if (!s.stores.length) s.stores = ['默认店'];
+    var storeOptions = s.stores.map(function(st) { return '<option value="' + escA(st) + '">' + esc(st) + '</option>'; }).join('');
     if (!ds || ds.length === 0) {
         g.innerHTML = '<div class="empty">暂无未注册设备</div>';
         return;
@@ -816,19 +815,23 @@ function sr(id) {
     });
 }
 
-async function createRoom() {
-    var n = prompt('请输入房间号(例: 201):');
-    if (!n) return;
-    var res = await fetch('/api/rooms', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({store_name: s.df, name: n})
+function createRoom() {
+    if (!s.df) { alert('请先选择或创建客户'); return; }
+    inputModal('新建房间（' + s.df + '）', '请输入房间号(例: 201)', '', function(n) {
+        if (!n) return;
+        fetch('/api/rooms', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({store_name: s.df, name: n})
+        }).then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+        .then(function(ret) {
+            if (!ret.ok) { alert('创建房间失败: ' + (ret.d.error || '未知错误')); return; }
+            lr().then(function() {
+                var newRoom = s.rooms.find(function(r) { return r.name === n && r.store_name === s.df; });
+                if (newRoom) { s.rf = newRoom.id; localStorage.setItem('xroom', newRoom.id); rd(); rmDevice(); }
+            });
+        }).catch(function(err) { alert('创建房间失败: ' + err.message); });
     });
-    if (!res.ok) { alert('创建房间失败'); return; }
-    await lr();
-    // 自动选中新房间
-    var newRoom = s.rooms.find(function(r) { return r.name === n && r.store_name === s.df; });
-    if (newRoom) { s.rf = newRoom.id; localStorage.setItem('xroom', newRoom.id); rd(); rmDevice(); }
 }
 
 async function dr(e, id) {
@@ -1784,7 +1787,9 @@ function rd() {
     var h = '<div class="tabs">';
     s.stores.forEach(function(sn) {
         var act = s.df === sn ? 'active' : '';
-        h += '<div class="tab ' + act + '" onclick="sd(\'' + escA(sn) + '\')" oncontextmenu="rs(event,\'' + escA(sn) + '\');return false;"><span class="tab-n">' + esc(sn) + '</span><span class="folder-del" onclick="ds(event,\'' + escA(sn) + '\')">×</span></div>';
+        var det = (s.storeDetails || []).find(function(x) { return x.name === sn; });
+        var tip = det ? (det.room_count + ' 个房间 · ' + det.device_count + ' 台设备') : '';
+        h += '<div class="tab ' + act + '" title="' + escA(tip) + '" onclick="sd(\'' + escA(sn) + '\')" oncontextmenu="rs(event,\'' + escA(sn) + '\');return false;"><span class="tab-n">' + esc(sn) + '</span><span class="folder-del" onclick="ds(event,\'' + escA(sn) + '\')">×</span></div>';
     });
     h += '<div class="tab" onclick="as()" style="border-style:dashed">+</div></div>';
     h += '<div class="tabs" style="margin-top:10px">';
@@ -1805,33 +1810,38 @@ function sd(store) {
     lr();
 }
 
-async function as() {
-    var n = prompt('新店铺:');
-    if (!n) return;
-    if (!s.stores) s.stores = [];
-    if (!s.stores.includes(n)) {
-        s.stores.push(n);
-        localStorage.setItem('xstores', JSON.stringify(s.stores));
-        var res = await fetch('/api/stores', {
+function as() {
+    inputModal('新建客户', '输入客户/店铺名称', '', function(n) {
+        if (!n) return;
+        fetch('/api/stores', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({name: n})
-        });
-        if (!res.ok) { var err = await res.text(); s.stores.pop(); localStorage.setItem('xstores', JSON.stringify(s.stores)); alert('创建失败: ' + err); return; }
-    }
-    s.df = n;
-    rd();
+        }).then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+        .then(function(ret) {
+            if (!ret.ok) { alert('创建失败: ' + (ret.d.error || '未知错误')); return; }
+            if (ret.d.existed) alert('店铺已存在，已选中');
+            loadStores().then(function() { sd(n); });
+        }).catch(function(err) { alert('创建失败: ' + err.message); });
+    });
 }
 
 function ds(e, store) {
     e.stopPropagation();
     if (!confirm('删除店铺 ' + store + '?')) return;
-    fetch('/api/stores/' + encodeURIComponent(store), {method: 'DELETE'}).then(x => x.json()).then(function() {
-        s.stores = s.stores.filter(function(x) { return x !== store; });
-        localStorage.setItem('xstores', JSON.stringify(s.stores));
-        s.df = s.stores[0] || '';
-        rd();
-        rmDevice();
+    fetch('/api/stores/' + encodeURIComponent(store), {method: 'DELETE'})
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+    .then(function(ret) {
+        if (!ret.ok) { alert(ret.d.error || '删除失败'); return; }
+        loadStores().then(function() {
+            if (s.df === store) {
+                s.df = s.stores[0] || '';
+                localStorage.setItem('xstore', s.df);
+                s.rf = '';
+                lr();
+            }
+            rmDevice();
+        });
     }).catch(function(err) { alert('删除失败: ' + err.message); });
 }
 
@@ -1978,36 +1988,51 @@ async function doPushToRoom() {
 
 document.onkeydown = function(e) { if (e.key === 'Escape') { document.getElementById('m').classList.remove('show'); } };
 
+// 通用输入弹窗（替代原生 prompt，避免被浏览器拦截）
+function inputModal(title, placeholder, defaultValue, cb) {
+    var h = '<div style="padding:24px;min-width:360px"><h3 style="font-size:22px;margin-bottom:14px">' + esc(title) + '</h3>';
+    h += '<input id="imInput" type="text" value="' + escA(defaultValue || '') + '" placeholder="' + escA(placeholder || '') + '" style="width:100%;padding:12px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:16px;box-sizing:border-box">';
+    h += '<div style="margin-top:18px;text-align:right"><button class="btn" onclick="document.getElementById(\'m\').classList.remove(\'show\')">取消</button> <button class="btn btn-primary" id="imOk">确定</button></div></div>';
+    document.getElementById('mc').innerHTML = h;
+    document.getElementById('m').classList.add('show');
+    var inp = document.getElementById('imInput');
+    inp.focus();
+    inp.select();
+    var ok = function() { var v = inp.value.trim(); document.getElementById('m').classList.remove('show'); cb(v); };
+    document.getElementById('imOk').onclick = ok;
+    inp.onkeydown = function(e) { if (e.key === 'Enter') ok(); };
+}
+
 // 重命名店铺（右键）
 function rs(e, oldName) {
     e.preventDefault();
-    var newName = prompt('重命名店铺:', oldName);
-    if (!newName || newName === oldName) return;
-    if (s.stores.includes(newName)) { alert('店铺名称已存在'); return; }
-    fetch('/api/stores/' + encodeURIComponent(oldName), {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({newName: newName})
-    }).then(function(res) {
-        if (!res.ok) { res.json().then(function(d) { alert(d.error || '重命名失败'); }); return; }
-        var idx = s.stores.indexOf(oldName);
-        s.stores[idx] = newName;
-        localStorage.setItem('xstores', JSON.stringify(s.stores));
-        if (s.df === oldName) s.df = newName;
-        rd();
-        rmDevice();
-    }).catch(function(err) { alert('重命名失败: ' + err.message); });
+    inputModal('重命名客户', '输入新名称（名下房间与设备将一并迁移）', oldName, function(newName) {
+        if (!newName || newName === oldName) return;
+        fetch('/api/stores/' + encodeURIComponent(oldName), {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({newName: newName})
+        }).then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+        .then(function(ret) {
+            if (!ret.ok) { alert(ret.d.error || '重命名失败'); return; }
+            if (s.df === oldName) { s.df = newName; localStorage.setItem('xstore', newName); }
+            loadStores().then(function() { if (s.rf) rmDevice(); });
+        }).catch(function(err) { alert('重命名失败: ' + err.message); });
+    });
 }
 
 // 重命名房间（右键）
 function rr(e, id, oldName) {
     e.preventDefault();
-    var newName = prompt('重命名房间:', oldName);
-    if (!newName || newName === oldName) return;
-    fetch('/api/rooms/' + id, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: newName})}).then(function(res) {
-        if (!res.ok) { alert('重命名失败'); return; }
-        lr();
-    }).catch(function(err) { alert('重命名失败: ' + err.message); });
+    inputModal('重命名房间', '输入新房间名', oldName, function(newName) {
+        if (!newName || newName === oldName) return;
+        fetch('/api/rooms/' + id, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: newName})})
+        .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+        .then(function(ret) {
+            if (!ret.ok) { alert(ret.d.error || '重命名失败'); return; }
+            lr();
+        }).catch(function(err) { alert('重命名失败: ' + err.message); });
+    });
 }
 
 sp(s.p);
