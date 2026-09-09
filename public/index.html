@@ -563,34 +563,11 @@ async function dm(e, id) {
             await fetch('/api/preset/materials/' + toDelete[i].id, {method: 'DELETE'});
         }
     }
-    // 2. 从所有房间的folder_mappings中移除（所有文件夹）
-    var modifiedRooms = [];
-    if (url && s.rooms) {
-        for (var j = 0; j < s.rooms.length; j++) {
-            var room = s.rooms[j];
-            if (!room.folder_mappings) continue;
-            var fm = JSON.parse(room.folder_mappings);
-            var changed = false;
-            for (var f in fm) {
-                var idx = fm[f].indexOf(id);
-                if (idx > -1) { fm[f].splice(idx, 1); changed = true; }
-            }
-            if (changed) {
-                await fetch('/api/rooms/' + room.id, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({folder_mappings: JSON.stringify(fm)})
-                });
-                modifiedRooms.push(room.id);
-            }
-        }
-    }
+    // 2. 房间 scenes A/B 的映射清理由服务端 DELETE /api/materials 完成（含设备同步通知）
     // 刷新显示
     lm();
     lp();
     if (s.df) lr();
-    // 删除素材后同步所有受影响的房间
-    modifiedRooms.forEach(function(rid) { doSyncRoom(rid); });
 }
 
 async function cp2p(id) {
@@ -1618,7 +1595,12 @@ async function mapPreset() {
     var presetInFolder = pm;
     if (presetInFolder.length === 0) { alert('预设素材库为空，请先在预设素材页面添加'); return; }
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
-    var folderMs = r.folder_mappings ? JSON.parse(r.folder_mappings) : {};
+    // 基于 scenes.A.folder_mappings 合并（保留已映射的素材库素材），只写当前场景 A
+    var cfg = {};
+    try { cfg = r.config ? JSON.parse(r.config) : {}; } catch(e) {}
+    if (!cfg.scenes) { cfg.scenes = { A:{name:'第一幕',folder_mappings:{},windows:[]}, B:{name:'第二幕',folder_mappings:{},windows:[]} }; }
+    cfg.scenes.A = cfg.scenes.A || { name:'第一幕', folder_mappings:{}, windows:[] };
+    var folderMs = cfg.scenes.A.folder_mappings || {};
     // 添加所有预设素材到对应文件夹（按ID或URL去重）
     var count = 0;
     presetInFolder.forEach(function(m) {
@@ -1638,10 +1620,11 @@ async function mapPreset() {
         });
         if (!alreadyAdded) { folderMs[fid].push(m.id); count++; }
     });
+    cfg.scenes.A.folder_mappings = folderMs;
     await fetch('/api/rooms/' + s.rf, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({folder_mappings: JSON.stringify(folderMs)})
+        body: JSON.stringify({config: JSON.stringify(cfg)})
     });
     alert('已映射全部 ' + count + ' 个预设素材');
     lr();
