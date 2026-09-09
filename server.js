@@ -1573,7 +1573,7 @@ app.post('/api/rooms', (req, res) => {
 
 // 【S-04i】 更新房间（PUT /api/rooms/:id，支持 scenes 合并保护）
 app.put('/api/rooms/:id', (req, res) => {
-  const { name, config, store_name } = req.body;
+  const { name, config } = req.body;
   const id = req.params.id;
   var updates = [];
   var values = [];
@@ -1581,15 +1581,13 @@ app.put('/api/rooms/:id', (req, res) => {
   // 【Bug Fix】当 config 包含 scenes 时，先读取 DB 中现有 config，合并后再保存
   // 避免 windows 字段被 incoming config 中的空数组覆盖
   if (config !== undefined) {
-    db.query('SELECT config, name, store_name FROM rooms WHERE id=?', [id], (errDb, rowsDb) => {
+    db.query('SELECT config, name FROM rooms WHERE id=?', [id], (errDb, rowsDb) => {
       if (errDb) return res.status(500).json({ error: errDb.message });
       if (!rowsDb || rowsDb.length === 0) return res.status(404).json({ error: '房间不存在' });
 
       var existingConfig = {};
       try { existingConfig = rowsDb[0].config ? JSON.parse(rowsDb[0].config) : {}; } catch(e) {}
       var roomName = rowsDb[0].name;
-      var currentStore = rowsDb[0].store_name;
-      var targetStore = (store_name !== undefined && store_name !== currentStore) ? store_name : null;
       var targetName = (name !== undefined && name !== roomName) ? name : null;
 
       var cfg = typeof config === 'string' ? JSON.parse(config) : config;
@@ -1639,65 +1637,25 @@ app.put('/api/rooms/:id', (req, res) => {
       }
 
       var proceedConfigUpdate = () => {
-        if (targetStore) { updates.push('store_name=?'); values.push(targetStore); }
         if (targetName) { updates.push('name=?'); values.push(targetName); }
         updates.push('config=?'); values.push(JSON.stringify(cfg));
         values.push(id);
         db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
           if (err) {
-            if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '目标客户下已存在同名房间' });
+            if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '该客户下已存在同名房间' });
             return res.status(500).json({ error: err.message });
           }
-          if (targetStore) db.query('UPDATE devices SET store=? WHERE room_id=?', [targetStore, id], () => {});
-          logAction('update', 'room', { id, name: targetName || roomName, store_moved: targetStore || undefined });
+          logAction('update', 'room', { id, name: targetName || roomName });
           res.json({ success: true });
         });
       };
-
-      if (targetStore) {
-        // 房间移动到另一客户：校验客户存在 + 唯一键冲突
-        db.query('SELECT id FROM stores WHERE name = ?', [targetStore], (errS, rowsS) => {
-          if (errS) return res.status(500).json({ error: errS.message });
-          if (rowsS.length === 0) return res.status(400).json({ error: '目标客户不存在: ' + targetStore });
-          db.query('SELECT id FROM rooms WHERE store_name=? AND name=? AND id<>?', [targetStore, targetName || roomName, id], (errC, rowsC) => {
-            if (errC) return res.status(500).json({ error: errC.message });
-            if (rowsC.length > 0) return res.status(409).json({ error: '目标客户下已存在同名房间' });
-            proceedConfigUpdate();
-          });
-        });
-      } else {
-        proceedConfigUpdate();
-      }
+      proceedConfigUpdate();
     });
     return;
   }
 
   if (name !== undefined) { updates.push('name=?'); values.push(name); }
-  if (store_name !== undefined) { updates.push('store_name=?'); values.push(store_name); }
   if (updates.length === 0) return res.json({success: true});
-
-  if (store_name !== undefined) {
-    db.query('SELECT id FROM stores WHERE name = ?', [store_name], (errS, rowsS) => {
-      if (errS) return res.status(500).json({ error: errS.message });
-      if (rowsS.length === 0) return res.status(400).json({ error: '目标客户不存在: ' + store_name });
-      db.query('SELECT name FROM rooms WHERE id = ?', [id], (errR, rowsR) => {
-        if (errR || !rowsR || !rowsR[0]) return res.status(404).json({ error: '房间不存在' });
-        const checkName = name !== undefined ? name : rowsR[0].name;
-        db.query('SELECT id FROM rooms WHERE store_name=? AND name=? AND id<>?', [store_name, checkName, id], (errC, rowsC) => {
-          if (errC) return res.status(500).json({ error: errC.message });
-          if (rowsC.length > 0) return res.status(409).json({ error: '目标客户下已存在同名房间' });
-          values.push(id);
-          db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
-            if (err) return res.status(500).json({error: err.message});
-            db.query('UPDATE devices SET store=? WHERE room_id=?', [store_name, id], () => {});
-            logAction('update', 'room', { id, name: checkName, store_moved: store_name });
-            res.json({success: true});
-          });
-        });
-      });
-    });
-    return;
-  }
 
   values.push(id);
   db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {

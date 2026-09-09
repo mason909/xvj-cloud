@@ -355,23 +355,41 @@ function sp(p) {
     document.getElementById('pl').style.display = p === 'logs' ? 'block' : 'none';
     document.getElementById('title').innerText = p === 'materials' ? '素材管理' : (p === 'devices' ? '客户管理' : (p === 'unregistered' ? '未注册设备' : (p === 'presets' ? '预设素材' : (p === 'logs' ? '设备日志' : '版本管理'))));
     ub(p);
+    // 切页统一停掉客户管理页的设备轮询，避免后台重绘干扰其他页面
+    if (s.devicePollInterval) { clearInterval(s.devicePollInterval); s.devicePollInterval = null; }
     if (p === 'materials') {
         // 切换到素材管理页时，清除设备相关的状态
         s.df = null;
         s.rf = null;
-        lm();
+        // s.pm 预设列表用于素材卡「预设」标记，进素材页时确保已加载
+        fetch('/api/preset/materials').then(function(r) { return r.json(); }).then(function(list) {
+            s.pm = Array.isArray(list) ? list : [];
+            lm();
+        }).catch(function() { lm(); });
     }
     else if (p === 'devices') {
-        if (s.devicePollInterval) clearInterval(s.devicePollInterval);
         s.df = localStorage.getItem('xstore') || '默认店';
         s.rf = localStorage.getItem('xroom') || '';
         ld();
         lr();
-        s.devicePollInterval = setInterval(function() { ld(); lr(); }, 30000);
+        // 轮询只刷新设备状态（pd），不重绘客户/房间 tab——全量重绘会吞掉正在进行的点击
+        s.devicePollInterval = setInterval(pd, 30000);
     } else if (p === 'unregistered') lu();
     else if (p === 'presets') lp();
     else if (p === 'versions') { lv(); lvd(); }
     else if (p === 'logs') { loadDeviceLogs(); }
+}
+
+// 设备状态轻量轮询：只更新 s.ds 并重绘设备区，不触碰客户/房间 tab
+async function pd() {
+    try {
+        var r = await fetch('/api/devices');
+        var list = await r.json();
+        if (!Array.isArray(list)) return;
+        s.ds = list;
+        // 窗口编辑器打开时只静默更新数据，不重绘（避免打断正在编辑的窗口配置）
+        if (s.rf && !s._windowEditorActive) rmDevice();
+    } catch (e) {}
 }
 
 function ub(p) {
@@ -787,9 +805,6 @@ async function lr() {
     if (!s.df) return;
     var r = await fetch('/api/rooms?store=' + encodeURIComponent(s.df));
     s.rooms = await r.json();
-    // 加载预设素材
-    var pr = await fetch('/api/preset/materials');
-    s.pm = await pr.json();
     // 检查保存的房间ID是否在当前列表中，不在则清空
     if (s.rf && !s.rooms.some(function(x) { return x.id === s.rf; })) {
         s.rf = '';
@@ -803,15 +818,17 @@ async function lr() {
 function sr(id) {
     s.rf = id;
     localStorage.setItem('xroom', id);
-    // 拉取完整房间数据（含 scenes 配置）
+    // 默认选中第一幕
+    s._curScene = 'A';
+    // 先用缓存立即高亮反馈，详情回来后再刷新设备区
+    rd();
+    rmDevice();
     fetch('/api/rooms/' + id).then(function(res){ return res.json(); }).then(function(room) {
+        if (!room || room.error) return;
         // 更新 s.rooms 中的房间数据
         var idx = s.rooms.findIndex(function(r){ return r.id === id; });
         if (idx >= 0) { s.rooms[idx] = room; }
-        // 默认选中第一幕
-        s._curScene = 'A';
-        rd();
-        rmDevice();
+        if (s.rf === id) rmDevice();
     });
 }
 
@@ -1807,6 +1824,7 @@ function sd(store) {
     s.df = store;
     localStorage.setItem('xstore', store);
     s.rf = '';
+    rd();
     lr();
 }
 
@@ -1998,7 +2016,14 @@ function inputModal(title, placeholder, defaultValue, cb) {
     var inp = document.getElementById('imInput');
     inp.focus();
     inp.select();
-    var ok = function() { var v = inp.value.trim(); document.getElementById('m').classList.remove('show'); cb(v); };
+    var done = false;
+    var ok = function() {
+        if (done) return;
+        done = true;
+        var v = inp.value.trim();
+        document.getElementById('m').classList.remove('show');
+        cb(v);
+    };
     document.getElementById('imOk').onclick = ok;
     inp.onkeydown = function(e) { if (e.key === 'Enter') ok(); };
 }
