@@ -145,6 +145,7 @@ function buildPrefixedScenes(scenes) {
       folder_mappings: prefixedMappings,
       windows: sceneData.windows || []
     };
+    if (sceneData.master) result[key].master = sceneData.master;
   });
   console.log('[DEBUG buildPrefixedScenes] 输入 scenes keys:', JSON.stringify(Object.keys(scenes || {})), '输出 folder_mappings:', JSON.stringify(result['A'] ? result['A'].folder_mappings : {}));
   return result;
@@ -174,6 +175,11 @@ app.use(express.json());
 // Serve static files (index.html)
 app.get('/', (req, res) => {
   res.sendFile('/var/www/xvj/index.html');
+});
+
+// mqtt.js 浏览器端库
+app.get('/mqtt.min.js', (req, res) => {
+  res.sendFile(__dirname + '/public/mqtt.min.js');
 });
 
 // 静态文件服务：素材文件（视频、图片、缩略图）
@@ -1840,7 +1846,10 @@ app.put('/api/rooms/:id', (req, res) => {
             : (existingScenes.A?.folder_mappings || {}),
           windows: (incomingA?.windows && incomingA.windows.length > 0)
             ? incomingA.windows
-            : (existingScenes.A?.windows || [])
+            : (existingScenes.A?.windows || []),
+          master: (incomingA?.master && incomingA.master.brightness != null)
+            ? { brightness: Math.min(1, Math.max(0, parseFloat(incomingA.master.brightness) || 0)) }
+            : (existingScenes.A?.master || { brightness: 1 })
         };
         // Scene B：未传入时保留 DB 完整数据（不被空对象覆盖）
         if (cfg.scenes.B) {
@@ -1851,7 +1860,10 @@ app.put('/api/rooms/:id', (req, res) => {
               : (existingScenes.B?.folder_mappings || {}),
             windows: (cfg.scenes.B.windows && cfg.scenes.B.windows.length > 0)
               ? cfg.scenes.B.windows
-              : (existingScenes.B?.windows || [])
+              : (existingScenes.B?.windows || []),
+            master: (cfg.scenes.B.master && cfg.scenes.B.master.brightness != null)
+              ? { brightness: Math.min(1, Math.max(0, parseFloat(cfg.scenes.B.master.brightness) || 0)) }
+              : (existingScenes.B?.master || { brightness: 1 })
           };
         } else {
           // B 未在 incoming config 中 → 完整保留 DB 中的 B
@@ -1914,7 +1926,7 @@ app.put('/api/rooms/:id', (req, res) => {
 // 【窗口配置系统】sceneId 指定保存到 scenes.A.windows 还是 scenes.B.windows
 // 保存后立即调用 sendSyncCommandToDevice() 推送 MQTT，让设备实时更新窗口
 app.put('/api/rooms/:id/windows', (req, res) => {
-  const { windows, sceneId } = req.body;   // sceneId: 'A' 或 'B'
+  const { windows, sceneId, master, live } = req.body;   // sceneId: 'A' 或 'B'; master: { brightness } 场景总亮度; live: true=编辑器实时预览轻推
   const id = req.params.id;
 
 // 【S-04b】 窗口配置 // PUT /api/rooms/:id/windows
@@ -1943,21 +1955,38 @@ app.put('/api/rooms/:id/windows', (req, res) => {
       return res.status(400).json({ error: '无效的场景ID' });
     }
     existingConfig.scenes[targetScene].windows = windows;
+    // 场景总亮度（Arena 屏级总控对标）：传入则 clamp 到 [0,1] 后保存
+    if (master && master.brightness != null) {
+      const mb = parseFloat(master.brightness);
+      if (!isNaN(mb)) existingConfig.scenes[targetScene].master = { brightness: Math.min(1, Math.max(0, mb)) };
+    }
     db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(existingConfig), id], (err2) => {
       if (err2) return res.status(500).json({ error: err2.message });
-      logAction('update_windows', 'room', { id, scene: targetScene, windows });
+      // live 轻推不记操作日志（拖动期间每350ms一次，避免刷屏）
+      if (!live) logAction('update_windows', 'room', { id, scene: targetScene, windows });
 
-      // 【S-04b-Fix】立即推送 MQTT，让 APP 立即应用新窗口配置
-      db.query('SELECT id, folder_mappings FROM rooms WHERE id = ?', [id], (err3, rows3) => {
-        if (!err3 && rows3 && rows3.length > 0) {
-          const roomFolderMappings = rows3[0].folder_mappings ? JSON.parse(rows3[0].folder_mappings) : {};
-          // 查找绑定到此房间的设备（APK MQTT clientId = fingerprint）
-          db.query('SELECT id, fingerprint FROM devices WHERE room_id = ?', [id], (err4, rows4) => {
-            if (!err4 && rows4 && rows4.length > 0) {
-              const mqttId = rows4[0].fingerprint || rows4[0].id;
-              sendSyncCommandToDevice(mqttId, id, roomFolderMappings, existingConfig);
-            }
-          });
+      // 查找绑定到此房间的设备（APK MQTT clientId = fingerprint）
+      db.query('SELECT id, fingerprint FROM devices WHERE room_id = ?', [id], (err4, rows4) => {
+        if (!err4 && rows4 && rows4.length > 0) {
+          const mqttId = rows4[0].fingerprint || rows4[0].id;
+          if (live) {
+            // 【实时预览】轻量 update_windows：只带 scenes，APK 免重建原地更新视图，
+            // 不触发素材同步；结构变化时 APK 内部自动回退全量重建
+            mqttClient.publish(`xvj/device/${mqttId}/command`, JSON.stringify({
+              action: 'update_windows',
+              room_id: id,
+              scenes: buildPrefixedScenes(existingConfig.scenes || {}),
+              timestamp: Date.now()
+            }));
+          } else {
+            // 【S-04b-Fix】完整同步：附带 folder_mappings 触发素材检查
+            db.query('SELECT id, folder_mappings FROM rooms WHERE id = ?', [id], (err3, rows3) => {
+              if (!err3 && rows3 && rows3.length > 0) {
+                const roomFolderMappings = rows3[0].folder_mappings ? JSON.parse(rows3[0].folder_mappings) : {};
+                sendSyncCommandToDevice(mqttId, id, roomFolderMappings, existingConfig);
+              }
+            });
+          }
         }
       });
 
