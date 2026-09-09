@@ -811,9 +811,11 @@ app.post('/api/rooms/:id/sync', (req, res) => {
       delete config.windows;
     }
 
-    // 合并 Scene A 和 Scene B 的 folder_mappings（外部信号决定播放哪个文件夹，设备必须同时有A和B的数据）
-    const fmA = config.scenes?.A?.folder_mappings || {};
-    const fmB = config.scenes?.B?.folder_mappings || {};
+    // scene-prefixed 统一格式（与 sendSyncCommandToDevice / notifyRoomDevicesOfSync 一致；
+    // APK 落盘目录与播放解析均以 A01/B01 形态为准，无前缀格式会导致播放指向根目录 01）
+    const prefixedScenes = buildPrefixedScenes(config.scenes);
+    const fmA = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
+    const fmB = prefixedScenes.B ? prefixedScenes.B.folder_mappings : {};
     const allFolderMappings = {};
     Object.keys(fmA).forEach(k => { allFolderMappings[k] = [...(fmA[k] || [])]; });
     Object.keys(fmB).forEach(k => {
@@ -841,8 +843,8 @@ app.post('/api/rooms/:id/sync', (req, res) => {
           const syncCmd = {
             action: 'sync_room_materials',
             room_id: roomId,
-            scenes: config.scenes,           // 完整两套场景（APK 渲染窗口用）
-            folder_mappings: allFolderMappings, // 合并后的完整列表（设备根据外部信号从A和B中各取对应文件夹）
+            scenes: prefixedScenes,          // 完整两套场景，folder_mappings 键已带场景前缀（APK 渲染窗口用）
+            folder_mappings: allFolderMappings, // A01/B01 键，与 HTTP API 返回格式一致
             debug: config.debug === true
           };
           mqttClient.publish(topic, JSON.stringify(syncCmd));
