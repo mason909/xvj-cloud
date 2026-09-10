@@ -435,9 +435,9 @@ function handleDeviceRegister(deviceId, data) {
         // 新设备 - 默认不自动授权，需要后台手动审核
         console.log(`⚠️ 新设备尝试注册: ${deviceId}, 指纹: ${fingerprint}`);
         db.query(
-          `INSERT INTO devices (id, name, fingerprint, model, hardware, mac, status, authorized, online_time) 
-           VALUES (?, ?, ?, ?, ?, ?, 'online', 0, NOW()) 
-           ON DUPLICATE KEY UPDATE status='online', online_time=NOW(), authorized=0`,
+          `INSERT INTO devices (id, name, fingerprint, model, hardware, mac, status, authorized, online_time, first_seen)
+           VALUES (?, ?, ?, ?, ?, ?, 'online', 0, NOW(), NOW())
+           ON DUPLICATE KEY UPDATE status=IF(status<>'blocked','online',status), online_time=IF(status<>'blocked',NOW(),online_time), authorized=IF(status<>'blocked',0,authorized)`,
           [deviceId, data.device_id || deviceId, fingerprint, data.model, data.hardware, data.mac]
         );
         sendAuthResponse(deviceId, false, '等待审核授权', '');
