@@ -359,6 +359,15 @@ function handleMqttMessage(topic, message) {
             } else if (result && result.affectedRows > 0) {
               console.log('✅ 设备状态已更新: ' + deviceId);
             }
+            // 设备版本上报：status 消息携带 version/version_code 时同步 device_versions
+            if (data.version || data.version_code) {
+              const vCode = parseInt(data.version_code, 10) || 0;
+              db.query(
+                'INSERT INTO device_versions (device_id, version, version_code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE version = ?, version_code = ?',
+                [deviceId, data.version || '', vCode, data.version || '', vCode],
+                (verr) => { if (verr) console.error('同步设备版本失败:', verr.message); }
+              );
+            }
           }
         );
         break;
@@ -1966,11 +1975,16 @@ function initDatabase() {
       filename VARCHAR(255) NOT NULL,
       filepath VARCHAR(512) NOT NULL,
       size INT DEFAULT 0,
+      md5 VARCHAR(32) DEFAULT NULL,
       changelog TEXT,
       is_latest TINYINT(1) DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // 旧库补列（MySQL 8 无 ADD COLUMN IF NOT EXISTS，靠 1060 错误码幂等）
+  db.query("ALTER TABLE apk_versions ADD COLUMN md5 VARCHAR(32) DEFAULT NULL", (e) => {
+    if (e && e.code !== 'ER_DUP_FIELDNAME') console.error('apk_versions 加 md5 列失败:', e.message);
+  });
 
   // 设备版本记录表
   db.query(`
@@ -1989,6 +2003,20 @@ function initDatabase() {
 
 // ==================== 版本管理 API ====================
 
+// APK 下载地址（nginx 80 端口直出 public/apk）
+const APK_DOWNLOAD_BASE = 'http://47.102.106.237';
+
+// 流式计算文件 MD5（避免大文件整读进内存）
+function fileMd5(fullPath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('md5');
+    fs.createReadStream(fullPath)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('end', () => resolve(hash.digest('hex')))
+      .on('error', reject);
+  });
+}
+
 // 【S-12a】 获取版本列表（从 apk_versions 表读取）
 app.get('/api/versions', (req, res) => {
   db.query('SELECT * FROM apk_versions ORDER BY version_code DESC', (err, results) => {
@@ -1997,21 +2025,23 @@ app.get('/api/versions', (req, res) => {
   });
 });
 
-// 【S-12b】 获取最新版本（is_latest=1，计算文件 MD5 校验）
+// 【S-12b】 获取最新版本（优先读库中 MD5，旧记录懒计算并回填）
 app.get('/api/version/latest', (req, res) => {
-  db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', (err, results) => {
+  db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', async (err, results) => {
     if (err) return res.status(500).json({error:err.message});
     if (results.length === 0) return res.json({});
-    
+
     const apk = results[0];
-    // 计算MD5
     const fullPath = path.join(__dirname, 'public', apk.filepath);
     if (fs.existsSync(fullPath)) {
-      const fileBuffer = fs.readFileSync(fullPath);
-      const md5Hash = crypto.createHash('md5').update(fileBuffer).digest('hex');
-      apk.md5 = md5Hash;
+      if (!apk.md5) {
+        try {
+          apk.md5 = await fileMd5(fullPath);
+          db.query('UPDATE apk_versions SET md5 = ? WHERE id = ?', [apk.md5, apk.id]);
+        } catch (e) { console.error('计算 APK MD5 失败:', e.message); }
+      }
     }
-    
+
     res.json(apk);
   });
 });
@@ -2026,24 +2056,38 @@ const storage = multer.diskStorage({
 });
 const upload = multer({storage, limits:{fileSize:200*1024*1024}});
 
-// 【S-12c】 上传 APK 新版本（写入 apk_versions 表，标记 is_latest=1）
-app.post('/api/versions/upload', upload.single('apk'), (req, res) => {
+// 【S-12c】 上传 APK 新版本（写入 apk_versions 表，标记 is_latest=1，落库 MD5）
+app.post('/api/versions/upload', upload.single('apk'), async (req, res) => {
   if (!req.file) return res.status(400).json({error:'No file uploaded'});
-  
+
   const {version, version_code, changelog} = req.body;
   if (!version || !version_code) return res.status(400).json({error:'version and version_code required'});
-  
-  // 取消之前的latest标记
-  db.query('UPDATE apk_versions SET is_latest = 0', (err) => {
-    const filepath = '/apk/' + req.file.filename;
-    db.query(
-      'INSERT INTO apk_versions (version, version_code, filename, filepath, size, changelog, is_latest) VALUES (?, ?, ?, ?, ?, ?, 1)',
-      [version, parseInt(version_code), req.file.filename, filepath, req.file.size, changelog || ''],
-      (err2, result) => {
-        if (err2) return res.status(500).json({error:err2.message});
-        res.json({success:true, id:result.insertId, filepath});
-      }
-    );
+  const code = parseInt(version_code, 10);
+  if (isNaN(code) || code <= 0) { fs.unlinkSync(req.file.path); return res.status(400).json({error:'version_code 必须是正整数'}); }
+
+  // 查重：同一 version_code 不允许重复上传
+  db.query('SELECT id, version FROM apk_versions WHERE version_code = ?', [code], async (err, dups) => {
+    if (err) return res.status(500).json({error:err.message});
+    if (dups && dups.length > 0) {
+      fs.unlinkSync(req.file.path);
+      return res.status(409).json({error:'版本号 ' + code + ' 已存在（v' + dups[0].version + '），请使用新的版本号'});
+    }
+
+    let md5 = null;
+    try { md5 = await fileMd5(req.file.path); } catch (e) { console.error('上传 APK 算 MD5 失败:', e.message); }
+
+    // 取消之前的latest标记
+    db.query('UPDATE apk_versions SET is_latest = 0', (err) => {
+      const filepath = '/apk/' + req.file.filename;
+      db.query(
+        'INSERT INTO apk_versions (version, version_code, filename, filepath, size, md5, changelog, is_latest) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
+        [version, code, req.file.filename, filepath, req.file.size, md5, changelog || ''],
+        (err2, result) => {
+          if (err2) return res.status(500).json({error:err2.message});
+          res.json({success:true, id:result.insertId, filepath, md5});
+        }
+      );
+    });
   });
 });
 
@@ -2085,6 +2129,7 @@ app.get('/api/device/versions', (req, res) => {
     FROM devices d
     LEFT JOIN rooms r ON d.room_id = r.id
     LEFT JOIN device_versions dv ON d.id = dv.device_id
+    WHERE d.status <> 'blocked'
     ORDER BY dv.updated_at DESC
   `, (err, results) => {
     if (err) return res.status(500).json({error:err.message});
@@ -2111,7 +2156,8 @@ app.post('/api/devices/:id/push-update', (req, res) => {
         action: 'update',
         version: apk.version,
         version_code: apk.version_code,
-        url: 'http://47.102.106.237/apk/' + path.basename(apk.filepath)
+        md5: apk.md5 || '',
+        url: APK_DOWNLOAD_BASE + apk.filepath
       };
 
       mqttClient.publish(topic, JSON.stringify(cmd), {qos:1}, (err3) => {
@@ -2139,42 +2185,14 @@ app.post('/api/versions/:id/push-to-all', (req, res) => {
           action: 'update',
           version: apk.version,
           version_code: apk.version_code,
-          url: 'http://47.102.106.237/apk/' + path.basename(apk.filepath)
+          md5: apk.md5 || '',
+          url: APK_DOWNLOAD_BASE + apk.filepath
         };
         mqttClient.publish(topic, JSON.stringify(cmd), {qos: 1});
         pushed++;
       });
       logAction('push_update_all', 'device', { version_id: versionId, version: apk.version, version_code: apk.version_code, devices: pushed });
       res.json({success: true, pushed, version: apk.version});
-    });
-  });
-});
-
-// 【S-12i】 推送最新版本到所有已授权设备（MQTT 批量下发）
-app.post('/api/devices/push-update-all', (req, res) => {
-  db.query('SELECT * FROM apk_versions WHERE is_latest = 1 ORDER BY version_code DESC LIMIT 1', (err, versions) => {
-    if (err) return res.status(500).json({error:err.message});
-    if (versions.length === 0) return res.status(404).json({error:'No APK available'});
-    
-    const apk = versions[0];
-    
-    db.query("SELECT id FROM devices WHERE authorized = 1", (err2, devices) => {
-      if (err2) return res.status(500).json({error:err2.message});
-      
-      let pushed = 0;
-      devices.forEach(device => {
-        const topic = `xvj/device/${device.id}/command`;
-        const cmd = {
-          action: 'update',
-          version: apk.version,
-          version_code: apk.version_code,
-          url: 'http://47.102.106.237/apk/' + path.basename(apk.filepath)
-        };
-        mqttClient.publish(topic, JSON.stringify(cmd), {qos:1});
-        pushed++;
-      });
-      logAction('push_update_all', 'device', { version: apk.version, version_code: apk.version_code, devices: pushed });
-      res.json({success:true, pushed});
     });
   });
 });

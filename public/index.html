@@ -2151,15 +2151,20 @@ async function lv() {
 async function lvd() {
     var r = await fetch('/api/device/versions');
     var devices = await r.json();
+    if (!Array.isArray(devices) || devices.length === 0) {
+        document.getElementById('dev').innerHTML = '<div style="color:#666;text-align:center;padding:40px">暂无设备</div>';
+        return;
+    }
     var h = '<table style="width:100%;border-collapse:collapse"><tr style="background:#1a1a1a"><th style="padding:10px;text-align:left">设备ID</th><th style="padding:10px;text-align:left">店铺</th><th style="padding:10px;text-align:left">版本</th><th style="padding:10px;text-align:left">状态</th><th style="padding:10px;text-align:left">操作</th></tr>';
     devices.forEach(function(d) {
         var statusColor = d.status === 'online' ? '#28a745' : '#666';
-        var versionInfo = d.version || '未知';
+        var versionInfo = d.version ? escA(d.version) + ' (' + d.version_code + ')' : '未知';
+        var safeId = escA(d.id);
         h += '<tr style="border-bottom:1px solid #333">';
-        h += '<td style="padding:10px">' + d.id + '</td>';
-        h += '<td style="padding:10px">' + (d.store || '-') + '</td>';
+        h += '<td style="padding:10px" title="' + safeId + '">' + safeId.substring(0, 16) + '</td>';
+        h += '<td style="padding:10px">' + escA(d.store || '-') + '</td>';
         h += '<td style="padding:10px">' + versionInfo + '</td>';
-        h += '<td style="padding:10px"><span style="color:' + statusColor + '">' + d.status + '</span></td>';
+        h += '<td style="padding:10px"><span style="color:' + statusColor + '">' + escA(d.status) + '</span></td>';
         h += '<td style="padding:10px"><button onclick="pushUpdate(\'' + d.id + '\')" style="background:#e94560;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">推送更新</button></td>';
         h += '</tr>';
     });
@@ -2173,6 +2178,7 @@ async function uv() {
     var changelog = document.getElementById('vchangelog').value;
     var file = document.getElementById('vfile').files[0];
     if (!version || !version_code || !file) { alert('请填写版本号、版本Code并选择APK文件'); return; }
+    if (!/^\d+$/.test(version_code) || parseInt(version_code, 10) <= 0) { alert('版本Code必须是正整数'); return; }
     var formData = new FormData();
     formData.append('apk', file);
     formData.append('version', version);
@@ -2181,7 +2187,7 @@ async function uv() {
     var r = await fetch('/api/versions/upload', {method: 'POST', body: formData});
     var res = await r.json();
     if (res.success) {
-        alert('上传成功！');
+        alert('上传成功！MD5: ' + (res.md5 || '未计算'));
         lv();
     } else {
         alert('上传失败: ' + res.error);
