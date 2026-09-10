@@ -355,8 +355,9 @@ function sp(p) {
     document.getElementById('pl').style.display = p === 'logs' ? 'block' : 'none';
     document.getElementById('title').innerText = p === 'materials' ? '素材管理' : (p === 'devices' ? '客户管理' : (p === 'unregistered' ? '未注册设备' : (p === 'presets' ? '预设素材' : (p === 'logs' ? '设备日志' : '版本管理'))));
     ub(p);
-    // 切页统一停掉客户管理页的设备轮询，避免后台重绘干扰其他页面
+    // 切页统一停掉轮询定时器，避免后台重绘干扰其他页面
     if (s.devicePollInterval) { clearInterval(s.devicePollInterval); s.devicePollInterval = null; }
+    if (s.unregPollInterval) { clearInterval(s.unregPollInterval); s.unregPollInterval = null; }
     if (p === 'materials') {
         // 切换到素材管理页时，清除设备相关的状态
         s.df = null;
@@ -374,7 +375,7 @@ function sp(p) {
         lr();
         // 轮询只刷新设备状态（pd），不重绘客户/房间 tab——全量重绘会吞掉正在进行的点击
         s.devicePollInterval = setInterval(pd, 30000);
-    } else if (p === 'unregistered') lu();
+    } else if (p === 'unregistered') { lu(); s.unregPollInterval = setInterval(pollUnreg, 30000); }
     else if (p === 'presets') lp();
     else if (p === 'versions') { lv(); lvd(); }
     else if (p === 'logs') { loadDeviceLogs(); }
@@ -719,22 +720,81 @@ async function lu() {
     await loadStores();
     if (!s.stores.length) s.stores = ['默认店'];
     var storeOptions = s.stores.map(function(st) { return '<option value="' + escA(st) + '">' + esc(st) + '</option>'; }).join('');
-    if (!ds || ds.length === 0) {
+    if (!Array.isArray(ds)) ds = [];
+    s._unregCache = ds;
+    // 记录签名供轮询判断变化，状态没变就不重绘
+    s._unregSig = ds.map(function(x) { return x.id + ':' + x.status; }).join(',');
+    if (ds.length === 0) {
         g.innerHTML = '<div class="empty">暂无未注册设备</div>';
         return;
     }
-    var h = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
+    var h = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">';
     for (var i = 0; i < ds.length; i++) {
         var d = ds[i];
         var ft = d.first_seen ? new Date(d.first_seen).toLocaleString() : '-';
-        var st = d.status === 'online' ? '<span class="device-status on">在线</span><span style="font-size:11px;color:#888">|未授权</span>' : '<span class="device-status off">离线</span><span style="font-size:11px;color:#888">|未授权</span>';
-        h += '<div class="device-card"><div class="device-header"><span class="device-id">' + d.id + '</span>' + st + '</div>';
-        h += '<div class="device-info"><b>首次:</b> ' + ft + '</div>';
+        var st;
+        if (d.status === 'online') st = '<span class="device-status on">在线</span><span style="font-size:11px;color:#888">|未授权</span>';
+        else if (d.status === 'deauthorized') st = '<span class="device-status off">离线</span><span style="font-size:11px;color:#e94560">|已废止</span>';
+        else st = '<span class="device-status off">离线</span><span style="font-size:11px;color:#888">|未授权</span>';
+        var fp = d.fingerprint ? String(d.fingerprint) : '';
+        var fpShort = fp.length > 12 ? fp.substring(0, 12) + '…' : (fp || '-');
+        h += '<div class="device-card"><div class="device-header"><span class="device-id" title="' + escA(d.id) + '">' + esc(String(d.id).substring(0, 16)) + '</span>' + st + '</div>';
+        h += '<div class="device-info"><b>型号:</b> ' + esc(d.model || '-') + '　<b>指纹:</b> <span title="' + escA(fp) + '">' + esc(fpShort) + '</span></div>';
+        h += '<div class="device-info"><b>首次:</b> ' + ft + '　<b>最后在线:</b> ' + timeAgo(d.online_time) + '</div>';
         h += '<div class="device-actions"><select id="store_' + d.id + '" class="device-select">' + storeOptions + '</select>';
-        h += '<button class="btn btn-primary" onclick="ar(\'' + d.id + '\')">授权</button></div></div>';
+        h += '<button class="btn btn-primary" onclick="ar(\'' + d.id + '\')">授权</button>';
+        h += '<button class="btn btn-secondary" onclick="blockDevice(\'' + d.id + '\')" title="加入屏蔽名单：不再出现在列表，重新注册也会被拒绝">忽略</button>';
+        h += '<button class="btn btn-secondary" style="color:#e94560" onclick="delDevice(\'' + d.id + '\')" title="删除记录并清理日志；若设备仍在线会重新注册出现">删除</button></div></div>';
     }
     h += '</div>';
     g.innerHTML = h;
+}
+
+// 屏蔽（忽略）设备：保留记录作黑名单，register/status 上线不再复活
+function blockDevice(id) {
+    if (!confirm('忽略该设备？\n将不再出现在未注册列表，且设备重新注册会被拒绝。')) return;
+    fetch('/api/devices/' + id + '/block', { method: 'POST' })
+    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+    .then(function(ret) {
+        if (!ret.ok) { alert(ret.d.error || '操作失败'); return; }
+        lu();
+    }).catch(function(err) { alert('操作失败: ' + err.message); });
+}
+
+// 删除设备记录：级联清理版本/日志；设备仍在线会重新注册，永久屏蔽用「忽略」
+function delDevice(id) {
+    if (!confirm('删除该设备记录？\n若设备仍在线，重新注册会再次出现；要永久屏蔽请用「忽略」。')) return;
+    fetch('/api/devices/' + id, { method: 'DELETE' })
+    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+    .then(function(ret) {
+        if (!ret.ok) { alert(ret.d.error || '删除失败'); return; }
+        lu();
+    }).catch(function(err) { alert('删除失败: ' + err.message); });
+}
+
+// 相对时间显示
+function timeAgo(t) {
+    if (!t) return '-';
+    var d = new Date(t);
+    if (isNaN(d.getTime())) d = new Date(String(t).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return String(t);
+    var sec = (Date.now() - d.getTime()) / 1000;
+    if (sec < 0) sec = 0;
+    if (sec < 60) return '刚刚';
+    if (sec < 3600) return Math.floor(sec / 60) + ' 分钟前';
+    if (sec < 86400) return Math.floor(sec / 3600) + ' 小时前';
+    return Math.floor(sec / 86400) + ' 天前';
+}
+
+// 未注册列表轻量轮询：仅在设备上下线/状态变化时才重绘
+async function pollUnreg() {
+    try {
+        var r = await fetch('/api/unregistered');
+        var list = await r.json();
+        if (!Array.isArray(list)) return;
+        var sig = list.map(function(x) { return x.id + ':' + x.status; }).join(',');
+        if (sig !== (s._unregSig || '')) lu();
+    } catch (e) {}
 }
 
 
@@ -758,7 +818,9 @@ async function ar(id) {
     }).join('');
     
     var safeStore = store.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    var h = '<div style="padding:20px"><h3>选择房间</h3><p style="color:#888;margin:10px 0">设备将绑定到该房间，并自动同步房间素材</p>';
+    var dev = (s._unregCache || []).find(function(x) { return x.id === id; }) || {};
+    var devDesc = String(id).substring(0, 16) + (dev.model ? ' · ' + dev.model : '');
+    var h = '<div style="padding:20px"><h3>选择房间</h3><p style="color:#888;margin:10px 0">设备: ' + esc(devDesc) + '<br>设备将绑定到该房间，并自动同步房间素材</p>';
     h += '<select id="room_select" style="padding:8px;width:100%;background:#333;color:#fff;border:1px solid #555;border-radius:4px;margin:10px 0">' + roomOptions + '</select>';
     h += '<button class="btn btn-primary" id="confirm_auth_btn">确认授权</button></div>';
     document.getElementById('mc').innerHTML = h;

@@ -293,7 +293,8 @@ function handleMqttMessage(topic, message) {
       const data = JSON.parse(message);
       if (data.action === 'deauthorize') {
         console.log('📩 收到设备主动 deauthorize: ' + data.device_id);
-        db.query('UPDATE devices SET authorized=0, status="deauthorized" WHERE id=?', [data.device_id]);
+        // blocked（屏蔽）设备不被降级，防止 block 接口自己的 MQTT 通知回环覆盖屏蔽状态
+        db.query('UPDATE devices SET authorized=0, status="deauthorized" WHERE id=? AND status<>"blocked"', [data.device_id]);
       }
     } catch(e) {}
     return;
@@ -340,7 +341,7 @@ function handleMqttMessage(topic, message) {
         const fingerprint = data.fingerprint || deviceId;
         const searchId = deviceId.substring(0, 32);
         db.query(
-          'UPDATE devices SET status = ?, status_data = ?, online_time = NOW() WHERE id = ? OR fingerprint = ? OR id LIKE ? OR id LIKE ?',
+          "UPDATE devices SET status = ?, status_data = ?, online_time = NOW() WHERE (id = ? OR fingerprint = ? OR id LIKE ? OR id LIKE ?) AND status <> 'blocked'",
           [isOnline ? 'online' : 'offline', message, deviceId, fingerprint, deviceId + '%', searchId + '%'],
           (err, result) => {
             if (err) console.error('更新设备状态失败:', err.message);
@@ -352,7 +353,7 @@ function handleMqttMessage(topic, message) {
               db.query(
                 `INSERT INTO devices (id, name, fingerprint, model, hardware, mac, status, authorized, online_time, first_seen) 
                  VALUES (?, ?, ?, ?, ?, ?, 'online', 0, NOW(), NOW())
-                 ON DUPLICATE KEY UPDATE status='online', online_time=NOW(), fingerprint=COALESCE(fingerprint, VALUES(fingerprint))`,
+                 ON DUPLICATE KEY UPDATE status=IF(status<>'blocked','online',status), online_time=IF(status<>'blocked',NOW(),online_time), fingerprint=COALESCE(fingerprint, VALUES(fingerprint))`,
                 [deviceId, '未命名设备', fingerprint, data.model || '', data.hardware || '', data.mac || '']
               );
             } else if (result && result.affectedRows > 0) {
@@ -442,7 +443,14 @@ function handleDeviceRegister(deviceId, data) {
         sendAuthResponse(deviceId, false, '等待审核授权', '');
       } else {
         const device = results[0];
-        
+
+        // 屏蔽（忽略）设备：拒绝注册且不更新状态，防止删除后重新注册复活
+        if (device.status === 'blocked') {
+          console.log(`⛔ 屏蔽设备尝试上线: ${deviceId}`);
+          sendAuthResponse(deviceId, false, '设备已被屏蔽，请联系管理员', '');
+          return;
+        }
+
         if (device.authorized === 0 || device.authorized === false) {
           // 设备未授权
           console.log(`❌ 设备被拒绝: ${deviceId}, 原因: 未授权`);
@@ -671,28 +679,43 @@ app.get('/api/devices', (req, res) => {
   });
 });
 
-// 【S-05c】 添加设备（白名单）— 插入 devices 表
-app.post('/api/devices', (req, res) => {
-  const { name, location, fingerprint, model, mac } = req.body;
-  const id = uuidv4();
-  db.query(
-    'INSERT INTO devices (id, name, location, fingerprint, model, mac, status, authorized) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
-    [id, name, location || '', fingerprint || '', model || '', mac || '', 'offline'],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: err.message });
-      logAction('add', 'device', { id, name, location, fingerprint, model });
-      res.json({ id, name, location, status: 'offline', authorized: true });
-    }
-  );
-});
+// 【S-05c】 手工添加设备接口已移除：绕过审核直接 authorized=1 与注册审批流程矛盾，且前端无入口
 
-// 【S-05d】 删除设备 — 从 devices 表删除记录
+// 【S-05d】 删除设备记录 — 仅限未授权设备；级联清理版本/日志，通知设备端授权失效
+// 注意：设备若仍在线会重新注册再次出现，要永久屏蔽请用「忽略」（POST /api/devices/:id/block）
 app.delete('/api/devices/:id', (req, res) => {
   const did = req.params.id;
-  db.query('DELETE FROM devices WHERE id = ?', [did], (err) => {
+  db.query('SELECT authorized FROM devices WHERE id = ?', [did], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    logAction('delete', 'device', { id: did });
-    res.json({ success: true });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: '设备不存在' });
+    if (rows[0].authorized === 1) return res.status(409).json({ error: '设备已授权，请先解绑或废止后再删除' });
+    mqttClient.publish('xvj/auth/response', JSON.stringify({ action: 'deauthorize', device_id: did, message: '设备记录已被删除' }));
+    db.query('DELETE FROM device_versions WHERE device_id = ?', [did], () => {
+      db.query('DELETE FROM device_logs WHERE device_id = ?', [did], () => {
+        db.query('DELETE FROM devices WHERE id = ?', [did], (err2) => {
+          if (err2) return res.status(500).json({ error: err2.message });
+          logAction('delete', 'device', { id: did });
+          res.json({ success: true });
+        });
+      });
+    });
+  });
+});
+
+// 【S-05g】 屏蔽（忽略）设备 — status='blocked'，保留行作黑名单；
+// register/status 上线消息不再使其复活，也不出现在未注册列表
+app.post('/api/devices/:id/block', (req, res) => {
+  const deviceId = req.params.id;
+  db.query('SELECT authorized FROM devices WHERE id = ?', [deviceId], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: '设备不存在' });
+    if (rows[0].authorized === 1) return res.status(409).json({ error: '设备已授权，不能屏蔽运行中的设备' });
+    db.query("UPDATE devices SET status = 'blocked', authorized = 0, room_id = NULL WHERE id = ?", [deviceId], (err2) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      mqttClient.publish('xvj/auth/response', JSON.stringify({ action: 'deauthorize', device_id: deviceId, message: '设备已被屏蔽' }));
+      logAction('block', 'device', { device_id: deviceId });
+      res.json({ success: true });
+    });
   });
 });
 
@@ -1782,9 +1805,9 @@ app.post('/api/devices/:id/bind-room', (req, res) => {
   });
 });
 
-// 【S-05i】 获取未注册/未授权设备列表（devices.authorized=0）
+// 【S-05i】 获取未注册/未授权设备列表（devices.authorized=0，排除已屏蔽；在线优先 + 最近上线排序）
 app.get('/api/unregistered', (req, res) => {
-  db.query('SELECT id, name, fingerprint, model, hardware, mac, location, status, first_seen, online_time FROM devices WHERE authorized = 0 ORDER BY online_time DESC', (err, results) => {
+  db.query("SELECT id, name, fingerprint, model, hardware, mac, location, status, first_seen, online_time FROM devices WHERE authorized = 0 AND status <> 'blocked' ORDER BY (status = 'online') DESC, online_time DESC", (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(results || []);
   });
