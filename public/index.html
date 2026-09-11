@@ -1278,8 +1278,8 @@ function renderWinEditorFull() {
         var _wen = (w.enabled == null) ? true : w.enabled;
         var _wflip = w.flip || 'none';
         var _wrot = w.rotation || 0;
-        h += '<div class="win-prop-row"><label>透明度</label><input type="range" min="0" max="100" value="' + Math.round(_wop*100) + '" oninput="updWinField(\'opacity\',this.value/100);document.getElementById(\'wpOpacityV\').textContent=this.value+\'%\'" style="flex:1"><span id="wpOpacityV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wop*100) + '%</span></div>';
-        h += '<div class="win-prop-row"><label>亮度</label><input type="range" min="0" max="100" value="' + Math.round(_wbr*100) + '" oninput="updWinField(\'brightness\',this.value/100);document.getElementById(\'wpBrightnessV\').textContent=this.value+\'%\'" style="flex:1"><span id="wpBrightnessV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wbr*100) + '%</span></div>';
+        h += '<div class="win-prop-row"><label>透明度</label><input type="range" min="0" max="100" value="' + Math.round(_wop*100) + '" oninput="updWinFieldLocal(\'opacity\',this.value/100);document.getElementById(\'wpOpacityV\').textContent=this.value+\'%\'" onchange="_flushLiveWindows()" style="flex:1"><span id="wpOpacityV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wop*100) + '%</span></div>';
+        h += '<div class="win-prop-row"><label>亮度</label><input type="range" min="0" max="100" value="' + Math.round(_wbr*100) + '" oninput="updWinFieldLocal(\'brightness\',this.value/100);document.getElementById(\'wpBrightnessV\').textContent=this.value+\'%\'" onchange="_flushLiveWindows()" style="flex:1"><span id="wpBrightnessV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wbr*100) + '%</span></div>';
         h += '<div class="win-prop-row"><label>显示</label><input type="checkbox"' + (_wen?' checked':'') + ' onchange="updWinField(\'enabled\',this.checked)" style="width:auto"></div>';
         h += '<div class="win-prop-row"><label>镜像</label><select onchange="updWinField(\'flip\',this.value)" style="flex:1;background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:4px 6px;font-size:12px"><option value="none"' + (_wflip==='none'?' selected':'') + '>无</option><option value="h"' + (_wflip==='h'?' selected':'') + '>水平</option><option value="v"' + (_wflip==='v'?' selected':'') + '>垂直</option></select></div>';
         h += '<div class="win-prop-row"><label>旋转</label><div style="display:flex;gap:4px;flex:1">';
@@ -1370,7 +1370,7 @@ function winCanvasMouseMove(e) {
     if (s._selWin && s._selWin.id === id) { s._selWin.x = w.x; s._selWin.y = w.y; s._selWin.width = w.width; s._selWin.height = w.height; }
     ['wpX','wpY','wpW','wpH'].forEach(function(id2, i) { var el = document.getElementById(id2); if (el) el.value = [w.x,w.y,w.width,w.height][i]; });
     _renderWinRects(wins);
-    pushLiveWindows();
+    // 拖动中只做本地预览，松手（mouseup）才同步一次，降低资源占用
 }
 
 function winCanvasMouseUp() {
@@ -1534,6 +1534,16 @@ function updWinField(field, value) {
     if (field === 'name') { var items = document.querySelectorAll('.win-item'); items.forEach(function(it){ if (it.querySelector('.win-item-name').textContent !== (s._selWin&&s._selWin.name)) it.querySelector('.win-item-name').textContent = value; }); }
 }
 
+// 滑条 oninput 专用：只改本地状态+画布预览，不推送（松手 onchange 统一推一次）
+function updWinFieldLocal(field, value) {
+    if (!s._selWin) return;
+    s._selWin[field] = value;
+    var id = s._selWin.id, wins = s._winCache || [];
+    var w = wins.find(function(x) { return x.id === id; });
+    if (w) w[field] = value;
+    _renderWinRects(wins);
+}
+
 function updWinContent(field, value) {
     if (!s._selWin) return;
     if (!s._selWin.content) s._selWin.content = {};
@@ -1609,7 +1619,7 @@ function updSceneMasterLive(v) {
     if (!cfg.scenes[curS]) cfg.scenes[curS] = { name: curS === 'A' ? '第一幕' : '第二幕', folder_mappings: {}, windows: [] };
     cfg.scenes[curS].master = { brightness: v };
     r.config = cfg;
-    pushLiveWindows();
+    // 松手 onchange → updSceneMaster 权威同步；拖动中不再实时推送
 }
 
 
