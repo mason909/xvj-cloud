@@ -1743,22 +1743,27 @@ app.put('/api/rooms/:id/windows', (req, res) => {
       // live 轻推不记操作日志（拖动期间每350ms一次，避免刷屏）
       if (!live) logAction('update_windows', 'room', { id, scene: targetScene, windows });
 
-      // 查找绑定到此房间的设备（APK MQTT clientId = fingerprint）
-      db.query('SELECT id, fingerprint FROM devices WHERE room_id = ?', [id], (err4, rows4) => {
+      // 查找绑定到此房间的已授权设备（APK MQTT clientId = fingerprint）。
+      // 【修复 20260911】必须过滤 authorized=1 且逐台发送：房间会残留历次卸载重装的
+      // 历史设备记录（authorized=0），此前无过滤且只取第一行，把 update_windows 全发给了
+      // 幽灵设备，真机收不到实时更新。非 live 不在服务端直发——前端保存/增删/总亮度
+      // 流程随后都会调 doSyncRoom（POST /sync 已覆盖全部已授权设备），再发一次会造成
+      // 设备重复全量重建（视频反复从头播）
+      db.query('SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1', [id], (err4, rows4) => {
         if (!err4 && rows4 && rows4.length > 0) {
-          const mqttId = rows4[0].fingerprint || rows4[0].id;
           if (live) {
             // 【实时预览】轻量 update_windows：只带 scenes，APK 免重建原地更新视图，
             // 不触发素材同步；结构变化时 APK 内部自动回退全量重建
-            mqttClient.publish(`xvj/device/${mqttId}/command`, JSON.stringify({
-              action: 'update_windows',
-              room_id: id,
-              scenes: buildPrefixedScenes(existingConfig.scenes || {}),
-              timestamp: Date.now()
-            }));
-          } else {
-            // 【S-04b-Fix】完整同步：触发素材检查与全量下发
-            sendSyncCommandToDevice(mqttId, id, existingConfig);
+            var _liveScenes = buildPrefixedScenes(existingConfig.scenes || {});
+            rows4.forEach((d) => {
+              const mqttId = d.fingerprint || d.id;
+              mqttClient.publish(`xvj/device/${mqttId}/command`, JSON.stringify({
+                action: 'update_windows',
+                room_id: id,
+                scenes: _liveScenes,
+                timestamp: Date.now()
+              }), { qos: 1 });
+            });
           }
         }
       });
