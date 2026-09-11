@@ -1278,8 +1278,8 @@ function renderWinEditorFull() {
         var _wen = (w.enabled == null) ? true : w.enabled;
         var _wflip = w.flip || 'none';
         var _wrot = w.rotation || 0;
-        h += '<div class="win-prop-row"><label>透明度</label><input type="range" min="0" max="100" value="' + Math.round(_wop*100) + '" oninput="updWinFieldLocal(\'opacity\',this.value/100);document.getElementById(\'wpOpacityV\').textContent=this.value+\'%\'" onchange="_flushLiveWindows()" style="flex:1"><span id="wpOpacityV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wop*100) + '%</span></div>';
-        h += '<div class="win-prop-row"><label>亮度</label><input type="range" min="0" max="100" value="' + Math.round(_wbr*100) + '" oninput="updWinFieldLocal(\'brightness\',this.value/100);document.getElementById(\'wpBrightnessV\').textContent=this.value+\'%\'" onchange="_flushLiveWindows()" style="flex:1"><span id="wpBrightnessV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wbr*100) + '%</span></div>';
+        h += '<div class="win-prop-row"><label>透明度</label><input type="range" min="0" max="100" value="' + Math.round(_wop*100) + '" oninput="updWinFieldLocal(\'opacity\',this.value/100);document.getElementById(\'wpOpacityV\').textContent=this.value+\'%\'" onchange="autoSyncWinConfig()" style="flex:1"><span id="wpOpacityV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wop*100) + '%</span></div>';
+        h += '<div class="win-prop-row"><label>亮度</label><input type="range" min="0" max="100" value="' + Math.round(_wbr*100) + '" oninput="updWinFieldLocal(\'brightness\',this.value/100);document.getElementById(\'wpBrightnessV\').textContent=this.value+\'%\'" onchange="autoSyncWinConfig()" style="flex:1"><span id="wpBrightnessV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wbr*100) + '%</span></div>';
         h += '<div class="win-prop-row"><label>显示</label><input type="checkbox"' + (_wen?' checked':'') + ' onchange="updWinField(\'enabled\',this.checked)" style="width:auto"></div>';
         h += '<div class="win-prop-row"><label>镜像</label><select onchange="updWinField(\'flip\',this.value)" style="flex:1;background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:4px 6px;font-size:12px"><option value="none"' + (_wflip==='none'?' selected':'') + '>无</option><option value="h"' + (_wflip==='h'?' selected':'') + '>水平</option><option value="v"' + (_wflip==='v'?' selected':'') + '>垂直</option></select></div>';
         h += '<div class="win-prop-row"><label>旋转</label><div style="display:flex;gap:4px;flex:1">';
@@ -1383,7 +1383,7 @@ function winCanvasMouseUp() {
             s._selWin.y = w.y;
         }
         _dragging = null;
-        _flushLiveWindows();
+        autoSyncWinConfig();
     }
 }
 
@@ -1530,11 +1530,11 @@ function updWinField(field, value) {
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w[field] = value;
     _renderWinRects(wins);
-    pushLiveWindows();
+    autoSyncWinConfig();
     if (field === 'name') { var items = document.querySelectorAll('.win-item'); items.forEach(function(it){ if (it.querySelector('.win-item-name').textContent !== (s._selWin&&s._selWin.name)) it.querySelector('.win-item-name').textContent = value; }); }
 }
 
-// 滑条 oninput 专用：只改本地状态+画布预览，不推送（松手 onchange 统一推一次）
+// 滑条 oninput 专用：只改本地状态+画布预览，不推送（松手 onchange 自动同步一次）
 function updWinFieldLocal(field, value) {
     if (!s._selWin) return;
     s._selWin[field] = value;
@@ -1552,7 +1552,7 @@ function updWinContent(field, value) {
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w.content = Object.assign({}, s._selWin.content);
     renderWinEditorFull(); // 【BugFix-20260402】刷新属性面板类型按钮 + 画布窗口标签 + 列表显示
-    pushLiveWindows(); // 设备侧内容签名变化 → 自动回退全量重建
+    autoSyncWinConfig(); // 设备侧内容签名变化 → 自动回退全量重建
 }
 
 function updWinRot(v) {
@@ -1580,30 +1580,15 @@ function updSceneMaster(v) {
 // ============================================================================
 // 【实时对屏】编辑器拖动/调参 → 云端 MQTT 直发设备轻量更新（免重建，视频不中断）
 // ============================================================================
-var _liveTimer = null, _liveChain = Promise.resolve();
+var _autoSyncTimer = null;
 
-// 350ms 尾随节流：拖动中最多每 350ms 推一次最新状态
-function pushLiveWindows() {
-    if (!s.rf || _liveTimer) return;
-    _liveTimer = setTimeout(_doLivePush, 350);
-}
-
-// 拖动结束立即推最终位置
-function _flushLiveWindows() {
-    if (_liveTimer) { clearTimeout(_liveTimer); _liveTimer = null; }
-    if (s.rf) _doLivePush();
-}
-
-function _doLivePush() {
-    _liveTimer = null;
+// 【自动同步】窗口配置任何修改完成后自动保存并同步一次（现场人员免手动点"保存并推送"）
+// 防抖 500ms 合并连续修改（打字/连拖/多滑条）；走 live 轻推通道：服务端落库 + 设备原地更新
+//（不打断播放）。需要全量同步（素材检查/通知全部设备）时仍用"💾 保存并推送"按钮
+function autoSyncWinConfig() {
     if (!s.rf) return;
-    _liveChain = _liveChain.then(function() {
-        var _mCfg = {};
-        try { var _mr = s.rooms.find(function(x) { return x.id === s.rf; }); _mCfg = _mr ? (typeof _mr.config === 'string' ? JSON.parse(_mr.config) : (_mr.config || {})) : {}; } catch(e0) {}
-        var _mS = s._curScene || 'A';
-        var _mMaster = (_mCfg.scenes && _mCfg.scenes[_mS] && _mCfg.scenes[_mS].master) ? _mCfg.scenes[_mS].master : { brightness: 1 };
-        return fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: s._winCache || [], sceneId: _mS, master: _mMaster, live: true}) });
-    }).catch(function(e){ console.error('实时推送失败', e); });
+    if (_autoSyncTimer) clearTimeout(_autoSyncTimer);
+    _autoSyncTimer = setTimeout(function() { _autoSyncTimer = null; saveWindows(true); }, 500);
 }
 
 // master 滑条 oninput：更新标签+本地配置后走实时轻推（onchange 松手仍走权威同步）
@@ -1655,20 +1640,24 @@ function setWinRatio(ratioStr) {
 
 /**
  * 保存窗口配置到后端，并推送到设备
- * 流程：PUT /api/rooms/:id/windows → doSyncRoom() → 设备收到新的 scenes 数据
+ * silent=true：编辑器修改后的自动同步（autoSyncWinConfig 防抖触发）——live 轻推通道
+ *（服务端落库 + 设备原地更新），不出确认弹窗、不触发全量同步
+ * silent 缺省：手动"💾 保存并推送"——完整同步（素材检查 + 通知全部设备）
  * 保存成功后自动刷新编辑器状态
  */
-async function saveWindows() {
+async function saveWindows(silent) {
     var btn = document.getElementById('winSaveBtn');
-    if (!btn) return;
+    if (!s.rf) return;
     var wins = s._winCache || [];
-    btn.classList.add('saving'); btn.textContent = '保存中...';
+    if (btn && !silent) { btn.classList.add('saving'); btn.textContent = '保存中...'; }
     try {
         var _mCfg = {};
         try { var _mr = s.rooms.find(function(x) { return x.id === s.rf; }); _mCfg = _mr ? (typeof _mr.config === 'string' ? JSON.parse(_mr.config) : (_mr.config || {})) : {}; } catch(e0) {}
         var _mS = s._curScene || 'A';
         var _mMaster = (_mCfg.scenes && _mCfg.scenes[_mS] && _mCfg.scenes[_mS].master) ? _mCfg.scenes[_mS].master : { brightness: 1 };
-        var res = await fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: _mS, master: _mMaster}) });
+        var _payload = { windows: wins, sceneId: _mS, master: _mMaster };
+        if (silent) _payload.live = true;
+        var res = await fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(_payload) });
         var json = await res.json();
         if (json.success) {
             // 同步更新 s.rooms 内存中的 config，避免内存状态落后于服务器
@@ -1690,11 +1679,11 @@ async function saveWindows() {
                 // 【BugFix-20260402-v2】将 _winCache 同步为 config 中的独立副本
                 s._winCache = cfg.scenes[curS].windows.slice();
             }
-            await doSyncRoom(s.rf);
-            btn.textContent = '✅ 已保存并推送'; setTimeout(function(){ btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }, 2000);
+            if (!silent) await doSyncRoom(s.rf);
+            if (btn) { btn.textContent = silent ? '✅ 已自动同步' : '✅ 已保存并推送'; setTimeout(function(){ btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }, silent ? 1200 : 2000); }
         }
-        else { alert('保存失败: ' + json.error); btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }
-    } catch(e) { alert('保存失败: ' + e.message); btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }
+        else { alert('保存失败: ' + json.error); if (btn) { btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); } }
+    } catch(e) { alert('保存失败: ' + e.message); if (btn) { btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); } }
 }
 
 async function mapPreset() {
