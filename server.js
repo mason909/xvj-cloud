@@ -126,6 +126,13 @@ function logAction(action, target, details) {
   );
 }
 
+// operation_logs 保留策略：每小时清一次 30 天前的记录（分批防大事务）
+setInterval(function() {
+  db.query("DELETE FROM operation_logs WHERE created_at < NOW() - INTERVAL 30 DAY LIMIT 20000", function(err) {
+    if (err) console.error('operation_logs 清理失败:', err.message);
+  });
+}, 3600000);
+
 /**
  * 将 scenes 对象中的 folder_mappings 键名前缀 scene 标识（A01, B01...）
  * @param {object} scenes - { A: { folder_mappings: { "01": [...] } }, B: { ... } }
@@ -262,7 +269,6 @@ mqttClient.on('connect', () => {
   console.log('✅ MQTT 连接成功');
   mqttClient.subscribe('xvj/device/#');
   mqttClient.subscribe('xvj/auth/response');
-  mqttClient.subscribe('xvj/auth/request');
 });
 
 mqttClient.on('message', (topic, message) => {
@@ -346,7 +352,8 @@ function handleMqttMessage(topic, message) {
           (err, result) => {
             if (err) console.error('更新设备状态失败:', err.message);
             if (result && result.affectedRows > 0) {
-              logAction(isOnline ? 'online' : 'offline', 'device', { device_id: deviceId, fingerprint: fingerprint });
+              // 心跳不写 operation_logs：30s/台的频率会无界膨胀该表，在线状态由 devices.status/online_time 表达
+              console.log((isOnline ? '✅ 心跳(online): ' : '⚪ 心跳(offline): ') + deviceId);
             }
             if (result && result.affectedRows === 0 && isOnline) {
               console.log('📱 创建新设备记录: ' + deviceId);
@@ -400,9 +407,9 @@ function handleMqttMessage(topic, message) {
           [deviceId, logTime, level, logMsg],
           (err) => {
             if (err) return console.error('写device_logs失败:', err.message);
-            // 防膨胀：约2%概率触发，保留最新 5000 条
+            // 防膨胀：约2%概率触发，按设备分区各保留最新 2000 条（全局上限会被多台设备分摊掉排障窗口）
             if (Math.random() < 0.02) {
-              db.query('DELETE FROM device_logs WHERE id < (SELECT * FROM (SELECT id FROM device_logs ORDER BY id DESC LIMIT 1 OFFSET 4999) t)');
+              db.query('DELETE FROM device_logs WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY id DESC) rn FROM device_logs) t WHERE rn > 2000)');
             }
           }
         );
@@ -446,7 +453,7 @@ function handleDeviceRegister(deviceId, data) {
         db.query(
           `INSERT INTO devices (id, name, fingerprint, model, hardware, mac, status, authorized, online_time, first_seen)
            VALUES (?, ?, ?, ?, ?, ?, 'online', 0, NOW(), NOW())
-           ON DUPLICATE KEY UPDATE status=IF(status<>'blocked','online',status), online_time=IF(status<>'blocked',NOW(),online_time), authorized=IF(status<>'blocked',0,authorized)`,
+           ON DUPLICATE KEY UPDATE status=IF(status<>'blocked','online',status), online_time=IF(status<>'blocked',NOW(),online_time)`,
           [deviceId, data.device_id || deviceId, fingerprint, data.model, data.hardware, data.mac]
         );
         sendAuthResponse(deviceId, false, '等待审核授权', '');
@@ -572,6 +579,27 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
   }
 }
 
+/**
+ * 【审查修复 2026-09-11】统一定向设备下发。
+ * APK 订阅的 command topic 用本机 deviceId（存 SharedPreferences，跨 OTA 不变），
+ * 而 devices.fingerprint 列在设备升级后可能重算漂移（旧版指纹含版本号）。
+ * 单按 fingerprint 或单按 id 定向都存在 OTA 后"发给没人订阅的 topic"的窗口，
+ * 故对 {id, fingerprint} 去重后双发，确保任何阶段设备都能收到。
+ * @param {{id:string, fingerprint:?string}} device
+ * @param {object} payloadObj - 命令对象
+ */
+function publishToDeviceCommand(device, payloadObj) {
+  var targets = [];
+  if (device && device.id) targets.push(device.id);
+  if (device && device.fingerprint && targets.indexOf(device.fingerprint) === -1) targets.push(device.fingerprint);
+  if (targets.length === 0) return 0;
+  var buf = JSON.stringify(payloadObj);
+  targets.forEach(function(t) {
+    mqttClient.publish('xvj/device/' + t + '/command', buf, { qos: 1 });
+  });
+  return targets.length;
+}
+
 // 发送同步命令到设备，触发素材下载
 // sendSyncCommandToDevice: mqttId = fingerprint（APK 订阅的 topic），若没有则 fallback 到 deviceId
 function sendSyncCommandToDevice(mqttId, roomId, config) {
@@ -613,17 +641,14 @@ function notifyRoomDevicesOfSync(roomId) {
         const allFolderMappings = mergePrefixedMappings(prefixedScenes);
         devices.forEach(({ id: deviceId, fingerprint }) => {
           try {
-            const mqttId = fingerprint || deviceId;
-            const topic = `xvj/device/${mqttId}/command`;
-            const payload = {
+            publishToDeviceCommand({ id: deviceId, fingerprint }, {
               action: 'sync_room_materials',
               room_id: roomId,
               scenes: prefixedScenes,  // buildPrefixedScenes 输出：A01/B01 keys
               folder_mappings: allFolderMappings,  // A01, B01 keys，与 HTTP API 一致
               debug: cfg.debug === true,
               timestamp: Date.now()
-            };
-            mqttClient.publish(topic, JSON.stringify(payload), { qos: 1 });
+            });
             console.log(`📦 [notify] 已推送 sync 到设备 ${deviceId} (房间 ${roomId})`);
           } catch (e) {
             console.error(`[notify] MQTT 发布失败，设备 ${deviceId}: ${e.message}`);
@@ -641,7 +666,7 @@ function notifyRoomDevicesOfSync(roomId) {
  */
 function deauthorizeDevice(deviceId) {
   db.query(
-    'UPDATE devices SET authorized = 0 WHERE id = ?',
+    'UPDATE devices SET authorized = 0, room_id = NULL WHERE id = ?',
     [deviceId],
     (err) => {
       if (err) {
@@ -649,7 +674,7 @@ function deauthorizeDevice(deviceId) {
         return false;
       }
       
-      // 发送废止命令到设备
+      // 发送废止命令（共享广播 topic，166+ APK 按 device_id 过滤，旧版 APK 会误伤——见待办：per-device auth topic）
       const topic = 'xvj/auth/response';
       const payload = JSON.stringify({
         action: 'deauthorize',
@@ -659,11 +684,13 @@ function deauthorizeDevice(deviceId) {
       });
       mqttClient.publish(topic, payload);
       
-      // 同时通过设备特定主题发送
-      mqttClient.publish(`xvj/device/${deviceId}/command`, JSON.stringify({
-        action: 'stop',
-        reason: 'device_deauthorized'
-      }));
+      // 同时通过设备特定主题发送（id+fingerprint 双发防 OTA 漂移失联）
+      db.query('SELECT id, fingerprint FROM devices WHERE id = ?', [deviceId], (e2, rows) => {
+        publishToDeviceCommand(rows && rows[0] ? rows[0] : { id: deviceId }, {
+          action: 'stop',
+          reason: 'device_deauthorized'
+        });
+      });
       
       console.log(`🚫 设备已废止: ${deviceId}`);
       return true;
@@ -753,9 +780,6 @@ app.post('/api/devices/:id/command', (req, res) => {
           return res.status(400).json({ error: '设备未绑定房间' });
         }
         const roomConfig = config ? JSON.parse(config) : {};
-        const devFingerprint = fingerprint || deviceId;
-        const topic = `xvj/device/${devFingerprint}/command`;
-
         // scene-prefixed scenes + folder_mappings（与 sendSyncCommandToDevice 完全一致）
         var prefixedScenes = buildPrefixedScenes(roomConfig.scenes);
         const curScene = roomConfig.current_scene || 'A';
@@ -766,7 +790,7 @@ app.post('/api/devices/:id/command', (req, res) => {
           folder_mappings: prefixedScenes[curScene] ? prefixedScenes[curScene].folder_mappings : {},
           debug: roomConfig.debug === true
         };
-        mqttClient.publish(topic, JSON.stringify(syncCmd));
+        publishToDeviceCommand({ id: deviceId, fingerprint }, syncCmd);
         logAction('sync', 'device', { device_id: deviceId, command: syncCmd });
         res.json({ success: true, command: syncCmd });
       }
@@ -774,12 +798,10 @@ app.post('/api/devices/:id/command', (req, res) => {
     return;
   }
 
-  // 查询设备的 fingerprint 用于 MQTT topic
-  db.query('SELECT fingerprint FROM devices WHERE id = ?', [deviceId], (err, rows) => {
+  // 查询设备的 id+fingerprint 用于 MQTT topic（双发防 OTA 后指纹漂移失联）
+  db.query('SELECT id, fingerprint FROM devices WHERE id = ?', [deviceId], (err, rows) => {
     if (err || rows.length === 0) return res.status(404).json({ error: '设备未找到' });
-    const devFingerprint = rows[0].fingerprint || deviceId;
-    const topic = `xvj/device/${devFingerprint}/command`;
-    mqttClient.publish(topic, JSON.stringify(cmd));
+    publishToDeviceCommand(rows[0], cmd);
     logAction('sync', 'device', { device_id: deviceId, command: cmd });
     res.json({ success: true, command: cmd });
   });
@@ -815,8 +837,7 @@ app.post('/api/rooms/:id/sync', (req, res) => {
         }
 
         let sent = 0;
-        devices.forEach((d) => { const mqttId = d.fingerprint || d.id;
-          const topic = `xvj/device/${mqttId}/command`;
+        devices.forEach((d) => {
           const syncCmd = {
             action: 'sync_room_materials',
             room_id: roomId,
@@ -824,7 +845,7 @@ app.post('/api/rooms/:id/sync', (req, res) => {
             folder_mappings: allFolderMappings, // A01/B01 键，与 HTTP API 返回格式一致
             debug: config.debug === true
           };
-          mqttClient.publish(topic, JSON.stringify(syncCmd), { qos: 1 });
+          publishToDeviceCommand(d, syncCmd);
           sent++;
         });
 
@@ -892,28 +913,25 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
 
                 let sentDel = 0, sentSync = 0;
                 (devices || []).forEach(d => {
-                  const mqttId = d.fingerprint || d.id;
-                  const topic = `xvj/device/${mqttId}/command`;
-
                   // 3a. delete_material：让 APK 立即删本地文件（尽力发）。
                   // folder 带场景前缀（"A01"），APK deleteMaterialFile 按前缀解析物理目录 scenea/01
-                  mqttClient.publish(topic, JSON.stringify({
+                  publishToDeviceCommand(d, {
                     action: 'delete_material',
                     material_id: materialId,
                     folder: curScene + folder,
                     filename: filename
-                  }), { qos: 1 });
+                  });
                   sentDel++;
 
                   // 3b. sync_room_materials：folder_mappings 统一 A+B 全量（mergePrefixedMappings）
                   var prefixedScenes = buildPrefixedScenes(config.scenes);
-                  mqttClient.publish(topic, JSON.stringify({
+                  publishToDeviceCommand(d, {
                     action: 'sync_room_materials',
                     room_id: roomId,
                     scenes: prefixedScenes,
                     folder_mappings: mergePrefixedMappings(prefixedScenes),
                     debug: config.debug === true
-                  }), { qos: 1 });
+                  });
                   sentSync++;
                 });
 
@@ -943,9 +961,9 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
 app.post('/api/devices/:id/deauthorize', (req, res) => {
   const deviceId = req.params.id;
 
-  // 操作数据库：更新 devices 表，将授权状态设为 0
+  // 操作数据库：更新 devices 表，将授权状态设为 0（与 block 对齐清 room_id，废止后不再挂在房间上）
   db.query(
-    'UPDATE devices SET authorized = 0, status = "deauthorized" WHERE id = ?',
+    'UPDATE devices SET authorized = 0, status = "deauthorized", room_id = NULL WHERE id = ?',
     [deviceId],
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
@@ -1756,13 +1774,12 @@ app.put('/api/rooms/:id/windows', (req, res) => {
             // 不触发素材同步；结构变化时 APK 内部自动回退全量重建
             var _liveScenes = buildPrefixedScenes(existingConfig.scenes || {});
             rows4.forEach((d) => {
-              const mqttId = d.fingerprint || d.id;
-              mqttClient.publish(`xvj/device/${mqttId}/command`, JSON.stringify({
+              publishToDeviceCommand(d, {
                 action: 'update_windows',
                 room_id: id,
                 scenes: _liveScenes,
                 timestamp: Date.now()
-              }), { qos: 1 });
+              });
             });
           }
         }
@@ -1784,8 +1801,7 @@ app.delete('/api/rooms/:id', (req, res) => {
       if (errD) return res.status(500).json({error: errD.message});
       var bound = devs || [];
       bound.forEach(d => {
-        var fp = d.fingerprint || d.id;
-        mqttClient.publish(`xvj/device/${fp}/command`, JSON.stringify({ action: 'stop' }), { qos: 1 });
+        publishToDeviceCommand(d, { action: 'stop' });
       });
       db.query('UPDATE devices SET room_id = NULL WHERE room_id = ?', [id], (errU) => {
         if (errU) return res.status(500).json({error: errU.message});
@@ -2151,12 +2167,9 @@ app.post('/api/devices/:id/push-update', (req, res) => {
     if (versions.length === 0) return res.status(404).json({error:'No APK available'});
     
     const apk = versions[0];
-    // 先查设备 fingerprint
-    db.query('SELECT fingerprint FROM devices WHERE id = ?', [deviceId], (err2, devs) => {
+    // 查设备 id+fingerprint（双发防 OTA 后指纹漂移失联）
+    db.query('SELECT id, fingerprint FROM devices WHERE id = ?', [deviceId], (err2, devs) => {
       if (err2 || devs.length === 0) return res.status(404).json({ error: '设备未找到' });
-      const devFingerprint = devs[0].fingerprint || deviceId;
-      const topic = `xvj/device/${devFingerprint}/command`;
-
       const cmd = {
         action: 'update',
         version: apk.version,
@@ -2164,12 +2177,9 @@ app.post('/api/devices/:id/push-update', (req, res) => {
         md5: apk.md5 || '',
         url: APK_DOWNLOAD_BASE + apk.filepath
       };
-
-      mqttClient.publish(topic, JSON.stringify(cmd), {qos:1}, (err3) => {
-        if (err3) return res.status(500).json({error:err3.message});
-        logAction('push_update', 'device', { device_id: deviceId, version: apk.version, version_code: apk.version_code });
-        res.json({success:true, message:'Update pushed'});
-      });
+      publishToDeviceCommand(devs[0], cmd);
+      logAction('push_update', 'device', { device_id: deviceId, version: apk.version, version_code: apk.version_code });
+      res.json({success:true, message:'Update pushed'});
     });
   });
 });
@@ -2181,11 +2191,10 @@ app.post('/api/versions/:id/push-to-all', (req, res) => {
     if (err) return res.status(500).json({error: err.message});
     if (versions.length === 0) return res.status(404).json({error: '版本不存在'});
     const apk = versions[0];
-    db.query('SELECT id FROM devices WHERE authorized = 1', (err2, devices) => {
+    db.query('SELECT id, fingerprint FROM devices WHERE authorized = 1', (err2, devices) => {
       if (err2) return res.status(500).json({error: err2.message});
       let pushed = 0;
       devices.forEach(device => {
-        const topic = `xvj/device/${device.id}/command`;
         const cmd = {
           action: 'update',
           version: apk.version,
@@ -2193,7 +2202,7 @@ app.post('/api/versions/:id/push-to-all', (req, res) => {
           md5: apk.md5 || '',
           url: APK_DOWNLOAD_BASE + apk.filepath
         };
-        mqttClient.publish(topic, JSON.stringify(cmd), {qos: 1});
+        publishToDeviceCommand(device, cmd);
         pushed++;
       });
       logAction('push_update_all', 'device', { version_id: versionId, version: apk.version, version_code: apk.version_code, devices: pushed });
