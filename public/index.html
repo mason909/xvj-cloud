@@ -84,17 +84,33 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .win-rect .wr-handle.tl{top:-4px;left:-4px}
 .win-rect .wr-handle.br{bottom:-4px;right:-4px}
 .win-rect .wr-handle.bl{bottom:-4px;left:-4px}
-/* Arena InputRect 对标：窗口内"输入截取"取景框（绿色，与红色窗口框区分），位于素材画面空间，随窗口旋转/镜像一起变换 */
-.crop-box{position:absolute;box-sizing:border-box;border:1px dashed #2ecc71;background:rgba(46,204,113,0.12);cursor:move;z-index:6;pointer-events:auto}
-.crop-box .cb-handle{position:absolute;width:9px;height:9px;background:#2ecc71;border-radius:2px;box-sizing:border-box}
-.crop-box .cb-h-nw{left:1px;top:1px;cursor:nwse-resize}
-.crop-box .cb-h-ne{right:1px;top:1px;cursor:nesw-resize}
-.crop-box .cb-h-sw{left:1px;bottom:1px;cursor:nesw-resize}
-.crop-box .cb-h-br{right:1px;bottom:1px;cursor:nwse-resize}
-.crop-box .cb-pct{position:absolute;bottom:1px;left:3px;font-size:9px;color:#2ecc71;white-space:nowrap;pointer-events:none}
-.win-crop-title{font-size:10px;color:#2ecc71;margin:10px 0 6px;font-weight:bold;letter-spacing:0.03em}
-.win-crop-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:3px 8px;font-size:11px;cursor:pointer}
+/* Arena InputRect 对标：独立的 16:9 输入截取画板（取景发生在"输入完整画面"上，不是输出窗口框内） */
+.crop-wrap{display:flex;gap:14px;margin-top:10px;height:calc(100vh - 280px);min-height:420px}
+.crop-side{width:210px;flex-shrink:0;display:flex;flex-direction:column;gap:8px;overflow-y:auto;min-height:0}
+.crop-stage{flex:1;min-width:0;background:#151515;border:1px solid #333;border-radius:8px;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:12px;overflow:hidden}
+.crop-stage-head{font-size:11px;color:#888;text-align:center;line-height:1.6}
+.crop-stage-head b{color:#2ecc71;font-weight:normal}
+.crop-board{position:relative;background-image:url('/crop-board.png');background-size:100% 100%;background-repeat:no-repeat;border:1px solid #444;border-radius:3px;overflow:hidden;flex-shrink:0}
+.crop-frame{position:absolute;box-sizing:border-box;border:1px solid #2ecc71;box-shadow:0 0 0 9999px rgba(0,0,0,0.6);cursor:move;z-index:5}
+.crop-frame .cf-h{position:absolute;width:12px;height:12px;background:#2ecc71;border:1px solid #0e4d2b;border-radius:2px;box-sizing:border-box;z-index:2}
+.crop-frame .cf-nw{left:-6px;top:-6px;cursor:nwse-resize}
+.crop-frame .cf-n{left:50%;top:-6px;margin-left:-6px;cursor:ns-resize}
+.crop-frame .cf-ne{right:-6px;top:-6px;cursor:nesw-resize}
+.crop-frame .cf-w{left:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
+.crop-frame .cf-e{right:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
+.crop-frame .cf-sw{left:-6px;bottom:-6px;cursor:nesw-resize}
+.crop-frame .cf-s{left:50%;bottom:-6px;margin-left:-6px;cursor:ns-resize}
+.crop-frame .cf-se{right:-6px;bottom:-6px;cursor:nwse-resize}
+.crop-out-preview{background-image:url('/crop-board.png');background-repeat:no-repeat;background-color:#000;border:1px solid #e94560;border-radius:2px;margin:0 auto}
+.crop-hint{font-size:10px;color:#666;line-height:1.5}
+.win-crop-title{font-size:10px;color:#2ecc71;margin:2px 0 6px;font-weight:bold;letter-spacing:0.03em}
+.win-crop-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;width:100%}
 .win-crop-btn:hover{background:rgba(46,204,113,0.15);border-color:#2ecc71;color:#2ecc71}
+.crop-num-row{display:flex;align-items:center;gap:5px;margin-bottom:6px;font-size:11px}
+.crop-num-row label{color:#888;min-width:40px;flex-shrink:0}
+.crop-num-row input{flex:1;min-width:0;background:#2a2a2a;border:1px solid #3a3a3a;color:#fff;border-radius:4px;padding:4px 6px;font-size:12px}
+.crop-num-row input:focus{outline:none;border-color:#2ecc71}
+.crop-num-row .unit{color:#555;font-size:10px;width:14px;flex-shrink:0}
 .win-sidebar{width:220px;flex-shrink:0;display:flex;flex-direction:column;gap:8px}
 .win-list{background:#242424;border-radius:8px;overflow:hidden;flex:1;min-height:0;display:flex;flex-direction:column}
 .win-list-header{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#252525;border-bottom:1px solid #333}
@@ -339,6 +355,7 @@ var s = {
     p: localStorage.getItem('xp') || 'materials',
     f: localStorage.getItem('xf') || '01',
     _windowEditorActive: false,
+    _cropMode: false,
     fs: [],
     ms: [],
     ds: [],
@@ -951,6 +968,8 @@ function rmDevice() {
     h += '<div style="display:flex;gap:24px">';
     h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">调试模式</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="roomDebugToggle" onchange="toggleRoomDebug()" style="opacity:0;width:0;height:0"><span id="roomDebugSlider" style="position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:0.3s"></span><span id="roomDebugKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
     h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">窗口配置</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="winToggle" style="opacity:0;width:0;height:0" ' + (s._windowEditorActive ? 'checked' : '') + ' onchange="sfW()"><span id="winSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._windowEditorActive ? '#e94560' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="winKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._windowEditorActive ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
+    // 输入截取：进入所选切片独属的 16:9 取景画板（Arena InputRect 语义）
+    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">输入截取</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="cropToggle" style="opacity:0;width:0;height:0" ' + (s._cropMode ? 'checked' : '') + ' onchange="sfCrop()"><span id="cropSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._cropMode ? '#2ecc71' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="cropKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._cropMode ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
     h += '</div></div>';
 
     // 显示房间设备列表
@@ -1163,6 +1182,7 @@ function switchScene(id) {
 /** 退出窗口配置模式，恢复普通房间视图 */
 function sfR(f) {
     s._windowEditorActive = false;
+    _exitCropMode();
     var wea = document.getElementById('winEditorArea');
     if (wea) wea.style.display = 'none';
     // 重置窗口开关
@@ -1180,7 +1200,7 @@ function sfR(f) {
 /**
  * 窗口配置开关（点击"窗口配置"滑动条触发）
  * 开启 → 切换到 win 视图模式，渲染窗口编辑器
- * 关闭 → 切回普通文件夹模式
+ * 关闭 → 切回普通文件夹模式（输入截取依附于窗口模式，一并退出）
  */
 function sfW() {
     var wt = document.getElementById('winToggle');
@@ -1194,8 +1214,51 @@ function sfW() {
     } else {
         // 开关 OFF → 切回文件夹模式
         s._windowEditorActive = false;
+        _exitCropMode();
         rmDevice();
     }
+}
+
+/** 复位「输入截取」开关（滑条底色 + 圆点 + 复选框），供退出窗口模式/手动关闭时共用 */
+function _exitCropMode() {
+    s._cropMode = false;
+    _cropDrag = null;
+    var ct = document.getElementById('cropToggle');
+    var cs = document.getElementById('cropSlider');
+    var ck = document.getElementById('cropKnob');
+    if (ct) ct.checked = false;
+    if (cs) cs.style.background = '#444';
+    if (ck) ck.style.left = '3px';
+}
+
+/**
+ * 「输入截取」开关：打开 → 右侧换成每切片独属的 16:9 取景画板（Arena InputRect 语义）
+ * 取景数据仍走窗口配置的同一份 windows / 自动同步通道，故打开时自动带上「窗口配置」。
+ */
+function sfCrop() {
+    var ct = document.getElementById('cropToggle');
+    if (!ct) return;
+    s._cropMode = !!ct.checked;
+    var cs = document.getElementById('cropSlider');
+    var ck = document.getElementById('cropKnob');
+    if (cs) cs.style.background = s._cropMode ? '#2ecc71' : '#444';
+    if (ck) ck.style.left = s._cropMode ? '23px' : '3px';
+    if (s._cropMode) {
+        var wt = document.getElementById('winToggle');
+        if (!s._windowEditorActive) {
+            s._windowEditorActive = true;
+            s._selWin = null;
+            if (!s._curScene) s._curScene = 'A';
+            if (wt) wt.checked = true;
+            var ws = document.getElementById('winSlider'), wk = document.getElementById('winKnob');
+            if (ws) ws.style.background = '#e94560';
+            if (wk) wk.style.left = '23px';
+            rmDevice();
+        }
+        var wea = document.getElementById('winEditorArea');
+        if (wea) wea.style.display = 'block';
+    }
+    renderWinEditorFull();
 }
 
 // ============================================================================
@@ -1235,6 +1298,8 @@ function renderWinEditorFull() {
     if (!s._winCache || s._winCache.length === 0) s._winCache = wins;
     var area = document.getElementById('winEditorArea');
     if (!area) return;
+    // 「输入截取」开关打开 → 每个切片独属的 16:9 取景画板（取景发生在输入完整画面上，不是输出窗口框内）
+    if (s._cropMode) { renderCropEditor(wins, area); return; }
     var deviceW = 1920, deviceH = 1080;
     var ratioPresets = [
         {label:'16:9', w:16, h:9}, {label:'4:3', w:4, h:3},
@@ -1303,14 +1368,7 @@ function renderWinEditorFull() {
         h += '<div class="win-prop-row"><label>旋转</label><div style="display:flex;gap:4px;flex:1">';
         [0,90,180,270].forEach(function(_r) { h += '<button class="win-content-type-btn' + (_wrot===_r?' active':'') + '" onclick="updWinRot(' + _r + ')" style="flex:1;padding:3px 0;font-size:11px">' + _r + '°</button>'; });
         h += '</div></div>';
-        // Arena InputRect 对标：输入截取（取景框）。仅视频内容有意义（COLOR/HDMI 无素材画面可截）
-        if (ctType === 'SCENE_A' || ctType === 'SCENE_B') {
-            var _cp = _cropOf(w);
-            h += '<div class="win-crop-title">输入截取（相对素材画面 %，画布内绿框即取景区）</div>';
-            h += '<div class="win-prop-row"><label>左 / 上</label><input type="number" min="0" max="100" step="1" id="wpCropX" value="' + Math.round(_cp.x*100) + '" title="取景框左边在素材画面中的位置" oninput="updWinCrop(\'x\',this.value)"><input type="number" min="0" max="100" step="1" id="wpCropY" value="' + Math.round(_cp.y*100) + '" title="取景框上边在素材画面中的位置" oninput="updWinCrop(\'y\',this.value)"></div>';
-            h += '<div class="win-prop-row"><label>宽 / 高</label><input type="number" min="5" max="100" step="1" id="wpCropW" value="' + Math.round(_cp.w*100) + '" title="取景框宽度占素材画面的比例" oninput="updWinCrop(\'w\',this.value)"><input type="number" min="5" max="100" step="1" id="wpCropH" value="' + Math.round(_cp.h*100) + '" title="取景框高度占素材画面的比例" oninput="updWinCrop(\'h\',this.value)"></div>';
-            h += '<div class="win-prop-row"><button class="win-crop-btn" style="flex:1" onclick="resetWinCrop()">↺ 重置为全画面</button></div>';
-        }
+        // 输入截取不在此处编辑：见工作台「输入截取」开关 → 每切片独属的 16:9 取景画板
     } else {
         h += '<div style="color:#555;font-size:12px;text-align:center;padding:20px 0">选择或添加窗口以编辑属性</div>';
     }
@@ -1358,24 +1416,17 @@ function renderWinCanvas(wins) {
         el.className = 'win-rect' + (sel ? ' selected' : '');
         el.style.cssText = 'position:absolute;left:' + rx + 'px;top:' + ry + 'px;width:' + rw + 'px;height:' + rh + 'px;z-index:' + (w.zIndex||1) + ';box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:20px;min-height:20px;user-select:none' + (sel ? ';border-color:#e94560;background:rgba(233,69,96,0.18)' : '');
         _applyWinTransform(el, w);
-        el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + (w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:9px;color:#888">' + typeLabel + '</span>';
+        var _wc = _cropOf(w);
+        var _cropMark = (_wc.w >= 0.999 && _wc.h >= 0.999) ? '' : '✂ ';
+        el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + _cropMark + (w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:9px;color:#888">' + typeLabel + '</span>';
         el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px;z-index:9" data-dir="br"></div>';
-        if (sel && _isVideoWin(w)) el.innerHTML += _cropBoxHtml();
         el.dataset.winId = w.id;
         el.onmousedown = function(e) {
             e.stopPropagation();
             selWin(w.id);
-            // 取景框命中优先：拖动取景区本身 = 平移，拖动其角点 = 缩放
-            var cb = e.target.closest ? e.target.closest('.crop-box') : null;
-            if (cb) {
-                var hd = e.target.closest ? e.target.closest('.cb-handle') : null;
-                _dragging = { winId: w.id, mode: hd ? 'crop-resize' : 'crop-move', dir: hd ? hd.dataset.cdir : null, startX: e.clientX, startY: e.clientY, startCrop: _cropOf(w) };
-                return;
-            }
             _dragging = { winId: w.id, mode: e.target.dataset.dir ? 'resize' : 'move', dir: e.target.dataset.dir || null, startX: e.clientX, startY: e.clientY, startWin: Object.assign({}, w) };
         };
         canvas.appendChild(el);
-        _applyCropOverlay(el, w);
     });
     document.removeEventListener('mousemove', winCanvasMouseMove);
     document.removeEventListener('mouseup', winCanvasMouseUp);
@@ -1391,28 +1442,6 @@ function winCanvasMouseMove(e) {
     var sW = _dragging.startWin, id = _dragging.winId;
     var wins = s._winCache || [], w = wins.find(function(x) { return x.id === id; });
     if (!w) return;
-    if (_dragging.mode === 'crop-move' || _dragging.mode === 'crop-resize') {
-        var rectEl = document.querySelector('[data-win-id="' + id + '"]');
-        var bw = (rectEl && rectEl.clientWidth) || ((w.width||320) * _canvasScale);
-        var bh = (rectEl && rectEl.clientHeight) || ((w.height||180) * _canvasScale);
-        var c0 = _dragging.startCrop, nx = dx / bw, ny = dy / bh;
-        var L = c0.x, T = c0.y, R = c0.x + c0.w, B = c0.y + c0.h;
-        if (_dragging.mode === 'crop-move') {
-            L = c0.x + nx; R = L + c0.w; T = c0.y + ny; B = T + c0.h;
-            if (L < 0) { L = 0; R = c0.w; } if (R > 1) { R = 1; L = 1 - c0.w; }
-            if (T < 0) { T = 0; B = c0.h; } if (B > 1) { B = 1; T = 1 - c0.h; }
-        } else {
-            var d = _dragging.dir;
-            if (d.indexOf('w') >= 0) L += nx; else R += nx;
-            if (d.indexOf('n') >= 0) T += ny; else B += ny;
-            var cl = function(v) { return Math.min(Math.max(v, 0), 1); };
-            L = cl(L); R = cl(R); T = cl(T); B = cl(B);
-            if (R - L < 0.05) { if (d.indexOf('w') >= 0) L = Math.max(0, R - 0.05); else R = Math.min(1, L + 0.05); }
-            if (B - T < 0.05) { if (d.indexOf('n') >= 0) T = Math.max(0, B - 0.05); else B = Math.min(1, T + 0.05); }
-        }
-        _setWinCrop(w, { x: L, y: T, w: R - L, h: B - T });
-        return;
-    }
     if (_dragging.mode === 'move') {
         var newX = Math.max(0, Math.round(sW.x + dx / _canvasScale));
         var newY = Math.max(0, Math.round(sW.y + dy / _canvasScale));
@@ -1470,7 +1499,6 @@ function _renderWinRects(wins) {
         el.style.width = ((w.width||320) * _canvasScale) + 'px';
         el.style.height = ((w.height||180) * _canvasScale) + 'px';
         _applyWinTransform(el, w);
-        _applyCropOverlay(el, w);
     });
 }
 
@@ -1498,26 +1526,11 @@ function _cropOf(w) {
     return { x: x, y: y, w: cw, h: ch };
 }
 
-function _cropBoxHtml() {
-    return '<div class="crop-box"><div class="cb-handle cb-h-nw" data-cdir="nw"></div><div class="cb-handle cb-h-ne" data-cdir="ne"></div>' +
-           '<div class="cb-handle cb-h-sw" data-cdir="sw"></div><div class="cb-handle cb-h-br" data-cdir="br"></div>' +
-           '<span class="cb-pct"></span></div>';
-}
-
-/** 取景区按窗口框的实际内容尺寸定位（框改大小后仍精确贴合） */
-function _applyCropOverlay(el, w) {
-    if (!el) return;
-    var box = el.querySelector('.crop-box');
-    if (!box) return;
-    var bw = el.clientWidth || ((w.width||320) * _canvasScale);
-    var bh = el.clientHeight || ((w.height||180) * _canvasScale);
-    var c = _cropOf(w);
-    box.style.left = (c.x * bw) + 'px';
-    box.style.top = (c.y * bh) + 'px';
-    box.style.width = (c.w * bw) + 'px';
-    box.style.height = (c.h * bh) + 'px';
-    var pct = box.querySelector('.cb-pct');
-    if (pct) pct.textContent = (c.w >= 0.999 && c.h >= 0.999) ? '全画面' : (Math.round(c.w*100) + '×' + Math.round(c.h*100) + '%');
+/** 取景框把手：8 向（4 角 + 4 边），data-cdir 供拖动方向判定 */
+function _cropFrameHtml() {
+    return ['nw','n','ne','w','e','sw','s','se'].map(function(d) {
+        return '<div class="cf-h cf-' + d + '" data-cdir="' + d + '"></div>';
+    }).join('');
 }
 
 function _syncCropInputs(c) {
@@ -1528,15 +1541,15 @@ function _syncCropInputs(c) {
     });
 }
 
-/** 写回取景区的唯一入口：始终新建对象（不与 s._selWin 共享引用），再同步画布与数字框 */
+/** 写回取景区的唯一入口：始终新建对象（不与 s._selWin 共享引用），再刷新画板/数字框/输出预览 */
 function _setWinCrop(w, crop) {
+    if (!w) return;
     w.crop = _cropOf({ crop: crop });
-    if (s._selWin && s._selWin.id === w.id) s._selWin.crop = Object.assign({}, w.crop);
-    _applyCropOverlay(document.querySelector('[data-win-id="' + w.id + '"]'), w);
-    _syncCropInputs(w.crop);
+    if (s._selWin && s._selWin.id === w.id && s._selWin !== w) s._selWin.crop = Object.assign({}, w.crop);
+    _paintCropUI();
 }
 
-/** 属性面板数字框（百分比）改截取：输入即夹紧回写，500ms 防抖后走 live 轻推 */
+/** 侧栏数字框（百分比）改取景：输入即夹紧回写，500ms 防抖后走 live 轻推 */
 function updWinCrop(field, pct) {
     if (!s._selWin) return;
     var v = parseFloat(pct);
@@ -1545,18 +1558,172 @@ function updWinCrop(field, pct) {
     var n = Math.min(Math.max(v, 0), 100) / 100;
     c[field] = (field === 'x' || field === 'y') ? Math.min(n, 0.95) : Math.max(n, 0.05);
     var id = s._selWin.id, wins = s._winCache || [];
-    var w = wins.find(function(x) { return x.id === id; });
-    if (w) _setWinCrop(w, c);
-    else { s._selWin.crop = _cropOf({ crop: c }); _syncCropInputs(s._selWin.crop); }
+    _setWinCrop(wins.find(function(x) { return x.id === id; }) || s._selWin, c);
     autoSyncWinConfig();
 }
 
 function resetWinCrop() {
     if (!s._selWin) return;
     var id = s._selWin.id, wins = s._winCache || [];
-    var w = wins.find(function(x) { return x.id === id; });
-    if (w) _setWinCrop(w, { x: 0, y: 0, w: 1, h: 1 });
-    else { s._selWin.crop = { x: 0, y: 0, w: 1, h: 1 }; _syncCropInputs(s._selWin.crop); }
+    _setWinCrop(wins.find(function(x) { return x.id === id; }) || s._selWin, { x: 0, y: 0, w: 1, h: 1 });
+    autoSyncWinConfig();
+}
+
+// ============================================================================
+// 【输入截取画板】工作台「输入截取」开关打开后的独立编辑面。
+// 画板 = 该切片的完整输入画面（16:9，底图 /crop-board.png），绿框 = Arena InputRect 取景区，
+// 与切片的输出窗口框（位置/大小）无关；每个切片独属一份 crop，切左侧切片即换画板。
+// 取景区在设备侧被拉伸填满输出窗口框（允许变形），故输出预览所见即所得。
+// ============================================================================
+var _cropDrag = null;
+
+function renderCropEditor(wins, area) {
+    // 画板必须归属某个切片才有意义：未选中（首次进入/刚删除）时默认落到当前幕第一个切片
+    if (!s._selWin && wins && wins.length) {
+        s._selWin = Object.assign({}, wins[0]);
+        s._selWinMap = s._selWinMap || { A: null, B: null };
+        s._selWinMap[s._curScene || 'A'] = wins[0].id;
+    }
+    var cur = s._selWin || null;
+    var c = cur ? _cropOf(cur) : null;
+    var _sc = (s._curScene || 'A') === 'A' ? '第一幕' : '第二幕';
+    var h = '<div class="crop-wrap">';
+    h += '<div class="crop-side">';
+    h += '<div style="color:#888;font-size:11px;font-weight:bold">切片（' + _sc + '）</div>';
+    h += '<div style="display:flex;flex-direction:column;max-height:32%;overflow-y:auto">';
+    if (!wins.length) h += '<div style="color:#555;font-size:11px;padding:6px 0">当前幕暂无窗口，先关闭本开关到「窗口配置」里添加</div>';
+    wins.forEach(function(w) {
+        var _wc2 = _cropOf(w);
+        var _mk2 = (_wc2.w >= 0.999 && _wc2.h >= 0.999) ? '' : '✂ ';
+        h += '<div class="win-item' + (cur && w.id === cur.id ? ' active' : '') + '" onclick="selWin(\'' + w.id + '\')"><span class="win-item-name">' + _mk2 + (w.name || w.id) + '</span></div>';
+    });
+    h += '</div>';
+    if (cur) {
+        h += '<div class="win-crop-title">取景位置（相对完整输入画面 %）</div>';
+        h += '<div class="crop-num-row"><label>左</label><input type="number" min="0" max="95" step="1" id="wpCropX" value="' + Math.round(c.x*100) + '" oninput="updWinCrop(\'x\',this.value)"><span class="unit">%</span></div>';
+        h += '<div class="crop-num-row"><label>上</label><input type="number" min="0" max="95" step="1" id="wpCropY" value="' + Math.round(c.y*100) + '" oninput="updWinCrop(\'y\',this.value)"><span class="unit">%</span></div>';
+        h += '<div class="crop-num-row"><label>宽</label><input type="number" min="5" max="100" step="1" id="wpCropW" value="' + Math.round(c.w*100) + '" oninput="updWinCrop(\'w\',this.value)"><span class="unit">%</span></div>';
+        h += '<div class="crop-num-row"><label>高</label><input type="number" min="5" max="100" step="1" id="wpCropH" value="' + Math.round(c.h*100) + '" oninput="updWinCrop(\'h\',this.value)"><span class="unit">%</span></div>';
+        h += '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>';
+        h += '<div class="win-crop-title" style="margin-top:12px">该切片输出画面（' + (cur.width||0) + '×' + (cur.height||0) + '）</div>';
+        h += '<div class="crop-out-preview" id="cropOutPreview"></div>';
+        if (!_isVideoWin(cur)) h += '<div class="crop-hint" style="margin-top:6px;color:#c8a">当前切片内容无视频画面（' + (cur.content && cur.content.type === 'HDMI' ? 'HDMI' : '测试背景') + '），取景暂不影响设备显示。</div>';
+    }
+    h += '<button class="win-save-btn" id="winSaveBtn" style="margin-top:auto" onclick="saveWindows()">💾 保存并推送</button>';
+    h += '</div>';
+    h += '<div class="crop-stage" id="cropStage">';
+    h += '<div class="crop-stage-head" id="cropStageHead"></div>';
+    h += '<div class="crop-board" id="cropBoard">' + (cur ? '<div class="crop-frame" id="cropFrame">' + _cropFrameHtml() + '</div>' : '') + '</div>';
+    h += '<div class="crop-hint" id="cropHint" style="text-align:center">' + (cur ? '绿框即该切片的取景区：拖动框体平移，拖动 8 个把手缩放；框外暗化部分不会输出。' : '请先在左侧选择一个切片，再在其独属的 16:9 输入画面中取景。') + '</div>';
+    h += '</div></div>';
+    area.innerHTML = h;
+    _layoutCropBoard();
+    if (cur) _paintCropUI();
+    _bindCropBoard();
+}
+
+/** 画板按 16:9 等比适配舞台可用空间（底图与输入画面同比例，画板像素即取景比例） */
+function _layoutCropBoard() {
+    var stage = document.getElementById('cropStage'), board = document.getElementById('cropBoard');
+    if (!stage || !board) return;
+    var head = document.getElementById('cropStageHead'), hint = document.getElementById('cropHint');
+    var availH = Math.max(140, stage.clientHeight - 26 - (head ? head.offsetHeight : 0) - (hint ? hint.offsetHeight : 0) - 16);
+    var availW = Math.max(200, stage.clientWidth - 26);
+    var bw = Math.min(availW, availH * 16 / 9);
+    board.style.width = Math.round(bw) + 'px';
+    board.style.height = Math.round(bw * 9 / 16) + 'px';
+}
+
+/** 把当前取景态刷到画板：绿框位置、数字框、输出预览、标题行 */
+function _paintCropUI() {
+    var cur = s._selWin;
+    if (!cur) return;
+    var c = _cropOf(cur);
+    var board = document.getElementById('cropBoard'), frame = document.getElementById('cropFrame');
+    if (board && frame) {
+        var bw = board.clientWidth, bh = board.clientHeight;
+        if (bw > 0 && bh > 0) {
+            frame.style.left = (c.x * bw) + 'px';
+            frame.style.top = (c.y * bh) + 'px';
+            frame.style.width = (c.w * bw) + 'px';
+            frame.style.height = (c.h * bh) + 'px';
+        }
+    }
+    _syncCropInputs(c);
+    var pv = document.getElementById('cropOutPreview');
+    if (pv) {
+        var ww = cur.width || 640, wh = cur.height || 360;
+        var k = Math.min(180 / ww, 140 / wh);
+        pv.style.width = Math.max(16, Math.round(ww * k)) + 'px';
+        pv.style.height = Math.max(16, Math.round(wh * k)) + 'px';
+        // 底图放大到 1/crop 倍再按取景左上角平移：background-position 百分比 = 起点/(1-取景尺寸)
+        pv.style.backgroundSize = (100 / c.w) + '% ' + (100 / c.h) + '%';
+        var px = c.w >= 1 ? 0 : (c.x / (1 - c.w)) * 100;
+        var py = c.h >= 1 ? 0 : (c.y / (1 - c.h)) * 100;
+        pv.style.backgroundPosition = px.toFixed(2) + '% ' + py.toFixed(2) + '%';
+    }
+    var head = document.getElementById('cropStageHead');
+    if (head) {
+        head.innerHTML = '<b>' + (cur.name || cur.id) + '</b> · 输出框 ' + (cur.width||0) + '×' + (cur.height||0) +
+            (cur.rotation ? ' · 旋转 ' + cur.rotation + '°' : '') + (cur.flip && cur.flip !== 'none' ? ' · 镜像' : '') +
+            ' · 取景 ' + (c.w >= 0.999 && c.h >= 0.999 ? '<b>全画面</b>' : Math.round(c.x*100) + '%,' + Math.round(c.y*100) + '% 起 ' + Math.round(c.w*100) + '×' + Math.round(c.h*100) + '%');
+    }
+}
+
+/** 画板交互：绿框本体 = 平移取景，8 个把手 = 对应边/角缩放；拖动期间只改本地，松手防抖同步一次 */
+function _bindCropBoard() {
+    var board = document.getElementById('cropBoard');
+    if (!board) return;
+    board.onmousedown = function(e) {
+        if (!s._selWin) return;
+        var frame = document.getElementById('cropFrame');
+        if (!frame) return;
+        var hd = (e.target.closest && e.target.closest('.cf-h')) ? e.target.closest('.cf-h') : null;
+        if (!hd && e.target !== frame) return;   // 画板空白处不误触
+        e.preventDefault();
+        _cropDrag = { mode: hd ? 'resize' : 'move', dir: hd ? hd.dataset.cdir : null, startX: e.clientX, startY: e.clientY, startCrop: _cropOf(s._selWin) };
+    };
+    document.removeEventListener('mousemove', cropBoardMouseMove);
+    document.removeEventListener('mouseup', cropBoardMouseUp);
+    document.addEventListener('mousemove', cropBoardMouseMove);
+    document.addEventListener('mouseup', cropBoardMouseUp);
+    if (!window._cropResizeBound) {
+        window._cropResizeBound = true;
+        window.addEventListener('resize', function() {
+            if (s._cropMode && s._selWin) { _layoutCropBoard(); _paintCropUI(); }
+        });
+    }
+}
+
+function cropBoardMouseMove(e) {
+    if (!_cropDrag || !s._selWin) return;
+    var board = document.getElementById('cropBoard');
+    if (!board || !board.clientWidth) return;
+    var c0 = _cropDrag.startCrop;
+    var nx = (e.clientX - _cropDrag.startX) / board.clientWidth;
+    var ny = (e.clientY - _cropDrag.startY) / board.clientHeight;
+    var L = c0.x, T = c0.y, R = c0.x + c0.w, B = c0.y + c0.h;
+    if (_cropDrag.mode === 'move') {
+        L = Math.min(Math.max(c0.x + nx, 0), 1 - c0.w);
+        T = Math.min(Math.max(c0.y + ny, 0), 1 - c0.h);
+        R = L + c0.w; B = T + c0.h;
+    } else {
+        var d = _cropDrag.dir || '';
+        if (d.indexOf('w') >= 0) L += nx; else if (d.indexOf('e') >= 0) R += nx;
+        if (d.indexOf('n') >= 0) T += ny; else if (d.indexOf('s') >= 0) B += ny;
+        var cl = function(v) { return Math.min(Math.max(v, 0), 1); };
+        L = cl(L); R = cl(R); T = cl(T); B = cl(B);
+        if (R - L < 0.05) { if (d.indexOf('w') >= 0) L = Math.max(0, R - 0.05); else R = Math.min(1, L + 0.05); }
+        if (B - T < 0.05) { if (d.indexOf('n') >= 0) T = Math.max(0, B - 0.05); else B = Math.min(1, T + 0.05); }
+    }
+    var wins = s._winCache || [];
+    var id = s._selWin.id;
+    _setWinCrop(wins.find(function(x) { return x.id === id; }) || s._selWin, { x: L, y: T, w: R - L, h: B - T });
+}
+
+function cropBoardMouseUp() {
+    if (!_cropDrag) return;
+    _cropDrag = null;
     autoSyncWinConfig();
 }
 
