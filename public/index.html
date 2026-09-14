@@ -105,6 +105,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .crop-frame .cf-se{right:-6px;bottom:-6px;cursor:nwse-resize}
 .crop-board-tag{position:absolute;left:5px;top:5px;z-index:6;pointer-events:none;font-size:9px;color:#ddd;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.12);border-radius:3px;padding:1px 5px;letter-spacing:.04em}
 .crop-frame .cf-size{position:absolute;left:2px;top:2px;font-size:9px;line-height:1.5;color:#0a3d22;background:#2ecc71;border-radius:2px;padding:0 4px;white-space:nowrap;pointer-events:none;z-index:3}
+.crop-frame .cf-orien{position:absolute;left:50%;top:50%;margin:-10px 0 0 -10px;width:20px;height:20px;line-height:20px;text-align:center;font-size:13px;color:#2ecc71;text-shadow:0 0 4px rgba(0,0,0,.95);pointer-events:none;z-index:2}
 .crop-tools{display:flex;align-items:center;gap:10px;width:100%}
 .crop-tools .crop-hint{flex:1;min-width:0}
 .crop-tools .win-crop-btn{width:auto;flex-shrink:0;padding:3px 8px}
@@ -1287,7 +1288,7 @@ var _dragging = null;
 /**
  * 几何行（位置/尺寸/比例锁定/比例预设）——同一套控件、两种编辑对象：
  *   asCrop=false → 窗口配置的「输出窗口」，单位设备像素，回调 updWinField
- *   asCrop=true  → 「输入截取」侧栏的取景框（绿框），单位相对完整输入画面的 %，回调 updWinCropField
+ *   asCrop=true  → 「输入截取」侧栏的取景框（绿框），单位输入画面像素（_IN_W×_IN_H），回调 updWinCropField
  * 输入框 id 两边共用 wpX/wpY/wpW/wpH，故画板拖动与画布拖动的回显逻辑是同一份。
  */
 function _winGeomRowsHtml(w, asCrop) {
@@ -1296,12 +1297,14 @@ function _winGeomRowsHtml(w, asCrop) {
         {label:'1:1', w:1, h:1}, {label:'9:16', w:9, h:16}
     ];
     var c = asCrop ? _cropOf(w) : null;
-    var pc = function(v) { return Math.round(v * 100); };
     var val = function(k) {
-        if (asCrop) return pc(k === 'width' ? c.w : k === 'height' ? c.h : c[k]);
+        if (asCrop) {
+            var cv = k === 'width' ? c.w : k === 'height' ? c.h : c[k];
+            return Math.round(cv * ((k === 'y' || k === 'height') ? _IN_H : _IN_W));
+        }
         return k === 'x' ? (w.x||0) : k === 'y' ? (w.y||0) : k === 'width' ? (w.width||640) : (w.height||360);
     };
-    var unit = asCrop ? ' min="0" max="100" title="单位 %（相对该切片的完整输入画面）"' : '';
+    var unit = asCrop ? ' min="0" step="1" title="单位 px（输入画面 ' + _IN_W + '×' + _IN_H + '）"' : '';
     var locked = !!(asCrop ? (s._cropRatioLock && s._cropRatioLock[w.id]) : (s._winRatioLock && s._winRatioLock[w.id]));
     var h = '';
     [['wpX', '位置 X', 'x', 0], ['wpY', '位置 Y', 'y', 0], ['wpW', '宽度', 'width', 64], ['wpH', '高度', 'height', 64]].forEach(function(r) {
@@ -1543,6 +1546,9 @@ function _isVideoWin(w) {
     return t === 'SCENE_A' || t === 'SCENE_B';
 }
 
+// 取景框数字控件的像素基准：输入画面统一按 1920×1080 计，与输出窗口的设备像素同一口径（内部仍存归一化 crop）
+var _IN_W = 1920, _IN_H = 1080;
+
 /** 读取并夹紧窗口取景区：越界回推、宽高下限 5%，结果保证 x+w<=1、y+h<=1 */
 function _cropOf(w) {
     var c = (w && w.crop) || {};
@@ -1559,7 +1565,7 @@ function _cropOf(w) {
 
 /** 取景框把手：8 向（4 角 + 4 边），data-cdir 供拖动方向判定；cfSize 为取景尺寸实时回显 */
 function _cropFrameHtml() {
-    return '<div class="cf-size" id="cfSize"></div>' + ['nw','n','ne','w','e','sw','s','se'].map(function(d) {
+    return '<div class="cf-size" id="cfSize"></div><div class="cf-orien" id="cfOrien">▲</div>' + ['nw','n','ne','w','e','sw','s','se'].map(function(d) {
         return '<div class="cf-h cf-' + d + '" data-cdir="' + d + '"></div>';
     }).join('');
 }
@@ -1580,15 +1586,16 @@ function resetWinCrop() {
 }
 
 /**
- * 侧栏数字框改取景（绿框）：field = x/y/width/height，值为相对完整输入画面的百分比。
- * 比例锁定用取景独立的 s._cropRatioLock，与输出窗口的 _winRatioLock 互不干扰。
+ * 侧栏数字框改取景（绿框）：field = x/y/width/height，值为输入画面像素（_IN_W×_IN_H 基准），
+ * 内部仍按归一化 0..1 存 crop。比例锁定用取景独立的 s._cropRatioLock，与输出窗口互不干扰。
  */
 function updWinCropField(field, value) {
     if (!s._selWin || !isFinite(parseInt(value, 10))) return;
     var id = s._selWin.id;
     var w = (s._winCache || []).find(function(x) { return x.id === id; }) || s._selWin;
     var c0 = _cropOf(w), k = c0.w / c0.h;
-    var v = Math.min(Math.max(parseInt(value, 10), 0), 100) / 100;
+    var full = (field === 'y' || field === 'height') ? _IN_H : _IN_W;
+    var v = Math.min(Math.max(parseInt(value, 10), 0), full) / full;
     var c = { x: c0.x, y: c0.y, w: c0.w, h: c0.h };
     var locked = !!(s._cropRatioLock && s._cropRatioLock[id]);
     if (field === 'x') c.x = v;
@@ -1621,12 +1628,17 @@ function setCropRatio(ratioStr) {
     autoSyncWinConfig();
 }
 
-/** 绿框拖动/输入后把取景百分比回写侧栏；跳过正在输入的框，免得夹紧值抢光标 */
+/** 归一化 crop → 输入画面像素（数字框、绿框徽标、状态条共用同一口径） */
+function _cropPx(c) {
+    return { x: Math.round(c.x * _IN_W), y: Math.round(c.y * _IN_H), w: Math.round(c.w * _IN_W), h: Math.round(c.h * _IN_H) };
+}
+
+/** 绿框拖动/输入后把取景像素值回写侧栏；跳过正在输入的框，免得夹紧值抢光标 */
 function _syncCropInputs(c) {
-    var map = { wpX: c.x, wpY: c.y, wpW: c.w, wpH: c.h };
+    var p = _cropPx(c), map = { wpX: p.x, wpY: p.y, wpW: p.w, wpH: p.h };
     Object.keys(map).forEach(function(k) {
         var el = document.getElementById(k);
-        if (el && el !== document.activeElement) el.value = Math.round(map[k] * 100);
+        if (el && el !== document.activeElement) el.value = map[k];
     });
 }
 
@@ -1659,7 +1671,7 @@ function renderCropEditor(wins, area) {
     });
     h += '</div>';
     if (cur) {
-        h += '<div class="win-crop-title">取景框位置与尺寸（输入画面 %）</div>';
+        h += '<div class="win-crop-title">取景框位置与尺寸（输入画面 px）</div>';
         h += _winGeomRowsHtml(cur, true);
         h += _winFlipRotRowsHtml(cur);
         h += '<div class="crop-out-preview" id="cropOutPreview" style="margin-top:6px"><div id="cropOutInner"></div></div>';
@@ -1671,7 +1683,7 @@ function renderCropEditor(wins, area) {
     h += '<div class="crop-stage" id="cropStage">';
     h += '<div class="crop-stage-head" id="cropStageHead"></div>';
     h += '<div class="crop-board" id="cropBoard"><div class="crop-board-tag">16:9 输入画面</div>' + (cur ? '<div class="crop-frame" id="cropFrame">' + _cropFrameHtml() + '</div>' : '') + '</div>';
-    h += '<div class="crop-tools" id="cropTools"><div class="crop-hint" id="cropHint">' + (cur ? '绿框即该切片的取景区：拖动框体平移、拖 8 个把手缩放，或用上方数字框直接输入 %；框外暗化部分不会输出。' : '请先在左侧选择一个切片，再在其独属的 16:9 输入画面中取景。') + '</div>' + (cur ? '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>' : '') + '</div>';
+    h += '<div class="crop-tools" id="cropTools"><div class="crop-hint" id="cropHint">' + (cur ? '绿框即该切片的取景区：拖动框体平移、拖 8 个把手缩放，或用上方数字框直接输入 px（输入画面按 ' + _IN_W + '×' + _IN_H + ' 计）；框外暗化部分不会输出，▲ 为该输入画面旋转/镜像后的朝向。' : '请先在左侧选择一个切片，再在其独属的 16:9 输入画面中取景。') + '</div>' + (cur ? '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>' : '') + '</div>';
     h += '</div></div>';
     area.innerHTML = h;
     _layoutCropBoard();
@@ -1695,7 +1707,13 @@ function _layoutCropBoard() {
 function _paintCropUI() {
     var cur = s._selWin;
     if (!cur) return;
-    var c = _cropOf(cur);
+    var c = _cropOf(cur), p = _cropPx(c);
+    // 设备矩阵是 postRotate→postScale（先转后翻），CSS 从右往左施加，故写成「镜像 rotate()」；画板箭头与输出预览共用
+    var tf = [];
+    if (cur.flip === 'h') tf.push('scaleX(-1)');
+    if (cur.flip === 'v') tf.push('scaleY(-1)');
+    if (cur.rotation) tf.push('rotate(' + cur.rotation + 'deg)');
+    var tfStr = tf.length ? tf.join(' ') : 'none';
     var board = document.getElementById('cropBoard'), frame = document.getElementById('cropFrame');
     if (board && frame) {
         var bw = board.clientWidth, bh = board.clientHeight;
@@ -1707,10 +1725,12 @@ function _paintCropUI() {
         }
         var sz = document.getElementById('cfSize');
         if (sz) {
-            sz.textContent = Math.round(c.w * 100) + '×' + Math.round(c.h * 100) + '%';
+            sz.textContent = p.w + '×' + p.h + 'px';
             // 框太小时徽标会盖住取景本身，直接不显示
-            sz.style.display = (frame.offsetWidth < 46 || frame.offsetHeight < 20) ? 'none' : '';
+            sz.style.display = (frame.offsetWidth < 52 || frame.offsetHeight < 20) ? 'none' : '';
         }
+        var or = document.getElementById('cfOrien');
+        if (or) or.style.transform = tfStr;
     }
     _syncCropInputs(c);
     var pv = document.getElementById('cropOutPreview'), pi = document.getElementById('cropOutInner');
@@ -1733,19 +1753,14 @@ function _paintCropUI() {
         var px = c.w >= 1 ? 0 : (c.x / (1 - c.w)) * 100;
         var py = c.h >= 1 ? 0 : (c.y / (1 - c.h)) * 100;
         pi.style.backgroundPosition = px.toFixed(2) + '% ' + py.toFixed(2) + '%';
-        // CSS 从右往左施加：写成 镜像 rotate() = 先转后翻，与设备矩阵 postRotate→postScale 同序
-        var tf = [];
-        if (cur.flip === 'h') tf.push('scaleX(-1)');
-        if (cur.flip === 'v') tf.push('scaleY(-1)');
-        if (rot) tf.push('rotate(' + rot + 'deg)');
-        pi.style.transform = tf.length ? tf.join(' ') : 'none';
+        pi.style.transform = tfStr;
     }
     var head = document.getElementById('cropStageHead');
     if (head) {
         head.innerHTML = '<b>' + esc(cur.name || cur.id) + '</b>' +
             '<span class="sh-o">输出 ' + (cur.width||0) + '×' + (cur.height||0) +
             (cur.rotation ? ' · 旋转 ' + cur.rotation + '°' : '') + (cur.flip && cur.flip !== 'none' ? ' · 镜像' : '') + '</span>' +
-            '<span class="sh-c">取景 ' + (c.w >= 0.999 && c.h >= 0.999 ? '全画面' : Math.round(c.x*100) + '%,' + Math.round(c.y*100) + '% 起 ' + Math.round(c.w*100) + '×' + Math.round(c.h*100) + '%') + '</span>';
+            '<span class="sh-c">取景 ' + (c.w >= 0.999 && c.h >= 0.999 ? '全画面' : p.x + ',' + p.y + ' 起 ' + p.w + '×' + p.h + 'px') + '</span>';
     }
     var ot = document.getElementById('cropOutTitle');
     if (ot) ot.textContent = '输出 ' + (cur.width||0) + '×' + (cur.height||0) + ' px';
@@ -1803,6 +1818,25 @@ function cropBoardMouseMove(e) {
         L = cl(L); R = cl(R); T = cl(T); B = cl(B);
         if (R - L < 0.05) { if (d.indexOf('w') >= 0) L = Math.max(0, R - 0.05); else R = Math.min(1, L + 0.05); }
         if (B - T < 0.05) { if (d.indexOf('n') >= 0) T = Math.max(0, B - 0.05); else B = Math.min(1, T + 0.05); }
+        if (s._cropRatioLock && s._cropRatioLock[s._selWin.id] && c0.w > 0 && c0.h > 0) {
+            // 锁比例：角把手以宽定高（同输出侧）；单边把手只认该向的拖动量，另一向等比联动并保持中心线
+            var hs = d.indexOf('w') >= 0 ? 'w' : (d.indexOf('e') >= 0 ? 'e' : '');
+            var vs = d.indexOf('n') >= 0 ? 'n' : (d.indexOf('s') >= 0 ? 's' : '');
+            var cx = c0.x + c0.w / 2, cy = c0.y + c0.h / 2;
+            var k0 = c0.w / c0.h, nw = R - L, nh = B - T;
+            if (hs) nh = nw / k0; else if (vs) nw = nh * k0;
+            var maxW = hs === 'w' ? R : hs === 'e' ? 1 - L : 2 * Math.min(cx, 1 - cx);
+            var maxH = vs === 'n' ? B : vs === 's' ? 1 - T : 2 * Math.min(cy, 1 - cy);
+            var g = Math.max(1, 0.05 / nw, 0.05 / nh);
+            nw *= g; nh *= g;
+            var f = Math.min(1, maxW / nw, maxH / nh);
+            nw *= f; nh *= f;
+            var x0 = hs === 'w' ? R - nw : hs === 'e' ? L : cx - nw / 2;
+            var y0 = vs === 'n' ? B - nh : vs === 's' ? T : cy - nh / 2;
+            L = Math.min(Math.max(x0, 0), 1 - nw);
+            T = Math.min(Math.max(y0, 0), 1 - nh);
+            R = L + nw; B = T + nh;
+        }
     }
     var wins = s._winCache || [];
     var id = s._selWin.id;
