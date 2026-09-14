@@ -79,11 +79,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .win-rect.selected{border-color:#e94560;background:rgba(233,69,96,0.18)}
 .win-rect .wr-name{position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}
 .win-rect .wr-type{position:absolute;bottom:3px;right:5px;font-size:9px;color:#888}
-.win-rect .wr-handle{position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize}
+.win-rect .wr-handle{position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;z-index:9}
 .win-rect .wr-handle.tr{top:-4px;right:-4px}
 .win-rect .wr-handle.tl{top:-4px;left:-4px}
 .win-rect .wr-handle.br{bottom:-4px;right:-4px}
 .win-rect .wr-handle.bl{bottom:-4px;left:-4px}
+/* Arena InputRect 对标：窗口内"输入截取"取景框（绿色，与红色窗口框区分），位于素材画面空间，随窗口旋转/镜像一起变换 */
+.crop-box{position:absolute;box-sizing:border-box;border:1px dashed #2ecc71;background:rgba(46,204,113,0.12);cursor:move;z-index:6;pointer-events:auto}
+.crop-box .cb-handle{position:absolute;width:9px;height:9px;background:#2ecc71;border-radius:2px;box-sizing:border-box}
+.crop-box .cb-h-nw{left:1px;top:1px;cursor:nwse-resize}
+.crop-box .cb-h-ne{right:1px;top:1px;cursor:nesw-resize}
+.crop-box .cb-h-sw{left:1px;bottom:1px;cursor:nesw-resize}
+.crop-box .cb-h-br{right:1px;bottom:1px;cursor:nwse-resize}
+.crop-box .cb-pct{position:absolute;bottom:1px;left:3px;font-size:9px;color:#2ecc71;white-space:nowrap;pointer-events:none}
+.win-crop-title{font-size:10px;color:#2ecc71;margin:10px 0 6px;font-weight:bold;letter-spacing:0.03em}
+.win-crop-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:3px 8px;font-size:11px;cursor:pointer}
+.win-crop-btn:hover{background:rgba(46,204,113,0.15);border-color:#2ecc71;color:#2ecc71}
 .win-sidebar{width:220px;flex-shrink:0;display:flex;flex-direction:column;gap:8px}
 .win-list{background:#242424;border-radius:8px;overflow:hidden;flex:1;min-height:0;display:flex;flex-direction:column}
 .win-list-header{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#252525;border-bottom:1px solid #333}
@@ -1065,9 +1076,16 @@ function rmDevice() {
 //   {
 //     id: String,         // 唯一标识，如 "win_1"
 //     name: String,        // 显示名，如 "主屏"
-//     x: Number, y: Number, width: Number, height: Number,  // 位置和尺寸（px）
+//     x: Number, y: Number, width: Number, height: Number,  // 位置和尺寸（px，画布按 1920x1080 设计，设备按真实分辨率换算）
 //     zIndex: Number,     // 层级，越大越上层
 //     aspectRatio: String | null,  // 可选，如 "16:9"
+//     opacity: Number,    // 0..1，窗口透明度（Arena Slice Input Opacity）
+//     brightness: Number, // 0..1，窗口亮度，与所在幕 master.brightness 相乘
+//     enabled: Boolean,   // 窗口显隐（false 时设备不建播放器）
+//     flip: 'none'|'h'|'v',        // 内容镜像
+//     rotation: 0|90|180|270,      // 内容在框内旋转
+//     crop: { x, y, w, h },        // 输入截取 = Arena InputRect，素材画面内归一化 0..1 的取景区，
+//                                  // 该区域拉伸填满窗口框（允许变形）；缺省即全画面 {0,0,1,1}
 //     content: { type: 'COLOR'|'SCENE_A'|'SCENE_B'|'HDMI'|'IMAGE', ... }
 //   }
 //
@@ -1285,6 +1303,14 @@ function renderWinEditorFull() {
         h += '<div class="win-prop-row"><label>旋转</label><div style="display:flex;gap:4px;flex:1">';
         [0,90,180,270].forEach(function(_r) { h += '<button class="win-content-type-btn' + (_wrot===_r?' active':'') + '" onclick="updWinRot(' + _r + ')" style="flex:1;padding:3px 0;font-size:11px">' + _r + '°</button>'; });
         h += '</div></div>';
+        // Arena InputRect 对标：输入截取（取景框）。仅视频内容有意义（COLOR/HDMI 无素材画面可截）
+        if (ctType === 'SCENE_A' || ctType === 'SCENE_B') {
+            var _cp = _cropOf(w);
+            h += '<div class="win-crop-title">输入截取（相对素材画面 %，画布内绿框即取景区）</div>';
+            h += '<div class="win-prop-row"><label>左 / 上</label><input type="number" min="0" max="100" step="1" id="wpCropX" value="' + Math.round(_cp.x*100) + '" title="取景框左边在素材画面中的位置" oninput="updWinCrop(\'x\',this.value)"><input type="number" min="0" max="100" step="1" id="wpCropY" value="' + Math.round(_cp.y*100) + '" title="取景框上边在素材画面中的位置" oninput="updWinCrop(\'y\',this.value)"></div>';
+            h += '<div class="win-prop-row"><label>宽 / 高</label><input type="number" min="5" max="100" step="1" id="wpCropW" value="' + Math.round(_cp.w*100) + '" title="取景框宽度占素材画面的比例" oninput="updWinCrop(\'w\',this.value)"><input type="number" min="5" max="100" step="1" id="wpCropH" value="' + Math.round(_cp.h*100) + '" title="取景框高度占素材画面的比例" oninput="updWinCrop(\'h\',this.value)"></div>';
+            h += '<div class="win-prop-row"><button class="win-crop-btn" style="flex:1" onclick="resetWinCrop()">↺ 重置为全画面</button></div>';
+        }
     } else {
         h += '<div style="color:#555;font-size:12px;text-align:center;padding:20px 0">选择或添加窗口以编辑属性</div>';
     }
@@ -1333,14 +1359,23 @@ function renderWinCanvas(wins) {
         el.style.cssText = 'position:absolute;left:' + rx + 'px;top:' + ry + 'px;width:' + rw + 'px;height:' + rh + 'px;z-index:' + (w.zIndex||1) + ';box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:20px;min-height:20px;user-select:none' + (sel ? ';border-color:#e94560;background:rgba(233,69,96,0.18)' : '');
         _applyWinTransform(el, w);
         el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + (w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:9px;color:#888">' + typeLabel + '</span>';
-        el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px" data-dir="br"></div>';
+        el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px;z-index:9" data-dir="br"></div>';
+        if (sel && _isVideoWin(w)) el.innerHTML += _cropBoxHtml();
         el.dataset.winId = w.id;
         el.onmousedown = function(e) {
             e.stopPropagation();
             selWin(w.id);
+            // 取景框命中优先：拖动取景区本身 = 平移，拖动其角点 = 缩放
+            var cb = e.target.closest ? e.target.closest('.crop-box') : null;
+            if (cb) {
+                var hd = e.target.closest ? e.target.closest('.cb-handle') : null;
+                _dragging = { winId: w.id, mode: hd ? 'crop-resize' : 'crop-move', dir: hd ? hd.dataset.cdir : null, startX: e.clientX, startY: e.clientY, startCrop: _cropOf(w) };
+                return;
+            }
             _dragging = { winId: w.id, mode: e.target.dataset.dir ? 'resize' : 'move', dir: e.target.dataset.dir || null, startX: e.clientX, startY: e.clientY, startWin: Object.assign({}, w) };
         };
         canvas.appendChild(el);
+        _applyCropOverlay(el, w);
     });
     document.removeEventListener('mousemove', winCanvasMouseMove);
     document.removeEventListener('mouseup', winCanvasMouseUp);
@@ -1356,6 +1391,28 @@ function winCanvasMouseMove(e) {
     var sW = _dragging.startWin, id = _dragging.winId;
     var wins = s._winCache || [], w = wins.find(function(x) { return x.id === id; });
     if (!w) return;
+    if (_dragging.mode === 'crop-move' || _dragging.mode === 'crop-resize') {
+        var rectEl = document.querySelector('[data-win-id="' + id + '"]');
+        var bw = (rectEl && rectEl.clientWidth) || ((w.width||320) * _canvasScale);
+        var bh = (rectEl && rectEl.clientHeight) || ((w.height||180) * _canvasScale);
+        var c0 = _dragging.startCrop, nx = dx / bw, ny = dy / bh;
+        var L = c0.x, T = c0.y, R = c0.x + c0.w, B = c0.y + c0.h;
+        if (_dragging.mode === 'crop-move') {
+            L = c0.x + nx; R = L + c0.w; T = c0.y + ny; B = T + c0.h;
+            if (L < 0) { L = 0; R = c0.w; } if (R > 1) { R = 1; L = 1 - c0.w; }
+            if (T < 0) { T = 0; B = c0.h; } if (B > 1) { B = 1; T = 1 - c0.h; }
+        } else {
+            var d = _dragging.dir;
+            if (d.indexOf('w') >= 0) L += nx; else R += nx;
+            if (d.indexOf('n') >= 0) T += ny; else B += ny;
+            var cl = function(v) { return Math.min(Math.max(v, 0), 1); };
+            L = cl(L); R = cl(R); T = cl(T); B = cl(B);
+            if (R - L < 0.05) { if (d.indexOf('w') >= 0) L = Math.max(0, R - 0.05); else R = Math.min(1, L + 0.05); }
+            if (B - T < 0.05) { if (d.indexOf('n') >= 0) T = Math.max(0, B - 0.05); else B = Math.min(1, T + 0.05); }
+        }
+        _setWinCrop(w, { x: L, y: T, w: R - L, h: B - T });
+        return;
+    }
     if (_dragging.mode === 'move') {
         var newX = Math.max(0, Math.round(sW.x + dx / _canvasScale));
         var newY = Math.max(0, Math.round(sW.y + dy / _canvasScale));
@@ -1413,7 +1470,94 @@ function _renderWinRects(wins) {
         el.style.width = ((w.width||320) * _canvasScale) + 'px';
         el.style.height = ((w.height||180) * _canvasScale) + 'px';
         _applyWinTransform(el, w);
+        _applyCropOverlay(el, w);
     });
+}
+
+// ============================================================================
+// 【输入截取 crop】Arena Slice InputRect 对标：素材画面内的取景区（归一化 0..1）
+// 设备侧把取景区拉伸填满窗口框（允许变形，与 Arena 原语义一致），故此处所见即所得。
+// 缺省/非法 = 全画面 {x:0,y:0,w:1,h:1}，老配置无需迁移即保持旧行为。
+// ============================================================================
+function _isVideoWin(w) {
+    var t = (w && w.content && w.content.type) ? String(w.content.type).toUpperCase() : 'SCENE_A';
+    return t === 'SCENE_A' || t === 'SCENE_B';
+}
+
+/** 读取并夹紧窗口取景区：越界回推、宽高下限 5%，结果保证 x+w<=1、y+h<=1 */
+function _cropOf(w) {
+    var c = (w && w.crop) || {};
+    var dv = function(v, def) { return (typeof v === 'number' && isFinite(v)) ? v : def; };
+    var r4 = function(v) { return Math.round(v * 10000) / 10000; };
+    var x = Math.min(Math.max(r4(dv(c.x, 0)), 0), 0.95);
+    var y = Math.min(Math.max(r4(dv(c.y, 0)), 0), 0.95);
+    var cw = Math.max(r4(dv(c.w, 1)), 0.05);
+    var ch = Math.max(r4(dv(c.h, 1)), 0.05);
+    if (x + cw > 1) cw = Math.max(r4(1 - x), 0.05);
+    if (y + ch > 1) ch = Math.max(r4(1 - y), 0.05);
+    return { x: x, y: y, w: cw, h: ch };
+}
+
+function _cropBoxHtml() {
+    return '<div class="crop-box"><div class="cb-handle cb-h-nw" data-cdir="nw"></div><div class="cb-handle cb-h-ne" data-cdir="ne"></div>' +
+           '<div class="cb-handle cb-h-sw" data-cdir="sw"></div><div class="cb-handle cb-h-br" data-cdir="br"></div>' +
+           '<span class="cb-pct"></span></div>';
+}
+
+/** 取景区按窗口框的实际内容尺寸定位（框改大小后仍精确贴合） */
+function _applyCropOverlay(el, w) {
+    if (!el) return;
+    var box = el.querySelector('.crop-box');
+    if (!box) return;
+    var bw = el.clientWidth || ((w.width||320) * _canvasScale);
+    var bh = el.clientHeight || ((w.height||180) * _canvasScale);
+    var c = _cropOf(w);
+    box.style.left = (c.x * bw) + 'px';
+    box.style.top = (c.y * bh) + 'px';
+    box.style.width = (c.w * bw) + 'px';
+    box.style.height = (c.h * bh) + 'px';
+    var pct = box.querySelector('.cb-pct');
+    if (pct) pct.textContent = (c.w >= 0.999 && c.h >= 0.999) ? '全画面' : (Math.round(c.w*100) + '×' + Math.round(c.h*100) + '%');
+}
+
+function _syncCropInputs(c) {
+    var map = { wpCropX: c.x, wpCropY: c.y, wpCropW: c.w, wpCropH: c.h };
+    Object.keys(map).forEach(function(k) {
+        var el = document.getElementById(k);
+        if (el && el !== document.activeElement) el.value = Math.round(map[k] * 100);
+    });
+}
+
+/** 写回取景区的唯一入口：始终新建对象（不与 s._selWin 共享引用），再同步画布与数字框 */
+function _setWinCrop(w, crop) {
+    w.crop = _cropOf({ crop: crop });
+    if (s._selWin && s._selWin.id === w.id) s._selWin.crop = Object.assign({}, w.crop);
+    _applyCropOverlay(document.querySelector('[data-win-id="' + w.id + '"]'), w);
+    _syncCropInputs(w.crop);
+}
+
+/** 属性面板数字框（百分比）改截取：输入即夹紧回写，500ms 防抖后走 live 轻推 */
+function updWinCrop(field, pct) {
+    if (!s._selWin) return;
+    var v = parseFloat(pct);
+    if (!isFinite(v)) return;
+    var c = Object.assign({}, _cropOf(s._selWin));
+    var n = Math.min(Math.max(v, 0), 100) / 100;
+    c[field] = (field === 'x' || field === 'y') ? Math.min(n, 0.95) : Math.max(n, 0.05);
+    var id = s._selWin.id, wins = s._winCache || [];
+    var w = wins.find(function(x) { return x.id === id; });
+    if (w) _setWinCrop(w, c);
+    else { s._selWin.crop = _cropOf({ crop: c }); _syncCropInputs(s._selWin.crop); }
+    autoSyncWinConfig();
+}
+
+function resetWinCrop() {
+    if (!s._selWin) return;
+    var id = s._selWin.id, wins = s._winCache || [];
+    var w = wins.find(function(x) { return x.id === id; });
+    if (w) _setWinCrop(w, { x: 0, y: 0, w: 1, h: 1 });
+    else { s._selWin.crop = { x: 0, y: 0, w: 1, h: 1 }; _syncCropInputs(s._selWin.crop); }
+    autoSyncWinConfig();
 }
 
 /**
@@ -1475,7 +1619,7 @@ function addWin() {
 
     var newId = 'win_' + Date.now();
     var winType = curS === 'B' ? 'SCENE_B' : 'SCENE_A';
-    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: winType }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0 });
+    wins.push({ id: newId, name: '新窗口', x: 0, y: 0, width: 640, height: 360, aspectRatio: '16:9', content: { type: winType }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
 
     // 双向隔离：A 的操作不动 B，反之亦然
     cfg.scenes[curS].windows = wins; // 当前场景：用含新窗口的拷贝覆盖回去

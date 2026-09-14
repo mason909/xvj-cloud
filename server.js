@@ -45,7 +45,7 @@
  *     B: { name: '第二幕', folder_mappings: {...}, windows: [WinConfig, ...] }
  *   }
  *
- * WinConfig（窗口配置）：
+ * WinConfig（窗口配置）：服务端整体透传，不解析下列渲染字段，新增字段无需改代码
  *   {
  *     id: String,        // 窗口唯一ID，如 "win_1"
  *     name: String,       // 显示名称，如 "主屏"
@@ -55,6 +55,14 @@
  *     height: Number,     // 高度（px）
  *     zIndex: Number,    // 层级（越大越上层）
  *     aspectRatio: String | null,  // 如 "16:9"，可选
+ *     opacity: Number,    // 0..1 窗口透明度
+ *     brightness: Number, // 0..1 窗口亮度（与所在幕 master.brightness 相乘）
+ *     enabled: Boolean,   // 窗口显隐，false 时设备不创建播放器
+ *     flip: 'none'|'h'|'v',        // 内容镜像
+ *     rotation: 0|90|180|270,      // 内容在窗口框内旋转
+ *     crop: { x: Number, y: Number, w: Number, h: Number },
+ *                         // 输入截取（对标 Arena Slice InputRect）：素材画面内归一化 0..1 的取景区，
+ *                         // 设备把该区域拉伸填满窗口框；缺省即全画面 {x:0,y:0,w:1,h:1}
  *     content: {                    // 窗口内容
  *       type: 'COLOR' | 'VIDEO' | 'HDMI' | 'IMAGE',
  *       // type=HDMI 时：
