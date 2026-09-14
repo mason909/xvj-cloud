@@ -107,11 +107,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .win-crop-title{font-size:10px;color:#2ecc71;margin:2px 0 6px;font-weight:bold;letter-spacing:0.03em}
 .win-crop-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;width:100%}
 .win-crop-btn:hover{background:rgba(46,204,113,0.15);border-color:#2ecc71;color:#2ecc71}
-.crop-num-row{display:flex;align-items:center;gap:5px;margin-bottom:6px;font-size:11px}
-.crop-num-row label{color:#888;min-width:40px;flex-shrink:0}
-.crop-num-row input{flex:1;min-width:0;background:#2a2a2a;border:1px solid #3a3a3a;color:#fff;border-radius:4px;padding:4px 6px;font-size:12px}
-.crop-num-row input:focus{outline:none;border-color:#2ecc71}
-.crop-num-row .unit{color:#555;font-size:10px;width:14px;flex-shrink:0}
 .win-sidebar{width:220px;flex-shrink:0;display:flex;flex-direction:column;gap:8px}
 .win-list{background:#242424;border-radius:8px;overflow:hidden;flex:1;min-height:0;display:flex;flex-direction:column}
 .win-list-header{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#252525;border-bottom:1px solid #333}
@@ -1549,33 +1544,12 @@ function _cropFrameHtml() {
     }).join('');
 }
 
-function _syncCropInputs(c) {
-    var map = { wpCropX: c.x, wpCropY: c.y, wpCropW: c.w, wpCropH: c.h };
-    Object.keys(map).forEach(function(k) {
-        var el = document.getElementById(k);
-        if (el && el !== document.activeElement) el.value = Math.round(map[k] * 100);
-    });
-}
-
-/** 写回取景区的唯一入口：始终新建对象（不与 s._selWin 共享引用），再刷新画板/数字框/输出预览 */
+/** 写回取景区的唯一入口：始终新建对象（不与 s._selWin 共享引用），再刷新画板与输出预览 */
 function _setWinCrop(w, crop) {
     if (!w) return;
     w.crop = _cropOf({ crop: crop });
     if (s._selWin && s._selWin.id === w.id && s._selWin !== w) s._selWin.crop = Object.assign({}, w.crop);
     _paintCropUI();
-}
-
-/** 侧栏数字框（百分比）改取景：输入即夹紧回写，500ms 防抖后走 live 轻推 */
-function updWinCrop(field, pct) {
-    if (!s._selWin) return;
-    var v = parseFloat(pct);
-    if (!isFinite(v)) return;
-    var c = Object.assign({}, _cropOf(s._selWin));
-    var n = Math.min(Math.max(v, 0), 100) / 100;
-    c[field] = (field === 'x' || field === 'y') ? Math.min(n, 0.95) : Math.max(n, 0.05);
-    var id = s._selWin.id, wins = s._winCache || [];
-    _setWinCrop(wins.find(function(x) { return x.id === id; }) || s._selWin, c);
-    autoSyncWinConfig();
 }
 
 function resetWinCrop() {
@@ -1601,7 +1575,6 @@ function renderCropEditor(wins, area) {
         s._selWinMap[s._curScene || 'A'] = wins[0].id;
     }
     var cur = s._selWin || null;
-    var c = cur ? _cropOf(cur) : null;
     var _sc = (s._curScene || 'A') === 'A' ? '第一幕' : '第二幕';
     var h = '<div class="crop-wrap">';
     h += '<div class="crop-side">';
@@ -1618,11 +1591,6 @@ function renderCropEditor(wins, area) {
         h += '<div class="win-crop-title">输出窗口位置与尺寸</div>';
         h += _winGeomRowsHtml(cur);
         h += _winFlipRotRowsHtml(cur);
-        h += '<div class="win-crop-title">取景位置（相对完整输入画面 %）</div>';
-        h += '<div class="crop-num-row"><label>左</label><input type="number" min="0" max="95" step="1" id="wpCropX" value="' + Math.round(c.x*100) + '" oninput="updWinCrop(\'x\',this.value)"><span class="unit">%</span></div>';
-        h += '<div class="crop-num-row"><label>上</label><input type="number" min="0" max="95" step="1" id="wpCropY" value="' + Math.round(c.y*100) + '" oninput="updWinCrop(\'y\',this.value)"><span class="unit">%</span></div>';
-        h += '<div class="crop-num-row"><label>宽</label><input type="number" min="5" max="100" step="1" id="wpCropW" value="' + Math.round(c.w*100) + '" oninput="updWinCrop(\'w\',this.value)"><span class="unit">%</span></div>';
-        h += '<div class="crop-num-row"><label>高</label><input type="number" min="5" max="100" step="1" id="wpCropH" value="' + Math.round(c.h*100) + '" oninput="updWinCrop(\'h\',this.value)"><span class="unit">%</span></div>';
         h += '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>';
         h += '<div class="win-crop-title" id="cropOutTitle" style="margin-top:12px">该切片输出画面（' + (cur.width||0) + '×' + (cur.height||0) + '）</div>';
         h += '<div class="crop-out-preview" id="cropOutPreview"><div id="cropOutInner"></div></div>';
@@ -1668,7 +1636,6 @@ function _paintCropUI() {
             frame.style.height = (c.h * bh) + 'px';
         }
     }
-    _syncCropInputs(c);
     var pv = document.getElementById('cropOutPreview'), pi = document.getElementById('cropOutInner');
     if (pv && pi) {
         var ww = Math.max(1, cur.width || 640), wh = Math.max(1, cur.height || 360);
