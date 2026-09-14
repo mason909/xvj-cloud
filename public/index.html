@@ -111,6 +111,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .crop-win-meta{color:#666;font-size:10px;flex-shrink:0;margin-left:6px}
 .crop-slice-list{display:flex;flex-direction:column;max-height:132px;overflow-y:auto;flex-shrink:0}
 .crop-out-cap{text-align:center;font-size:10px;color:#e94560;opacity:.75;margin-top:4px}
+.crop-num-row{display:flex;align-items:center;gap:5px;margin-bottom:5px}
+.crop-num-row label{color:#7a9b86;font-size:10px;width:12px;flex-shrink:0;text-align:right}
+.crop-num-row input{flex:1;min-width:0;background:#1a1a1a;color:#2ecc71;border:1px solid #2c4436;border-radius:4px;padding:3px 5px;font-size:11px}
+.crop-num-row .cn-u{color:#555;font-size:10px;flex-shrink:0}
 .crop-out-preview{position:relative;overflow:hidden;background-color:#000;border:1px solid #e94560;border-radius:2px;margin:0 auto;flex-shrink:0}
 .crop-out-preview>div{position:absolute;left:50%;top:50%;background-image:url('/crop-board.png');background-repeat:no-repeat}
 .crop-hint{font-size:10px;color:#666;line-height:1.5}
@@ -1570,6 +1574,38 @@ function resetWinCrop() {
     autoSyncWinConfig();
 }
 
+/** 取景位置数字行：与画板绿框同一份 crop，拖动与输入双向同步（百分比整数，回显的是夹紧后的值） */
+function _winCropRowsHtml(w) {
+    var c = _cropOf(w);
+    var cell = function(id, lab, val, field) {
+        var fn = "updWinCropPct('" + field + "',this.value)";
+        return '<label>' + lab + '</label><input type="number" min="0" max="100" id="' + id + '" value="' + val + '" oninput="' + fn + '" onblur="' + fn + '"><span class="cn-u">%</span>';
+    };
+    var row = function(a, b) { return '<div class="crop-num-row">' + a + b + '</div>'; };
+    return row(cell('cpX', '左', Math.round(c.x * 100), 'x'), cell('cpY', '上', Math.round(c.y * 100), 'y')) +
+           row(cell('cpW', '宽', Math.round(c.w * 100), 'w'), cell('cpH', '高', Math.round(c.h * 100), 'h'));
+}
+
+/** 数字框改取景：以当前取景为基准替换单个分量，交给 _cropOf 夹紧（下限 5%、x+w<=1） */
+function updWinCropPct(field, value) {
+    if (!s._selWin || !isFinite(parseInt(value, 10))) return;
+    var id = s._selWin.id;
+    var w = (s._winCache || []).find(function(x) { return x.id === id; }) || s._selWin;
+    var c = Object.assign({}, _cropOf(w));
+    c[field] = Math.min(Math.max(parseInt(value, 10), 0), 100) / 100;
+    _setWinCrop(w, c);
+    autoSyncWinConfig();
+}
+
+/** 绿框拖动后把取景百分比回写数字框；跳过正在输入的那个框，免得夹紧值抢光标 */
+function _syncCropInputs(c) {
+    var map = { cpX: c.x, cpY: c.y, cpW: c.w, cpH: c.h };
+    Object.keys(map).forEach(function(k) {
+        var el = document.getElementById(k);
+        if (el && el !== document.activeElement) el.value = Math.round(map[k] * 100);
+    });
+}
+
 // ============================================================================
 // 【输入截取画板】工作台「输入截取」开关打开后的独立编辑面。
 // 画板 = 该切片的完整输入画面（16:9，底图 /crop-board.png），绿框 = Arena InputRect 取景区，
@@ -1599,7 +1635,9 @@ function renderCropEditor(wins, area) {
     });
     h += '</div>';
     if (cur) {
-        h += '<div class="win-crop-title out">输出窗口位置与尺寸</div>';
+        h += '<div class="win-crop-title">取景位置（输入画面 %）</div>';
+        h += _winCropRowsHtml(cur);
+        h += '<div class="win-crop-title out" style="margin-top:8px">输出窗口位置与尺寸</div>';
         h += _winGeomRowsHtml(cur);
         h += _winFlipRotRowsHtml(cur);
         h += '<div class="crop-out-preview" id="cropOutPreview" style="margin-top:6px"><div id="cropOutInner"></div></div>';
@@ -1611,7 +1649,7 @@ function renderCropEditor(wins, area) {
     h += '<div class="crop-stage" id="cropStage">';
     h += '<div class="crop-stage-head" id="cropStageHead"></div>';
     h += '<div class="crop-board" id="cropBoard"><div class="crop-board-tag">16:9 输入画面</div>' + (cur ? '<div class="crop-frame" id="cropFrame">' + _cropFrameHtml() + '</div>' : '') + '</div>';
-    h += '<div class="crop-tools" id="cropTools"><div class="crop-hint" id="cropHint">' + (cur ? '绿框即该切片的取景区：拖动框体平移，拖动 8 个把手缩放；框外暗化部分不会输出。' : '请先在左侧选择一个切片，再在其独属的 16:9 输入画面中取景。') + '</div>' + (cur ? '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>' : '') + '</div>';
+    h += '<div class="crop-tools" id="cropTools"><div class="crop-hint" id="cropHint">' + (cur ? '绿框即该切片的取景区：拖动框体平移、拖 8 个把手缩放，也可用上方「取景位置」直接输入；框外暗化部分不会输出。' : '请先在左侧选择一个切片，再在其独属的 16:9 输入画面中取景。') + '</div>' + (cur ? '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>' : '') + '</div>';
     h += '</div></div>';
     area.innerHTML = h;
     _layoutCropBoard();
@@ -1652,6 +1690,7 @@ function _paintCropUI() {
             sz.style.display = (frame.offsetWidth < 46 || frame.offsetHeight < 20) ? 'none' : '';
         }
     }
+    _syncCropInputs(c);
     var pv = document.getElementById('cropOutPreview'), pi = document.getElementById('cropOutInner');
     if (pv && pi) {
         var ww = Math.max(1, cur.width || 640), wh = Math.max(1, cur.height || 360);
@@ -1865,10 +1904,23 @@ function delWin(e, id) {
 
 function updWinField(field, value) {
     if (!s._selWin) return;
-    s._selWin[field] = value;
     var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
+    // 比例锁定：数字框改宽/高时另一边按「修改前」的宽高比跟随，与画布拖拽 winCanvasMouseMove 同一规则
+    var pair = null;
+    if ((field === 'width' || field === 'height') && s._winRatioLock && s._winRatioLock[id]) {
+        var w0 = s._selWin.width || 640, h0 = s._selWin.height || 360;
+        pair = { k: field === 'width' ? 'height' : 'width' };
+        pair.v = Math.max(64, Math.round(field === 'width' ? value * h0 / w0 : value * w0 / h0));
+    }
+    s._selWin[field] = value;
     if (w) w[field] = value;
+    if (pair) {
+        s._selWin[pair.k] = pair.v;
+        if (w) w[pair.k] = pair.v;
+        var pe = document.getElementById(pair.k === 'width' ? 'wpW' : 'wpH');
+        if (pe) pe.value = pair.v;
+    }
     _renderWinRects(wins);
     if (s._cropMode) _paintCropUI();   // 截取画板共用这套控件：几何/镜像改完要重画输出预览
     autoSyncWinConfig();
@@ -2089,7 +2141,6 @@ async function updateRoomDebugToggle() {
     if (!el || !slider || !knob) return;
     // 优先读 sessionStorage（反映用户最后一次操作）
     var stored = sessionStorage.getItem('debug_' + s.rf);
-    console.log('updateRoomDebugToggle srf=', s.rf, 'stored=', stored, 'el=', !!el);
     if (stored !== null) {
         var on = stored === '1';
         el.checked = on;
