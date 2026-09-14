@@ -1340,6 +1340,7 @@ function _winGeomRowsHtml(w, asCrop) {
     h += '<div class="win-ratio-presets">';
     ratioPresets.forEach(function(p) { h += '<button class="win-ratio-btn" onclick="' + (asCrop ? 'setCropRatio' : 'setWinRatio') + '(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>'; });
     h += '</div>';
+    h += '<div style="color:#666;font-size:10px;padding:2px 0 6px">选中后按 ← ↑ → ↓ 微调位置 1px，Shift + 方向键 10px</div>';
     return h;
 }
 
@@ -1872,6 +1873,44 @@ function cropBoardMouseUp() {
     _cropDrag = null;
     autoSyncWinConfig();
 }
+
+// ============================================================================
+// 【方向键微调】选中切片后 ← ↑ → ↓ 平移 1px，Shift + 方向键 10px。
+// 编辑对象随工作台开关切换：「输入截取」开 → 绿框（取景，输入画面 px）；关 → 红框（输出窗口，设备 px）。
+// ============================================================================
+/** @param {number} dx 水平跳距（px，右为正） @param {number} dy 垂直跳距（px，下为正） @returns {boolean} 是否已处理 */
+function nudgeSelWin(dx, dy) {
+    if (!s._windowEditorActive || !s._selWin) return false;
+    var id = s._selWin.id;
+    var w = (s._winCache || []).find(function(x) { return x.id === id; }) || s._selWin;
+    if (s._cropMode) {
+        // 在整数 px 上跳再换算回归一化：_cropOf 的 4 位小数舍入（≤0.1px）不会在连续微调里攒成偏差
+        var p = _cropPx(_cropOf(w));
+        p.x = Math.min(Math.max(p.x + dx, 0), _IN_W - p.w);
+        p.y = Math.min(Math.max(p.y + dy, 0), _IN_H - p.h);
+        _setWinCrop(w, { x: p.x / _IN_W, y: p.y / _IN_H, w: p.w / _IN_W, h: p.h / _IN_H });
+    } else {
+        w.x = Math.max(0, (w.x || 0) + dx);
+        w.y = Math.max(0, (w.y || 0) + dy);
+        s._selWin.x = w.x; s._selWin.y = w.y;
+        var v = { wpX: w.x, wpY: w.y };
+        Object.keys(v).forEach(function(k) { var el = document.getElementById(k); if (el && el !== document.activeElement) el.value = v[k]; });
+        _renderWinRects(s._winCache || []);
+    }
+    autoSyncWinConfig();
+    return true;
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (!d) return;
+    // 焦点在输入控件里时不抢方向键：数字框自身就是像素步进，宽度/高度框更不该被位置语义覆盖
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    var step = e.shiftKey ? 10 : 1;
+    if (nudgeSelWin(d[0] * step, d[1] * step)) e.preventDefault();
+});
 
 /**
  * 选中指定窗口（高亮显示，打开属性编辑面板）
