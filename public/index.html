@@ -66,7 +66,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .device-id{color:#ccc;word-break:break-all}
 .on{background:#28a745;color:#fff}
 .off{background:#666;color:#fff}
-@media(max-width:768px){.sidebar{display:none}.main{margin-left:0}}
+/* 窄视口（含 Ctrl+滚轮放大后 CSS 宽度变小）的适配规则统一写在 style 末尾 */
 .progress-bar{height:6px;background:#333;border-radius:3px;overflow:hidden;margin-top:10px}
 .progress-fill{height:100%;background:linear-gradient(90deg,#e94560,#ff6b8a);width:0%;transition:width 0.2s}
 .progress-text{font-size:12px;color:#888;margin-top:5px}
@@ -77,6 +77,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .win-device-frame{position:absolute;border:2px solid #444;border-radius:2px;background:rgba(255,255,255,0.03);box-sizing:border-box}
 .win-rect{position:absolute;box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;font-size:11px;color:#e94560;overflow:hidden;min-width:20px;min-height:20px;user-select:none}
 .win-rect.selected{border-color:#e94560;background:rgba(233,69,96,0.18)}
+.win-rect:focus{outline:2px solid #e94560;outline-offset:1px}
 .win-rect .wr-name{position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}
 .win-rect .wr-type{position:absolute;bottom:3px;right:5px;font-size:9px;color:#888}
 .win-rect .wr-handle{position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;z-index:9}
@@ -94,6 +95,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .crop-stage-head .sh-c{color:#2ecc71}
 .crop-board{position:relative;background-image:url('/crop-board.png');background-size:100% 100%;background-repeat:no-repeat;border:1px solid #444;border-radius:3px;overflow:hidden;flex-shrink:0}
 .crop-frame{position:absolute;box-sizing:border-box;border:1px solid #2ecc71;box-shadow:0 0 0 9999px rgba(0,0,0,0.6);cursor:move;z-index:5}
+.crop-frame:focus{outline:2px solid #2ecc71;outline-offset:1px}
 .crop-frame .cf-h{position:absolute;width:12px;height:12px;background:#2ecc71;border:1px solid #0e4d2b;border-radius:2px;box-sizing:border-box;z-index:2}
 .crop-frame .cf-nw{left:-6px;top:-6px;cursor:nwse-resize}
 .crop-frame .cf-n{left:50%;top:-6px;margin-left:-6px;cursor:ns-resize}
@@ -147,6 +149,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .win-save-btn{width:100%;padding:8px;background:#e94560;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;margin-top:10px}
 .win-save-btn:hover{background:#ff6b6b}
 .win-save-btn.saving{opacity:0.6;pointer-events:none}
+/* ===== 窄视口适配（Ctrl+滚轮放大后 CSS 视口宽度会变小，等价于窄屏）===== */
+/* 侧栏不能再整条隐藏（隐藏=没法切模块），改成顶部横排导航 */
+@media(max-width:768px){
+.layout{flex-direction:column}
+.sidebar{position:static;width:auto;height:auto;border-right:none;border-bottom:1px solid #333}
+.brand{padding:10px 16px;font-size:16px}
+.menu{display:flex;flex-wrap:wrap;padding:0 8px 10px}
+.menu li{padding:8px 12px;font-size:13px}
+.main{margin-left:0}
+.header{padding:12px 16px;flex-wrap:wrap;gap:8px}
+.content{padding:16px}
+}
+/* 编辑器与取景画板改上下堆叠：固定宽的侧栏在窄视口里会把画布挤没（实测 406px 视口下画布只剩 120px） */
+@media(max-width:860px){
+.win-editor-wrap,.crop-wrap{flex-direction:column;height:auto;min-height:0}
+.win-canvas-area{width:100%;height:44vh;min-height:240px;flex:none}
+.crop-stage{width:100%;height:58vh;min-height:300px;flex:none}
+.win-sidebar,.crop-side{width:auto;flex:none;max-height:none}
+.win-list{min-height:110px}
+.crop-slice-list{max-height:110px}
+}
 </style>
 </head>
 <body>
@@ -1340,7 +1363,7 @@ function _winGeomRowsHtml(w, asCrop) {
     h += '<div class="win-ratio-presets">';
     ratioPresets.forEach(function(p) { h += '<button class="win-ratio-btn" onclick="' + (asCrop ? 'setCropRatio' : 'setWinRatio') + '(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>'; });
     h += '</div>';
-    h += '<div style="color:#666;font-size:10px;padding:2px 0 6px">选中后按 ← ↑ → ↓ 微调位置 1px，Shift + 方向键 10px</div>';
+    h += '<div style="color:#666;font-size:10px;padding:2px 0 6px">点一下框体即聚焦，之后按 ← ↑ → ↓ 微调位置 1px，Shift + 方向键 10px</div>';
     return h;
 }
 
@@ -1480,9 +1503,15 @@ function renderWinCanvas(wins) {
         el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + _cropMark + (w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:9px;color:#888">' + typeLabel + '</span>';
         el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px;z-index:9" data-dir="br"></div>';
         el.dataset.winId = w.id;
+        el.tabIndex = 0;   // 可聚焦：聚焦=方向键当前作用于这个窗口框
+        el.setAttribute('aria-label', (w.name || w.id) + ' 窗口框（方向键微调位置）');
         el.onmousedown = function(e) {
             e.stopPropagation();
+            e.preventDefault();   // 不阻断默认动作的话，浏览器会把焦点打到已被重绘替换掉的旧节点，聚焦会丢
             selWin(w.id);
+            // selWin 会重绘画布，旧元素已被替换，聚焦要落到重绘后的那个框上
+            var ne = document.querySelector('[data-win-id="' + w.id + '"]');
+            if (ne) ne.focus();
             _dragging = { winId: w.id, mode: e.target.dataset.dir ? 'resize' : 'move', dir: e.target.dataset.dir || null, startX: e.clientX, startY: e.clientY, startWin: Object.assign({}, w) };
         };
         canvas.appendChild(el);
@@ -1707,7 +1736,7 @@ function renderCropEditor(wins, area) {
     h += '</div>';
     h += '<div class="crop-stage" id="cropStage">';
     h += '<div class="crop-stage-head" id="cropStageHead"></div>';
-    h += '<div class="crop-board" id="cropBoard"><div class="crop-board-tag">16:9 输入画面</div>' + (cur ? '<div class="crop-frame" id="cropFrame">' + _cropFrameHtml() + '</div>' : '') + '</div>';
+    h += '<div class="crop-board" id="cropBoard"><div class="crop-board-tag">16:9 输入画面</div>' + (cur ? '<div class="crop-frame" id="cropFrame" tabindex="0">' + _cropFrameHtml() + '</div>' : '') + '</div>';
     h += '<div class="crop-tools" id="cropTools"><div class="crop-hint" id="cropHint">' + (cur ? '绿框即该切片的取景区：拖动框体平移、拖 8 个把手缩放，或用上方数字框直接输入 px（输入画面按 ' + _IN_W + '×' + _IN_H + ' 计）；框外暗化部分不会输出，▲ 为该输入画面旋转/镜像后的朝向。' : '请先在左侧选择一个切片，再在其独属的 16:9 输入画面中取景。') + '</div>' + (cur ? '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>' : '') + '</div>';
     h += '</div></div>';
     area.innerHTML = h;
@@ -1727,6 +1756,35 @@ function _layoutCropBoard() {
     board.style.width = Math.round(bw) + 'px';
     board.style.height = Math.round(bw * 9 / 16) + 'px';
 }
+
+// ============================================================================
+// 【视口变化重排】画布/画板的缩放系数是按容器 CSS 像素算的，Ctrl+滚轮缩放会改变容器尺寸，
+// 不重算就停在旧比例上（画布偏大被裁切、或挤成一条）。缩放/改窗口大小在 Chrome、Firefox、Safari
+// 里触发的事件并不一致（window resize 与 visualViewport resize），所以两路都挂。
+// ============================================================================
+var _vpTimer = null, _vpSizeKey = '';
+
+function _onViewportChange() {
+    if (_vpTimer) return;   // 滚轮连滚：合并成一次
+    _vpTimer = setTimeout(function() {
+        _vpTimer = null;
+        var el = null, key = '';
+        if (s._cropMode) {
+            if (_cropDrag) return;
+            el = document.getElementById('cropStage');
+            if (el) key = 'c' + el.clientWidth + 'x' + el.clientHeight;
+        } else if (s._windowEditorActive && !_dragging && s._winKey === _winCacheKey() && s._winCache) {
+            el = document.getElementById('winCanvasArea');
+            if (el) key = 'w' + el.clientWidth + 'x' + el.clientHeight;
+        }
+        if (!el || key === _vpSizeKey) return;
+        _vpSizeKey = key;
+        if (s._cropMode) { _layoutCropBoard(); if (s._selWin) _paintCropUI(); }
+        else renderWinCanvas(s._winCache);
+    }, 80);
+}
+window.addEventListener('resize', _onViewportChange);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', _onViewportChange);
 
 /** 把当前取景态刷到画板：绿框位置与框内尺寸徽标、输出预览、顶部状态条、切片列表活动项 */
 function _paintCropUI() {
@@ -1809,18 +1867,13 @@ function _bindCropBoard() {
         var hd = (e.target.closest && e.target.closest('.cf-h')) ? e.target.closest('.cf-h') : null;
         if (!hd && e.target !== frame) return;   // 画板空白处不误触
         e.preventDefault();
+        frame.focus();   // 点中绿框即聚焦：方向键随后微调的就是取景框
         _cropDrag = { mode: hd ? 'resize' : 'move', dir: hd ? hd.dataset.cdir : null, startX: e.clientX, startY: e.clientY, startCrop: _cropOf(s._selWin) };
     };
     document.removeEventListener('mousemove', cropBoardMouseMove);
     document.removeEventListener('mouseup', cropBoardMouseUp);
     document.addEventListener('mousemove', cropBoardMouseMove);
     document.addEventListener('mouseup', cropBoardMouseUp);
-    if (!window._cropResizeBound) {
-        window._cropResizeBound = true;
-        window.addEventListener('resize', function() {
-            if (s._cropMode && s._selWin) { _layoutCropBoard(); _paintCropUI(); }
-        });
-    }
 }
 
 function cropBoardMouseMove(e) {
