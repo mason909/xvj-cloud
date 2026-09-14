@@ -111,15 +111,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .crop-win-meta{color:#666;font-size:10px;flex-shrink:0;margin-left:6px}
 .crop-slice-list{display:flex;flex-direction:column;max-height:132px;overflow-y:auto;flex-shrink:0}
 .crop-out-cap{text-align:center;font-size:10px;color:#e94560;opacity:.75;margin-top:4px}
-.crop-num-row{display:flex;align-items:center;gap:5px;margin-bottom:5px}
-.crop-num-row label{color:#7a9b86;font-size:10px;width:12px;flex-shrink:0;text-align:right}
-.crop-num-row input{flex:1;min-width:0;background:#1a1a1a;color:#2ecc71;border:1px solid #2c4436;border-radius:4px;padding:3px 5px;font-size:11px}
-.crop-num-row .cn-u{color:#555;font-size:10px;flex-shrink:0}
 .crop-out-preview{position:relative;overflow:hidden;background-color:#000;border:1px solid #e94560;border-radius:2px;margin:0 auto;flex-shrink:0}
 .crop-out-preview>div{position:absolute;left:50%;top:50%;background-image:url('/crop-board.png');background-repeat:no-repeat}
 .crop-hint{font-size:10px;color:#666;line-height:1.5}
 .win-crop-title{font-size:10px;color:#2ecc71;margin:2px 0 6px;font-weight:bold;letter-spacing:0.03em}
-.win-crop-title.out{color:#e94560}
 .win-crop-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;width:100%}
 .win-crop-btn:hover{background:rgba(46,204,113,0.15);border-color:#2ecc71;color:#2ecc71}
 .win-sidebar{width:220px;flex-shrink:0;display:flex;flex-direction:column;gap:8px}
@@ -1290,22 +1285,32 @@ var _dragging = null;
 
 // 【F-09】 窗口编辑器 // function renderWinEditorFull()
 /**
- * 输出窗口几何行（位置/尺寸/比例锁定/比例预设）
- * 窗口配置属性面板与「输入截取」画板侧栏共用同一套控件与回调，改一处即两处同步。
+ * 几何行（位置/尺寸/比例锁定/比例预设）——同一套控件、两种编辑对象：
+ *   asCrop=false → 窗口配置的「输出窗口」，单位设备像素，回调 updWinField
+ *   asCrop=true  → 「输入截取」侧栏的取景框（绿框），单位相对完整输入画面的 %，回调 updWinCropField
+ * 输入框 id 两边共用 wpX/wpY/wpW/wpH，故画板拖动与画布拖动的回显逻辑是同一份。
  */
-function _winGeomRowsHtml(w) {
+function _winGeomRowsHtml(w, asCrop) {
     var ratioPresets = [
         {label:'16:9', w:16, h:9}, {label:'4:3', w:4, h:3},
         {label:'1:1', w:1, h:1}, {label:'9:16', w:9, h:16}
     ];
-    var locked = !!(s._winRatioLock && s._winRatioLock[w.id]);
-    var h = '<div class="win-prop-row"><label>位置 X</label><input type="number" id="wpX" value="' + (w.x||0) + '" oninput="updWinField(\'x\',parseInt(this.value)||0)"></div>';
-    h += '<div class="win-prop-row"><label>位置 Y</label><input type="number" id="wpY" value="' + (w.y||0) + '" oninput="updWinField(\'y\',parseInt(this.value)||0)"></div>';
-    h += '<div class="win-prop-row"><label>宽度</label><input type="number" id="wpW" value="' + (w.width||640) + '" oninput="updWinField(\'width\',parseInt(this.value)||64)"></div>';
-    h += '<div class="win-prop-row"><label>高度</label><input type="number" id="wpH" value="' + (w.height||360) + '" oninput="updWinField(\'height\',parseInt(this.value)||64)"></div>';
-    h += '<div class="win-prop-row"><label>比例</label><button class="lock-btn' + (locked?' active':'') + '" id="wpRatioLock" onclick="toggleWinRatio(\'' + w.id + '\')">' + (locked?'🔒':'🔓') + ' 锁定</button></div>';
+    var c = asCrop ? _cropOf(w) : null;
+    var pc = function(v) { return Math.round(v * 100); };
+    var val = function(k) {
+        if (asCrop) return pc(k === 'width' ? c.w : k === 'height' ? c.h : c[k]);
+        return k === 'x' ? (w.x||0) : k === 'y' ? (w.y||0) : k === 'width' ? (w.width||640) : (w.height||360);
+    };
+    var unit = asCrop ? ' min="0" max="100" title="单位 %（相对该切片的完整输入画面）"' : '';
+    var locked = !!(asCrop ? (s._cropRatioLock && s._cropRatioLock[w.id]) : (s._winRatioLock && s._winRatioLock[w.id]));
+    var h = '';
+    [['wpX', '位置 X', 'x', 0], ['wpY', '位置 Y', 'y', 0], ['wpW', '宽度', 'width', 64], ['wpH', '高度', 'height', 64]].forEach(function(r) {
+        var call = asCrop ? "updWinCropField('" + r[2] + "',this.value)" : "updWinField('" + r[2] + "',parseInt(this.value)||" + r[3] + ")";
+        h += '<div class="win-prop-row"><label>' + r[1] + '</label><input type="number" id="' + r[0] + '" value="' + val(r[2]) + '"' + unit + ' oninput="' + call + '"' + (asCrop ? ' onblur="' + call + '"' : '') + '></div>';
+    });
+    h += '<div class="win-prop-row"><label>比例</label><button class="lock-btn' + (locked?' active':'') + '" id="wpRatioLock" onclick="' + (asCrop ? 'toggleCropRatio' : 'toggleWinRatio') + '(\'' + w.id + '\')">' + (locked?'🔒':'🔓') + ' 锁定</button></div>';
     h += '<div class="win-ratio-presets">';
-    ratioPresets.forEach(function(p) { h += '<button class="win-ratio-btn" onclick="setWinRatio(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>'; });
+    ratioPresets.forEach(function(p) { h += '<button class="win-ratio-btn" onclick="' + (asCrop ? 'setCropRatio' : 'setWinRatio') + '(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>'; });
     h += '</div>';
     return h;
 }
@@ -1574,32 +1579,51 @@ function resetWinCrop() {
     autoSyncWinConfig();
 }
 
-/** 取景位置数字行：与画板绿框同一份 crop，拖动与输入双向同步（百分比整数，回显的是夹紧后的值） */
-function _winCropRowsHtml(w) {
-    var c = _cropOf(w);
-    var cell = function(id, lab, val, field) {
-        var fn = "updWinCropPct('" + field + "',this.value)";
-        return '<label>' + lab + '</label><input type="number" min="0" max="100" id="' + id + '" value="' + val + '" oninput="' + fn + '" onblur="' + fn + '"><span class="cn-u">%</span>';
-    };
-    var row = function(a, b) { return '<div class="crop-num-row">' + a + b + '</div>'; };
-    return row(cell('cpX', '左', Math.round(c.x * 100), 'x'), cell('cpY', '上', Math.round(c.y * 100), 'y')) +
-           row(cell('cpW', '宽', Math.round(c.w * 100), 'w'), cell('cpH', '高', Math.round(c.h * 100), 'h'));
-}
-
-/** 数字框改取景：以当前取景为基准替换单个分量，交给 _cropOf 夹紧（下限 5%、x+w<=1） */
-function updWinCropPct(field, value) {
+/**
+ * 侧栏数字框改取景（绿框）：field = x/y/width/height，值为相对完整输入画面的百分比。
+ * 比例锁定用取景独立的 s._cropRatioLock，与输出窗口的 _winRatioLock 互不干扰。
+ */
+function updWinCropField(field, value) {
     if (!s._selWin || !isFinite(parseInt(value, 10))) return;
     var id = s._selWin.id;
     var w = (s._winCache || []).find(function(x) { return x.id === id; }) || s._selWin;
-    var c = Object.assign({}, _cropOf(w));
-    c[field] = Math.min(Math.max(parseInt(value, 10), 0), 100) / 100;
+    var c0 = _cropOf(w), k = c0.w / c0.h;
+    var v = Math.min(Math.max(parseInt(value, 10), 0), 100) / 100;
+    var c = { x: c0.x, y: c0.y, w: c0.w, h: c0.h };
+    var locked = !!(s._cropRatioLock && s._cropRatioLock[id]);
+    if (field === 'x') c.x = v;
+    else if (field === 'y') c.y = v;
+    else if (field === 'width') { c.w = v; if (locked) c.h = v / k; }
+    else { c.h = v; if (locked) c.w = v * k; }
     _setWinCrop(w, c);
     autoSyncWinConfig();
 }
 
-/** 绿框拖动后把取景百分比回写数字框；跳过正在输入的那个框，免得夹紧值抢光标 */
+function toggleCropRatio(id) {
+    if (!s._cropRatioLock) s._cropRatioLock = {};
+    s._cropRatioLock[id] = !s._cropRatioLock[id];
+    var btn = document.getElementById('wpRatioLock');
+    if (btn) { btn.className = 'lock-btn' + (s._cropRatioLock[id] ? ' active' : ''); btn.textContent = (s._cropRatioLock[id] ? '🔒' : '🔓') + ' 锁定'; }
+}
+
+/** 取景比例预设：输入画面本身是 16:9，要让取景像素区成 rw:rh，归一化宽高比需再乘 9/16 */
+function setCropRatio(ratioStr) {
+    if (!s._selWin) return;
+    var parts = ratioStr.split(','), rw = parseInt(parts[0]), rh = parseInt(parts[1]);
+    if (!rw || !rh) return;
+    var id = s._selWin.id;
+    var w = (s._winCache || []).find(function(x) { return x.id === id; }) || s._selWin;
+    var c0 = _cropOf(w);
+    var nw = c0.h * (rw / rh) * 9 / 16, nh = c0.h;
+    // 贴边时按比例整体缩小，避免 _cropOf 只夹宽（高）而破掉目标比例
+    var f = Math.min(1, (1 - c0.x) / nw, (1 - c0.y) / nh);
+    _setWinCrop(w, { x: c0.x, y: c0.y, w: nw * f, h: nh * f });
+    autoSyncWinConfig();
+}
+
+/** 绿框拖动/输入后把取景百分比回写侧栏；跳过正在输入的框，免得夹紧值抢光标 */
 function _syncCropInputs(c) {
-    var map = { cpX: c.x, cpY: c.y, cpW: c.w, cpH: c.h };
+    var map = { wpX: c.x, wpY: c.y, wpW: c.w, wpH: c.h };
     Object.keys(map).forEach(function(k) {
         var el = document.getElementById(k);
         if (el && el !== document.activeElement) el.value = Math.round(map[k] * 100);
@@ -1635,10 +1659,8 @@ function renderCropEditor(wins, area) {
     });
     h += '</div>';
     if (cur) {
-        h += '<div class="win-crop-title">取景位置（输入画面 %）</div>';
-        h += _winCropRowsHtml(cur);
-        h += '<div class="win-crop-title out" style="margin-top:8px">输出窗口位置与尺寸</div>';
-        h += _winGeomRowsHtml(cur);
+        h += '<div class="win-crop-title">取景框位置与尺寸（输入画面 %）</div>';
+        h += _winGeomRowsHtml(cur, true);
         h += _winFlipRotRowsHtml(cur);
         h += '<div class="crop-out-preview" id="cropOutPreview" style="margin-top:6px"><div id="cropOutInner"></div></div>';
         h += '<div class="crop-out-cap" id="cropOutTitle">输出 ' + (cur.width||0) + '×' + (cur.height||0) + ' px</div>';
@@ -1649,7 +1671,7 @@ function renderCropEditor(wins, area) {
     h += '<div class="crop-stage" id="cropStage">';
     h += '<div class="crop-stage-head" id="cropStageHead"></div>';
     h += '<div class="crop-board" id="cropBoard"><div class="crop-board-tag">16:9 输入画面</div>' + (cur ? '<div class="crop-frame" id="cropFrame">' + _cropFrameHtml() + '</div>' : '') + '</div>';
-    h += '<div class="crop-tools" id="cropTools"><div class="crop-hint" id="cropHint">' + (cur ? '绿框即该切片的取景区：拖动框体平移、拖 8 个把手缩放，也可用上方「取景位置」直接输入；框外暗化部分不会输出。' : '请先在左侧选择一个切片，再在其独属的 16:9 输入画面中取景。') + '</div>' + (cur ? '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>' : '') + '</div>';
+    h += '<div class="crop-tools" id="cropTools"><div class="crop-hint" id="cropHint">' + (cur ? '绿框即该切片的取景区：拖动框体平移、拖 8 个把手缩放，或用上方数字框直接输入 %；框外暗化部分不会输出。' : '请先在左侧选择一个切片，再在其独属的 16:9 输入画面中取景。') + '</div>' + (cur ? '<button class="win-crop-btn" onclick="resetWinCrop()">↺ 重置为全画面</button>' : '') + '</div>';
     h += '</div></div>';
     area.innerHTML = h;
     _layoutCropBoard();
