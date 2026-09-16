@@ -61,9 +61,12 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
 .card-presetted{border:2px solid #28a745 !important}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,0.85);display:none;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(5px)}
 .modal.show{display:flex}
-.modal-content{position:relative;max-width:95%;max-height:95%;background:#1a1a1a;border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.5)}
+.modal-content{position:relative;max-width:95%;max-height:95%;overflow:auto;background:#1a1a1a;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.5)}
 .modal img,.modal video{width:100%;height:auto;max-height:90vh;display:block}
 .modal-close{position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.5);color:#fff;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:18px;z-index:10}
+.card-pv{cursor:pointer}
+.pv-err{padding:30px;text-align:center;color:#f44336;font-size:14px;min-width:300px}
+.pv-err-url{margin-top:8px;color:#666;font-size:11px;word-break:break-all}
 .modal-close:hover{background:#e94560}
 .empty{text-align:center;padding:60px;color:#666}
 .device-card{background:#242424;border-radius:10px;padding:16px;border:1px solid #333;margin-bottom:16px}
@@ -280,7 +283,7 @@ body.nav-off .brand-name{display:inline}
 </main>
 </div>
 <input type="file" id="fi" multiple style="display:none" onchange="ul(this.files)">
-<div class="modal" id="m" onclick="if(event.target === this) this.classList.remove('show')"><button class="modal-close" onclick="dc()">×</button><div id="mc"></div></div>
+<div class="modal" id="m" onclick="if(event.target === this) closeModal()"><div class="modal-content"><button class="modal-close" onclick="closeModal()">×</button><div id="mc"></div></div></div>
 <script src="/mqtt.min.js"></script>
 <script>
 // 【F-00】API 密钥注入：服务端对写操作（POST/PUT/DELETE）要求 x-api-key，这里为所有请求统一附加
@@ -313,20 +316,17 @@ body.nav-off .brand-name{display:inline}
 <script>
 // 同步当前房间的设备
 async function syncCurrentRoom() {
-    if (!s.df) { showAlert('请先选择一个客户'); return; }
-    if (!s.rf) { showAlert('请先选择一个房间'); return; }
-    var mc = document.getElementById('mc');
-    var m = document.getElementById('m');
-    mc.innerHTML = '<div style="padding:30px;text-align:center">' +
+    if (!s.df) { alert('请先选择一个客户'); return; }
+    if (!s.rf) { alert('请先选择一个房间'); return; }
+    openModal('<div style="padding:30px;text-align:center">' +
         '<div style="font-size:48px;margin-bottom:10px">🔄</div>' +
         '<div style="font-size:16px;margin-bottom:6px">将向 <b>当前房间</b> 的所有设备发送同步命令</div>' +
         '<div style="color:#888;font-size:13px;margin-bottom:20px">设备将自动下载最新素材</div>' +
         '<div style="display:flex;gap:10px;justify-content:center">' +
         '<button class="btn btn-primary" id="do_sync_btn">确认发送</button>' +
-        '<button class="btn btn-secondary" onclick="m.classList.remove(\'show\')">取消</button></div></div>';
-    m.classList.add('show');
+        '<button class="btn btn-secondary" onclick="closeModal()">取消</button></div></div>');
     document.getElementById('do_sync_btn').onclick = function() {
-        m.classList.remove('show');
+        closeModal();
         doSyncRoom(s.rf);
     };
 }
@@ -337,46 +337,119 @@ function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'
 function escA(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 function doSyncRoom(roomId) {
-    var mc = document.getElementById('mc');
-    var m = document.getElementById('m');
-    mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">📡 发送中...</div>';
-    m.classList.add('show');
+    openModal('<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">📡 发送中...</div>');
     fetch('/api/rooms/' + roomId + '/sync?scene=' + (s._curScene || 'A'), { method: 'POST', headers: {'Content-Type': 'application/json'} })
         .then(function(r) { return r.json(); })
         .then(function(result) {
             if (result.success) {
-                mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">✅ 已发送同步命令到 <b>' + result.sent + '</b> 个设备</div>';
+                setMc('<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">✅ 已发送同步命令到 <b>' + result.sent + '</b> 个设备</div>');
             } else {
-                mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 失败: ' + (result.error || '未知错误') + '</div>';
+                setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 失败: ' + (result.error || '未知错误') + '</div>');
             }
-            setTimeout(function() { m.classList.remove('show'); }, 2000);
+            autoCloseModal(2000);
         })
         .catch(function(e) {
-            mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 错误: ' + e.message + '</div><button class="btn btn-primary" onclick="m.classList.remove(\'show\')" style="margin-top:10px">关闭</button>';
+            setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 错误: ' + e.message + '</div><button class="btn btn-primary" onclick="closeModal()" style="margin-top:10px">关闭</button>');
         });
 }
 
 
-function createPlayer(url, type, container) {
+// ============ 弹窗 / 预览播放器生命周期 ============
+// #mc 由 6 处功能共用（预览、同步确认、同步结果、授权选房、推送、输入框），
+// 所以「写弹窗内容」必须走 setMc()：它先释放上一个播放器。否则关掉预览后 <video>
+// 仍留在 DOM 里解码+缓冲（实测关窗 1.5s 内 currentTime 又前进 1.5s，整片已缓存）。
+var _modalAutoTimer = null;
+
+function stopPreview() {
+    var v = document.getElementById('pvVid');
+    if (!v) return;
+    v.onerror = null;            // 先摘监听：拆 src 会触发 error，不能让它去改写弹窗
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
+    v.remove();
+}
+
+function setMc(html) {
+    stopPreview();
+    document.getElementById('mc').innerHTML = html;
+}
+
+function openModal(html) {
+    clearTimeout(_modalAutoTimer);
+    _modalAutoTimer = null;
+    setMc(html);
+    document.getElementById('m').classList.add('show');
+}
+
+function closeModal() {
+    clearTimeout(_modalAutoTimer);
+    _modalAutoTimer = null;
+    stopPreview();
+    document.getElementById('m').classList.remove('show');
+}
+
+// 结果提示的自动关闭：句柄集中管，避免上一个对话框遗留的定时器把用户的预览静默关掉
+function autoCloseModal(ms) {
+    clearTimeout(_modalAutoTimer);
+    _modalAutoTimer = setTimeout(closeModal, ms);
+}
+
+function _pvKind(type, url) {
+    var m = String(url || '').match(/\.([A-Za-z0-9]+)(\?|$)/);
+    var ext = m ? m[1].toLowerCase() : '';
+    if (type === 'audio' || ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].indexOf(ext) > -1) return 'audio';
+    if (type === 'video' || ['mp4', 'webm', 'mov', 'm4v', 'mkv', 'avi'].indexOf(ext) > -1) return 'video';
+    return 'image';
+}
+
+function _pvFail(container, msg, url) {
+    stopPreview();
+    container.innerHTML = '<div class="pv-err">⚠️ ' + esc(msg) + '<div class="pv-err-url">' + esc(url || '') + '</div></div>';
+}
+
+function createPlayer(url, type, container, poster) {
+    stopPreview();
     container.innerHTML = '';
-    if (type === 'video') {
-        var v = document.createElement('video');
-        v.src = url;
-        v.autoplay = true;
-        v.muted = true;
-        v.controls = true;
-        v.loop = true;
-        v.preload = 'auto';
-        v.style.width = '100%';
-        v.style.maxHeight = '80vh';
-        container.appendChild(v);
-    } else {
+    var kind = _pvKind(type, url);
+    if (kind === 'image') {
         var img = document.createElement('img');
-        img.src = url;
+        img.alt = '';
         img.style.maxWidth = '100%';
         img.style.maxHeight = '80vh';
+        img.onerror = function () { _pvFail(container, '图片加载失败（服务端已无此文件）', url); };
+        img.src = url;
         container.appendChild(img);
+        return;
     }
+    var v = document.createElement(kind === 'audio' ? 'audio' : 'video');
+    v.id = 'pvVid';
+    v.controls = true;
+    v.loop = true;
+    v.playsInline = true;
+    v.preload = 'auto';
+    if (poster) v.poster = poster;   // 起播前用缩略图占位，等首帧的那几百毫秒不再是一片黑
+    v.style.background = '#000';
+    v.style.width = kind === 'video' ? '100%' : '360px';
+    v.style.maxHeight = '80vh';
+    var vol = parseFloat(localStorage.getItem('xvol'));
+    v.volume = isNaN(vol) ? 1 : Math.min(Math.max(vol, 0), 1);
+    v.addEventListener('volumechange', function () {
+        if (!v.muted) localStorage.setItem('xvol', String(v.volume));
+    });
+    v.onerror = function () {
+        _pvFail(container, kind === 'video'
+            ? '浏览器无法解码该容器/编码（.avi、.mkv、HEVC 的 .mov 常见）。要确认真机效果可推送到设备播放'
+            : '音频加载失败', url);
+    };
+    container.appendChild(v);
+    v.src = url;
+    // 双击本身就是用户手势，正常可直接带声播；原先无条件 muted=true，预览永远没声音
+    var p = v.play();
+    if (p && p.catch) p.catch(function () {
+        v.muted = true;
+        v.play().catch(function () {});
+    });
 }
 
 /* ============================================================
@@ -555,18 +628,23 @@ function rf() {
 
 function rn(e, n) {
     e.stopPropagation();
-    var note = prompt('输入备注:', s.folders && s.folders[n] || '');
-    if (note === null) return;
-    s.folders[n] = note;
-    fetch('/api/folders/notes', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({folder: n, note: note})
-    }).then(x => x.json());
-    rf();
-    // 更新文件夹信息显示
-    var count = s.ms.filter(function(x) { return x.folder === n; }).length;
-    document.getElementById('folder-info-note').innerText = (note || '无备注') + ' (' + count + '个)';
+    inputModal('文件夹 ' + n + ' 备注', '给这个文件夹写一句说明', (s.folders && s.folders[n]) || '', function (note) {
+        s.folders[n] = note;
+        localStorage.setItem('xfolds', JSON.stringify(s.folders));
+        rf();
+        var count = s.ms.filter(function (x) { return x.folder === n; }).length;
+        document.getElementById('folder-info-note').innerText = (note || '无备注') + ' (' + count + '个)';
+        // 服务端路由是单数 /api/folders/note；写成复数会 404，而 404 也带 JSON 体，必须显式判 ok
+        fetch('/api/folders/note', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folder: n, note: note })
+        }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+        }).catch(function (err) {
+            alert('备注未保存到服务器：' + err.message);
+        });
+    });
 }
 
 function sf(f) {
@@ -588,34 +666,27 @@ function sf(f) {
 
 function rm() {
     var g = document.getElementById('g');
-    console.log('Filtering folder:', s.f, 'from', s.ms.length, 'materials');
-    // 调试：检查前几个素材的folder值
-    if (s.ms.length > 0) {
-        console.log('First material folder:', s.ms[0].folder);
-        console.log('All material folders:', s.ms.map(function(x) { return x.folder; }));
-    }
     var l = s.ms.filter(function(x) { return x.folder === s.f; });
-    console.log('Found:', l.length, 'materials in folder', s.f);
     if (l.length === 0) {
-        g.innerHTML = '<div class="empty">暂无素材 (' + s.f + '文件夹有' + s.ms.filter(function(x){return x.folder===s.f}).length + '个)</div>';
+        g.innerHTML = '<div class="empty">暂无素材（' + esc(s.f) + ' 文件夹）</div>';
         return;
     }
+    var ps = _presetUrlSet();
     var h = '';
     l.forEach(function(x) {
         var sel = s.selected.includes(x.id);
-        // 检查是否已在预设中
-        var isPreset = s.pm && s.pm.some(function(p) { return p.url === x.url; });
+        var isPreset = ps.has(x.url);
         var thumb = '';
         if (x.type === 'video') {
-            thumb = x.thumbnail ? '<img src="' + escA(x.thumbnail) + '">' : '<div class="card-thumb">▶</div>';
+            thumb = x.thumbnail ? '<img src="' + escA(x.thumbnail) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">▶</div>';
         } else {
-            thumb = x.url ? '<img src="' + escA(x.url) + '">' : '<div class="card-thumb">?</div>';
+            thumb = x.url ? '<img src="' + escA(x.url) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">?</div>';
         }
         h += '<div class="card ' + (sel ? 'selected' : '') + (isPreset ? ' card-presetted' : '') + '">';
         h += '<input type="checkbox" class="card-check" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();tc(\'' + escA(x.id) + '\')">';
         h += '<button class="card-del" onclick="dm(event,\'' + escA(x.id) + '\')">x</button>';
         h += '<button class="card-preset" onclick="event.stopPropagation();cp2p(\'' + escA(x.id) + '\')" title="复制到预设">预设</button>';
-        h += '<div ondblclick="pv(\'' + escA(x.url) + '\',\'' + escA(x.type) + '\')">' + thumb + '</div>';
+        h += '<div class="card-pv" title="双击预览（Esc 关闭）" data-pv-url="' + escA(x.url) + '" data-pv-type="' + escA(x.type) + '" data-pv-thumb="' + escA(x.thumbnail) + '">' + thumb + '</div>';
         h += '<div class="card-name">' + esc(x.filename || x.name) + '</div>';
         h += '</div>';
     });
@@ -630,16 +701,36 @@ function tc(id) {
     rm();
 }
 
-function pv(u, t) {
-    // 编码URL确保兼容
-    var encodedUrl = encodeURI(u);
-    createPlayer(encodedUrl, t, document.getElementById('mc'));
+// 预设素材的 url 索引：s.pm 每次重新赋值即失效（lp()/lm()/cp2p 后都会重拉）
+function _presetUrlSet() {
+    if (!s._pset || s._psetSrc !== s.pm) {
+        s._psetSrc = s.pm;
+        s._pset = new Set((s.pm || []).map(function(p) { return p.url; }));
+    }
+    return s._pset;
+}
+
+// 双击预览走事件委托 + data 属性：URL 只作为 HTML 属性值转义，不再拼进 JS 源码
+function _bindPvDelegation(id) {
+    var el = document.getElementById(id);
+    if (!el || el._pvBound) return;
+    el._pvBound = true;
+    el.addEventListener('dblclick', function(e) {
+        var box = e.target && e.target.closest ? e.target.closest('[data-pv-url]') : null;
+        if (!box) return;
+        pv(box.getAttribute('data-pv-url'), box.getAttribute('data-pv-type'), box.getAttribute('data-pv-thumb'));
+    });
+}
+
+function pv(u, t, th) {
+    if (!u) return;
+    // 不再 encodeURI(u)：路径里的 % 会被二次编码成 %25，历史素材（文件名带空格/中文）反而 404
+    createPlayer(u, t, document.getElementById('mc'), th);
+    clearTimeout(_modalAutoTimer);
     document.getElementById('m').classList.add('show');
 }
 
-function dc() {
-    document.getElementById('m').classList.remove('show');
-}
+function dc() { closeModal(); }
 
 function ul(files) {
     if (!files.length) return;
@@ -786,11 +877,15 @@ function prm() {
     }
     var h = '';
     l.forEach(function(x) {
-        var type = x.type || (x.filename.match(/\.(mp4|webm|avi|mov)$/i) ? 'video' : 'image');
         var url = x.url;
+        var kind = _pvKind(x.type, url);
         var thumbUrl = x.thumbnail || null;
-        var t = type === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '">' : '<div class="card-thumb">▶</div>') : (url ? '<img src="' + escA(url) + '">' : '<div class="card-thumb">?</div>');
-        h += '<div class="card"><button class="card-del" onclick="dpm(event,\'' + escA(x.id) + '\')">x</button><div ondblclick="pv(\'' + escA(url) + '\',\'' + escA(type) + '\')">' + t + '</div><div class="card-name">' + esc(x.filename) + '</div></div>';
+        var t = kind === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">▶</div>')
+            : kind === 'audio' ? '<div class="card-thumb">♪</div>'
+            : (url ? '<img src="' + escA(url) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">?</div>');
+        h += '<div class="card"><button class="card-del" onclick="dpm(event,\'' + escA(x.id) + '\')">x</button>';
+        h += '<div class="card-pv" title="双击预览（Esc 关闭）" data-pv-url="' + escA(url) + '" data-pv-type="' + escA(kind) + '" data-pv-thumb="' + escA(thumbUrl) + '">' + t + '</div>';
+        h += '<div class="card-name">' + esc(x.filename) + '</div></div>';
     });
     g.innerHTML = h;
 }
@@ -913,18 +1008,14 @@ async function ar(id) {
     var h = '<div style="padding:20px"><h3>选择房间</h3><p style="color:#888;margin:10px 0">设备: ' + esc(devDesc) + '<br>设备将绑定到该房间，并自动同步房间素材</p>';
     h += '<select id="room_select" style="padding:8px;width:100%;background:#333;color:#fff;border:1px solid #555;border-radius:4px;margin:10px 0">' + roomOptions + '</select>';
     h += '<button class="btn btn-primary" id="confirm_auth_btn">确认授权</button></div>';
-    document.getElementById('mc').innerHTML = h;
+    openModal(h);
     document.getElementById('confirm_auth_btn').onclick = function() { confirmAuth(id, store); };
-    document.getElementById('m').classList.add('show');
 }
 
 async function confirmAuth(id, store) {
     var roomId = document.getElementById('room_select').value;
-    var modal = document.getElementById('m');
-    modal.classList.remove('show');
-    var mc = document.getElementById('mc');
-    mc.innerHTML = '<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">✅ 授权成功，正在刷新设备列表...</div>';
-    await fetch('/api/devices/' + id + '/authorize?store=' + encodeURIComponent(store) + '&room_id=' + roomId, {method: 'POST'});
+    closeModal();
+    await fetch('/api/devices/' + id + '/authorize?store=' + encodeURIComponent(store) + '&room_id=' + roomId, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     var r = await fetch('/api/devices');
     s.ds = await r.json();
     if (s.rf) { rmDevice(); }
@@ -2451,17 +2542,17 @@ async function rmRoomMat(e, mid) {
     await resp.json();
     // 通知设备立即删除本地素材文件（必须等完成再刷新UI）
     try {
-        var delR = await fetch('/api/rooms/' + s.rf + '/materials/' + mid + '?folder=' + s.f + '&scene=' + (s._curScene || 'A'), { method: 'DELETE' });
+        var delR = await fetch('/api/rooms/' + s.rf + '/materials/' + mid + '?folder=' + s.f + '&scene=' + (s._curScene || 'A'), { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
         var delD = await delR.json();
         if (delD.success) {
-            mc.innerHTML = '<div style="padding:30px;text-align:center;color:#4caf50">✅ 删除指令已发送（' + (delD.sent||0) + '台设备收到），设备将自动同步</div>';
+            setMc('<div style="padding:30px;text-align:center;color:#4caf50">✅ 删除指令已发送（' + (delD.sent||0) + '台设备收到），设备将自动同步</div>');
         } else {
-            mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 删除失败: ' + (delD.error||'') + '</div>';
+            setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 删除失败: ' + (delD.error||'') + '</div>');
         }
     } catch(e) {
-        mc.innerHTML = '<div style="padding:30px;text-align:center;color:#f44336">❌ 删除请求失败: ' + e.message + '</div>';
+        setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 删除请求失败: ' + e.message + '</div>');
     }
-    setTimeout(function() { m.classList.remove('show'); }, 2000);
+    autoCloseModal(2000);
     lr();
     doSyncRoom(s.rf);
     var mat = s.pm ? s.pm.find(function(x) { return x.id === mid; }) : null;
@@ -2565,8 +2656,7 @@ async function showPushDialog() {
     h += '<button class="folder-btn" id="pushSceneB" onclick="selectPushScene(\'B\')" style="flex:1;padding:10px 0;font-size:15px;border-radius:6px">第二幕</button>';
     h += '</div></div>';
     h += '<div id="pushRoomsDiv"><p style="color:#888">加载中...</p></div>';
-    document.getElementById('mc').innerHTML = h;
-    document.getElementById('m').classList.add('show');
+    openModal(h);
     // 加载房间
     loadPushRooms();
 }
@@ -2655,7 +2745,7 @@ async function doPushToRoom() {
         await fetch('/api/rooms/' + roomId + '/sync', { method: 'POST', headers: {'Content-Type': 'application/json'} });
     }
     alert('已推送到 ' + roomIds.length + ' 个房间（' + (scene === 'A' ? '第一幕' : '第二幕') + '），共' + totalCount + '个素材，已通知设备同步');
-    document.getElementById('m').classList.remove('show');
+    closeModal();
     // 刷新当前显示
     if (s.df) lr();
     // 推送后自动同步设备
@@ -2678,15 +2768,14 @@ async function doPushToRoom() {
     });
 }
 
-document.onkeydown = function(e) { if (e.key === 'Escape') { document.getElementById('m').classList.remove('show'); } };
+document.onkeydown = function(e) { if (e.key === 'Escape') { closeModal(); } };
 
 // 通用输入弹窗（替代原生 prompt，避免被浏览器拦截）
 function inputModal(title, placeholder, defaultValue, cb) {
     var h = '<div style="padding:24px;min-width:360px"><h3 style="font-size:22px;margin-bottom:14px">' + esc(title) + '</h3>';
     h += '<input id="imInput" type="text" value="' + escA(defaultValue || '') + '" placeholder="' + escA(placeholder || '') + '" style="width:100%;padding:12px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:16px;box-sizing:border-box">';
-    h += '<div style="margin-top:18px;text-align:right"><button class="btn" onclick="document.getElementById(\'m\').classList.remove(\'show\')">取消</button> <button class="btn btn-primary" id="imOk">确定</button></div></div>';
-    document.getElementById('mc').innerHTML = h;
-    document.getElementById('m').classList.add('show');
+    h += '<div style="margin-top:18px;text-align:right"><button class="btn" onclick="closeModal()">取消</button> <button class="btn btn-primary" id="imOk">确定</button></div></div>';
+    openModal(h);
     var inp = document.getElementById('imInput');
     inp.focus();
     inp.select();
@@ -2695,7 +2784,7 @@ function inputModal(title, placeholder, defaultValue, cb) {
         if (done) return;
         done = true;
         var v = inp.value.trim();
-        document.getElementById('m').classList.remove('show');
+        closeModal();
         cb(v);
     };
     document.getElementById('imOk').onclick = ok;
@@ -2736,6 +2825,8 @@ function rr(e, id, oldName) {
 
 sp(s.p);
 if (localStorage.getItem('xnavoff') === '1') toggleNav(true);   // 收起偏好跨刷新保留
+_bindPvDelegation('g');      // 素材网格
+_bindPvDelegation('pg');     // 预设素材网格
 
 // ==================== 版本管理 ====================
 async function lv() {

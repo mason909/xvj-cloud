@@ -224,7 +224,13 @@ app.get('/mqtt.min.js', (req, res) => {
 });
 
 // 静态文件服务：素材文件（视频、图片、缩略图）
-app.use('/uploads', express.static(__dirname + '/public/uploads'));
+// 文件名由服务端生成（时间戳+uuid+ASCII 基名），不会复用同名 → 可安全强缓存，重复预览直接命中。
+// ⚠️ 浏览器实际走 80 端口、由 nginx 直出该目录（root=/var/www/xvj/public），
+//    所以 /etc/nginx/conf.d/xvj.conf 的 location /uploads/ 必须配同样的头，两处要一起改。
+app.use('/uploads', express.static(__dirname + '/public/uploads', {
+  maxAge: '1d',
+  setHeaders: (res) => res.setHeader('Cache-Control', 'public, max-age=86400')
+}));
 
 // 【S-09a】 获取服务器配置（供设备使用，返回 serverUrl / mqttHost / mqttPort）
 app.get('/api/config', (req, res) => {
@@ -1138,6 +1144,9 @@ app.get('/api/preset/materials', (req, res) => {
 app.post('/api/preset/materials', (req, res) => {
   const { folder_id, filename, url, type, thumbnail, md5 } = req.body;
   if (!folder_id || !url) return res.status(400).json({ error: 'need folder_id and url' });
+  // 这条 url 会被前端当播放地址、也会被删素材时当磁盘路径用，只允许指向 uploads 根内
+  if (!resolveUploadPath(url)) return res.status(400).json({ error: 'invalid url' });
+  if (thumbnail && !resolveUploadPath(thumbnail)) return res.status(400).json({ error: 'invalid thumbnail' });
   const id = 'pm_' + Date.now();
   const safeName = filename || url.split('/').pop() || '未知文件';
   const fileType = type || (safeName.endsWith('.mp4') || safeName.endsWith('.avi') ? 'video' : 'image');
@@ -1189,6 +1198,7 @@ app.get("/api/folders", (req, res) => {
 app.post("/api/folders", (req, res) => {
   const name = req.body.name;
   if (!name) return res.status(400).json({error:"need name"});
+  if (!isSafeFolderName(name)) return res.status(400).json({error:"invalid folder name"});
   const dir = __dirname + "/public/uploads/"+name;
   if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, {recursive:true});
   res.json({success:true, name:name});
@@ -1198,6 +1208,8 @@ app.post("/api/folders", (req, res) => {
 app.delete("/api/folders/:name", (req, res) => {
   const name = req.params.name;
   if (!name || name==="default") return res.status(400).json({error:"cannot delete"});
+  // 下面要 rmSync(recursive)，名字必须先过白名单：编码斜杠可以穿过 :name 路由
+  if (!isSafeFolderName(name)) return res.status(400).json({error:"invalid folder name"});
   db.query("SELECT id, url FROM materials WHERE folder=?", [name], (err, mats) => {
     const list = mats || [];
     const ids = list.map(m => m.id);
@@ -1236,9 +1248,10 @@ app.delete("/api/materials/:id", (req, res) => {
       const killIds = [id, ...presetIds];
       removeMaterialIdsFromAllRooms(killIds, (affected) => {
         // 步骤3：删物理文件（预设与素材库共享同一文件，级联后一起删）
-        const base = __dirname + '/public';
         for (const f of [mat.url, mat.thumbnail]) {
-          if (f) { try { fs.unlinkSync(base + f); } catch (e) { /* ignore */ } }
+          const abs = f ? resolveUploadPath(f) : null;
+          if (!abs) continue;   // 空值或越出 uploads 根的路径一律不动磁盘
+          try { fs.unlinkSync(abs); } catch (e) { /* ignore */ }
         }
         // 步骤4：删表记录，通知受影响房间的设备同步
         const ph = killIds.map(() => '?').join(',');
@@ -1263,7 +1276,22 @@ const UPLOAD_MAX_SIZE = 500 * 1024 * 1024;
 
 function uploadFolderOf(req) {
   const folder = req.query.folder || req.body.folder || 'default';
-  return /^[A-Za-z0-9_-]{1,20}$/.test(folder) ? folder : null;
+  return isSafeFolderName(folder) ? folder : null;
+}
+
+// 素材目录名白名单：/api/folders 的创建与删除都把它直接拼进文件路径，
+// 未校验时 `..%2f..%2f...` 能解到 uploads 之外，而删除用的是 rmSync(recursive)。
+function isSafeFolderName(name) {
+  return typeof name === 'string' && /^[A-Za-z0-9_-]{1,20}$/.test(name);
+}
+
+// 把 "/uploads/xx/yy.mp4" 解成磁盘路径，并强制结果仍落在 uploads 根内。
+// 预设/默认素材的 url 是客户端任意传入的，删文件前不过这一道就等于按请求删盘。
+function resolveUploadPath(url) {
+  if (typeof url !== 'string' || url.indexOf('/uploads/') !== 0) return null;
+  const root = path.resolve(__dirname + '/public/uploads');
+  const abs = path.resolve(__dirname + '/public' + url);
+  return (abs === root || abs.startsWith(root + path.sep)) ? abs : null;
 }
 
 function buildSafeUploadName(originalname) {
@@ -1282,6 +1310,35 @@ function md5FileStream(filePath) {
       .on('end', () => resolve(hash.digest('hex')))
       .on('error', reject);
   });
+}
+
+// ffmpeg/ffprobe 异步包装：上传后处理绝不能用 execFileSync——它会阻塞整个
+// event loop（大文件可达十几秒），期间预览请求、30s 设备轮询、MQTT 回调一起停摆。
+function execFileAsync(cmd, args) {
+  return new Promise((resolve, reject) => {
+    require('child_process').execFile(cmd, args,
+      { timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout) => err ? reject(err) : resolve(stdout));
+  });
+}
+
+// moov 在文件尾的 mp4/mov（相机与多数压制工具的默认）要播放器多发一次 Range 请求取尾部索引才能起播。
+// 只做容器重排（-c copy，不重编码）；不适用或失败就原样返回，不影响上传结果。
+async function remuxFaststart(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (['.mp4', '.mov', '.m4v'].indexOf(ext) === -1) return filePath;
+  // 临时名必须保留可识别的扩展名：ffmpeg 按后缀选封装器，写成 *.tmp 会 "Unable to find a suitable output format"
+  const tmp = filePath.slice(0, -ext.length) + '.faststart' + ext;
+  try {
+    await execFileAsync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', filePath,
+      '-c', 'copy', '-movflags', '+faststart', tmp]);
+    if (fs.statSync(tmp).size > 0) fs.renameSync(tmp, filePath);
+    else throw new Error('empty remux output');
+  } catch (e) {
+    console.warn('⚠️ faststart 重封装失败（播放仍可用，只是首帧多一次 Range 请求）:', filePath, e.message);
+    try { fs.unlinkSync(tmp); } catch (e2) {}
+  }
+  return filePath;
 }
 
 // multer 实例全局单例（destination 从 req.query.folder 读取）
@@ -1339,19 +1396,20 @@ app.post("/api/upload", (req, res) => {
     };
 
     if (type === "video") {
-      try {
-        const thumbFile = req.file.filename.replace(/\.[^.]+$/, '') + '.jpg';
-        const thumbPath = __dirname + "/public/uploads/" + folder + "/" + thumbFile;
-        require('child_process').execFileSync('ffmpeg',
-          ['-i', req.file.path, '-ss', '00:00:01', '-vframes', '1', '-q:v', '2', '-y', thumbPath],
-          { stdio: 'ignore' });
-        thumbnail = "/uploads/" + folder + "/" + thumbFile;
-        const ffprobe = require('child_process').execFileSync('ffprobe',
-          ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', req.file.path],
-          { encoding: 'utf8' });
-        resolution = ffprobe.trim();
-      } catch (e) { /* 缩略图/分辨率失败不阻断上传 */ }
-      md5FileStream(req.file.path).then(finish).catch(() => finish(null));
+      (async () => {
+        await remuxFaststart(req.file.path);
+        try {
+          const thumbFile = req.file.filename.replace(/\.[^.]+$/, '') + '.jpg';
+          const thumbPath = __dirname + "/public/uploads/" + folder + "/" + thumbFile;
+          await execFileAsync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error',
+            '-i', req.file.path, '-ss', '00:00:01', '-vframes', '1', '-q:v', '2', thumbPath]);
+          thumbnail = "/uploads/" + folder + "/" + thumbFile;
+          const probe = await execFileAsync('ffprobe',
+            ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', req.file.path]);
+          resolution = probe.trim();
+        } catch (e) { /* 缩略图/分辨率失败不阻断上传 */ }
+        md5FileStream(req.file.path).then(finish).catch(() => finish(null));
+      })();
     } else {
       finish(null);
     }
