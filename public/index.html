@@ -517,6 +517,7 @@ var s = {
     rf: null,
     rooms: [],
     devicePollInterval: null,
+    logAutoRefreshTimer: null,
     loadingMaterials: false,
     lmCallId: 0,
     _lmCallCounter: 0,
@@ -3031,6 +3032,106 @@ async function pushVersionToAll(versionId) {
         alert('已推送 v' + res.version + ' 到 ' + res.pushed + ' 台设备');
     } else {
         alert('推送失败: ' + res.error);
+    }
+}
+
+
+// 【F-10】 设备日志页 // loadDeviceLogs() + toggleLogAutoRefresh()
+// 自动刷新的定时器句柄挂在【F-01】的 s.logAutoRefreshTimer 上（以前是页面底部再
+// `var s = s || {}` 补挂一个字段，现在主脚本里就定义好了，不再需要那行）。
+
+async function loadDeviceLogs() {
+    var container = document.getElementById('logList');
+    if (!container) return;
+    container.innerHTML = '<div style="padding:30px;text-align:center;color:#666">加载中...</div>';
+
+    var sel = document.getElementById('logDeviceFilter');
+    if (sel && sel.options.length <= 1) {
+        if (s.ds && s.ds.length) {
+            s.ds.forEach(function(d) {
+                var opt = document.createElement('option');
+                opt.value = d.id;
+                opt.textContent = d.id.substring(0, 16) + '...';
+                sel.appendChild(opt);
+            });
+        }
+    }
+
+    var deviceId = sel ? sel.value : '';
+    var levelFilter = document.getElementById('logLevelFilter') ? document.getElementById('logLevelFilter').value : '';
+    // level 服务端过滤：稀疏级别（如 ERROR）不会被 200 条窗口稀释成空列表
+    var url = '/api/device_logs?limit=200' + (deviceId ? '&device_id=' + encodeURIComponent(deviceId) : '') + (levelFilter ? '&level=' + encodeURIComponent(levelFilter) : '');
+    try {
+        var r = await fetch(url);
+        var logs = await r.json();
+        if (!logs || logs.length === 0) {
+            container.innerHTML = '<div style="padding:30px;text-align:center;color:#666">暂无日志</div>';
+            return;
+        }
+
+        // 日志统计
+        var stats = { error: 0, warn: 0, info: 0, debug: 0, total: logs.length };
+        logs.forEach(function(log) {
+            var lvl = (log.level || 'info').toLowerCase();
+            if (stats[lvl] !== undefined) stats[lvl]++;
+        });
+
+        var h = '<div style="color:#888;font-size:11px;margin-bottom:8px;display:flex;gap:16px">';
+        h += '<span>共 ' + logs.length + ' 条</span>';
+        h += '<span style="color:#f44336">ERROR ' + stats.error + '</span>';
+        h += '<span style="color:#ff9800">WARN ' + stats.warn + '</span>';
+        h += '<span style="color:#888">INFO ' + stats.info + '</span>';
+        h += '<span style="color:#4caf50">DEBUG ' + stats.debug + '</span>';
+        h += '</div>';
+
+        logs.forEach(function(log) {
+            var tid = log.device_id || '';
+            var shortId = tid.substring(0, 12) + (tid.length > 12 ? '...' : '');
+            var time = log.log_time ? new Date(parseInt(log.log_time)).toLocaleTimeString() : (log.created_at || '');
+            var lvl = (log.level || 'info').toLowerCase();
+
+            // 级别筛选
+            if (levelFilter && lvl !== levelFilter) return;
+
+            // 解析结构化消息: 时间戳 级别 模块 动作 消息
+            var msg = log.message || '';
+            var parts = msg.split(' ');
+            var module = '', action = '', message = msg;
+            if (parts.length >= 4) {
+                // 新格式: 级别 模块 动作 消息 (时间戳已被提取)
+                module = parts[1] || '';
+                action = parts[2] || '';
+                message = parts.slice(3).join(' ');
+            }
+
+            // 级别颜色
+            var lvlColor = lvl === 'error' ? '#f44336' : (lvl === 'warn' ? '#ff9800' : (lvl === 'debug' ? '#4caf50' : '#888'));
+            var lvlBg = lvl === 'error' ? 'rgba(244,67,54,0.1)' : (lvl === 'warn' ? 'rgba(255,152,0,0.1)' : 'transparent');
+
+            h += '<div style="border-bottom:1px solid #2a2a2a;padding:6px 4px;background:' + lvlBg + ';border-left:3px solid ' + lvlColor + '">';
+            h += '<span style="color:#555;font-size:10px;margin-right:8px">' + time + '</span>';
+            h += '<span style="color:#4caf50;font-size:10px;margin-right:8px" title="' + escA(tid) + '">' + shortId + '</span>';
+            h += '<span style="color:' + lvlColor + ';font-size:10px;font-weight:bold;margin-right:8px">[' + lvl.toUpperCase() + ']</span>';
+            if (module) h += '<span style="color:#9c27b0;font-size:10px;margin-right:4px">' + module + '</span>';
+            if (action) h += '<span style="color:#2196f3;font-size:10px;margin-right:8px">' + action + '</span>';
+            h += '<span style="color:#ccc">' + esc(message) + '</span>';
+            h += '</div>';
+        });
+        container.innerHTML = h;
+        container.scrollTop = 0;
+    } catch(e) {
+        container.innerHTML = '<div style="padding:20px;color:#f44336">加载失败: ' + e.message + '</div>';
+    }
+}
+
+function toggleLogAutoRefresh() {
+    var cb = document.getElementById('logAutoRefresh');
+    if (!cb) return;
+    if (cb.checked) {
+        if (s.logAutoRefreshTimer) clearInterval(s.logAutoRefreshTimer);
+        s.logAutoRefreshTimer = setInterval(loadDeviceLogs, 5000);
+    } else {
+        if (s.logAutoRefreshTimer) { clearInterval(s.logAutoRefreshTimer); s.logAutoRefreshTimer = null; }
     }
 }
 
