@@ -183,26 +183,98 @@ function prefixedFolderKey(sceneKey, folderId) {
 }
 
 /**
+ * folder_mappings 的单个值 → 素材 id 字符串数组（唯一入口，读写两侧都过它）。
+ * 只认数组：数字/对象是脏数据，直接当空；字符串按"单个 id"收下（历史上真出现过
+ * `{"01":"pm_xxx"}`，被下游的 [...v] 炸成字符数组，日志里成过 {"A01":["m","a",…]}）。
+ * 数组元素只保留非空字符串，顺带去重 —— rev 才不会因重复项/类型抖动而虚报"配置变了"。
+ */
+function normalizeMaterialIds(v) {
+  if (typeof v === 'string') return v ? [v] : [];
+  if (!Array.isArray(v)) return [];
+  const seen = new Set();
+  const out = [];
+  v.forEach(id => {
+    if (typeof id === 'string' && id && !seen.has(id)) { seen.add(id); out.push(id); }
+  });
+  return out;
+}
+
+/** 场景键白名单：本模型只有 A/B 两幕。scenes[target] 的 target 来自请求体，
+ *  `scenes['__proto__']` 是真值且赋值会写穿 Object.prototype（全进程共享），必须挡。 */
+function isSceneKey(k) { return k === 'A' || k === 'B'; }
+
+/** 是不是"普通对象"（排掉 null / 数组 / 字符串数字这些 typeof 也骗人的形状） */
+function isPlainObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
+
+/**
+ * 整份 folder_mappings 规范化（写库入口用）：键必须是合法文件夹名（会拼进设备端磁盘路径），
+ * 值过 normalizeMaterialIds；空数组的键直接丢弃 —— 与"该文件夹没映射素材"等价，config 更小、rev 更稳。
+ */
+function normalizeFolderMappings(fm) {
+  const out = {};
+  if (!isPlainObject(fm)) return out;
+  Object.keys(fm).forEach(fid => {
+    if (!isSafeFolderName(fid)) return;
+    const ids = normalizeMaterialIds(fm[fid]);
+    if (ids.length > 0) out[fid] = ids;
+  });
+  return out;
+}
+
+/**
+ * 单幕合并：incoming（PUT 整份 config 时带的那一幕）× existing（DB 里的那一幕）→ 落库形状。
+ * 三个字段三种"没传"的口径，各自都不能猜：
+ *   - folder_mappings：只要带了这个键（含 {} / null / 脏形状）就按传入的规范化结果落库，
+ *     完全没带才继承 DB —— 否则映射永远无法清空
+ *   - windows：只有非空数组才覆盖。清空窗口走 PUT /rooms/:id/windows —— 那里 windows 是必填
+ *     数组，空数组表示"真的一个都不留"，不会和"调用方顺手带了个空 config"混淆
+ *   - master：带 brightness 才生效，并 clamp 到 [0,1]
+ */
+function mergeSceneConfig(incoming, existing, defaultName) {
+  var src = isPlainObject(incoming) ? incoming : {};
+  var ex = isPlainObject(existing) ? existing : {};
+  var mappings = (src.folder_mappings === undefined)
+    ? (ex.folder_mappings || {})
+    : normalizeFolderMappings(src.folder_mappings);
+  var master;
+  if (src.master && src.master.brightness != null) {
+    var b = parseFloat(src.master.brightness);
+    master = { brightness: Math.min(1, Math.max(0, isNaN(b) ? 0 : b)) };
+  } else {
+    master = ex.master || { brightness: 1 };
+  }
+  return {
+    name: src.name || ex.name || defaultName,
+    folder_mappings: mappings,
+    windows: (Array.isArray(src.windows) && src.windows.length > 0) ? src.windows : (ex.windows || []),
+    master: master
+  };
+}
+
+/**
  * 将 scenes 对象中的 folder_mappings 键名前缀 scene 标识（A01, B01...）
  * @param {object} scenes - { A: { folder_mappings: { "01": [...] } }, B: { ... } }
  * @returns {object} - { A: { folder_mappings: { "A01": [...] } }, B: { "B01": [...] } }
  * 用途：MQTT 发送时统一格式，避免 A/B 场景共用 "01" 导致物理文件夹冲突
- * 两处归一化（为了让"配置有没有变"可判定，见 roomSceneDigest）：
+ * 三处归一化（为了让"配置有没有变"可判定，见 roomSceneDigest）：
+ *   - 只取 A/B 两幕（见 isSceneKey；DB 里的脏键不会跟着下发，也不会污染返回值原型）
  *   - 文件夹键排序后再生成，DB 里键顺序变了不算内容变了
- *   - 已带幕前缀的键不二次加前缀（见 prefixedFolderKey）
+ *   - 已带幕前缀的键不二次加前缀（见 prefixedFolderKey）；映射值过 normalizeMaterialIds
  */
 function buildPrefixedScenes(scenes) {
   var result = {};
-  Object.keys(scenes || {}).forEach(function(key) {
-    var sceneData = scenes[key];
+  ['A', 'B'].forEach(function(key) {
+    var sceneData = (scenes || {})[key];
+    if (!sceneData || typeof sceneData !== 'object') return;
+    var rawMappings = normalizeFolderMappings(sceneData.folder_mappings);
     var prefixedMappings = {};
-    Object.keys(sceneData.folder_mappings || {}).sort().forEach(function(folderId) {
-      prefixedMappings[prefixedFolderKey(key, folderId)] = sceneData.folder_mappings[folderId];
+    Object.keys(rawMappings).sort().forEach(function(folderId) {
+      prefixedMappings[prefixedFolderKey(key, folderId)] = rawMappings[folderId];
     });
     result[key] = {
       name: sceneData.name,
       folder_mappings: prefixedMappings,
-      windows: sceneData.windows || []
+      windows: Array.isArray(sceneData.windows) ? sceneData.windows : []
     };
     if (sceneData.master) result[key].master = sceneData.master;
   });
@@ -215,15 +287,17 @@ function buildPrefixedScenes(scenes) {
  * 消除各发送方语义不一致（曾出现 A-only / curScene-only 导致 APK 误清另一幕文件）
  */
 function mergePrefixedMappings(prefixedScenes) {
-  const fmA = prefixedScenes.A ? prefixedScenes.A.folder_mappings : {};
-  const fmB = prefixedScenes.B ? prefixedScenes.B.folder_mappings : {};
+  const src = prefixedScenes || {};
+  const fmA = (src.A && src.A.folder_mappings) || {};
+  const fmB = (src.B && src.B.folder_mappings) || {};
   const merged = {};
-  Object.keys(fmA).forEach(k => { merged[k] = [...(fmA[k] || [])]; });
+  Object.keys(fmA).forEach(k => { merged[k] = normalizeMaterialIds(fmA[k]); });
   Object.keys(fmB).forEach(k => {
+    const b = normalizeMaterialIds(fmB[k]);
     if (merged[k]) {
-      [...(fmB[k] || [])].forEach(id => { if (!merged[k].includes(id)) merged[k].push(id); });
+      b.forEach(id => { if (!merged[k].includes(id)) merged[k].push(id); });
     } else {
-      merged[k] = [...(fmB[k] || [])];
+      merged[k] = b;
     }
   });
   return merged;
@@ -265,11 +339,25 @@ function windowCommandPayload(roomId, cfg) {
 /** 房间的调试模式标志（config.debug 严格 true 才算开，与所有下发口径一致） */
 function roomDebugFlag(cfg) { return !!(cfg && cfg.debug === true); }
 
-/** 安全解析 rooms.config：脏数据按空配置处理，绝不让一次解析异常把通知链路带崩 */
+/**
+ * MQTT topic 里解出的设备 ID 白名单：字母数字/-/_ ，1~64 位（真实 ID 是 64 位十六进制 UUID）。
+ * 这个值会进 `UPDATE devices ... WHERE id LIKE ?` 的 LIKE 模式：不带 % 转义时，
+ * 一个发布到 xvj/device/%/status 的 "%" 就能改掉全库所有非 blocked 设备的状态。
+ * topic 是任何能连上 broker 的客户端都能自由填的，所以入口先卡形状。
+ */
+function isSafeDeviceId(s) { return typeof s === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(s); }
+
+/**
+ * 安全解析 rooms.config：脏数据按空配置处理，绝不让一次解析异常把通知链路带崩。
+ * 一律返回"普通对象"：数组/字符串/数字这类合法 JSON 但不是配置形状的值，也当空配置，
+ * 否则调用方 cfg.scenes 拿到 undefined 还算好事，拿到 "abc".scenes 就是另一个故事了。
+ */
 function parseRoomConfig(s) {
-  if (!s) return {};
-  if (typeof s === 'object') return s;
-  try { return JSON.parse(s) || {}; } catch (e) { return {}; }
+  if (isPlainObject(s)) return s;
+  if (typeof s !== 'string') return {};
+  var parsed;
+  try { parsed = JSON.parse(s); } catch (e) { return {}; }
+  return isPlainObject(parsed) ? parsed : {};
 }
 
 /**
@@ -489,7 +577,7 @@ function handleMqttMessage(topic, message) {
     console.log('⚠️ topic格式异常（尝试从payload提取deviceId）: ' + topic);
     try {
       const data = JSON.parse(message);
-      if (data.device_id) {
+      if (data.device_id && isSafeDeviceId(data.device_id)) {
         // 手动路由到 register 处理
         handleDeviceRegister(data.device_id, data);
       }
@@ -499,6 +587,11 @@ function handleMqttMessage(topic, message) {
   
   const deviceId = afterPrefix.substring(0, lastSlash);
   const msgType = afterPrefix.substring(lastSlash + 1);
+  // ID 形状先卡死（见 isSafeDeviceId）：status 分支拿它拼 SQL 的 LIKE，通配符会让一发心跳改全库
+  if (!isSafeDeviceId(deviceId)) {
+    console.warn('⚠️ 设备 ID 形状非法，消息已丢弃: ' + topic);
+    return;
+  }
   
   try {
     let data = null;
@@ -683,7 +776,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
     db.query(roomQuery, [roomId], (err, results) => {
       if (!err && results.length > 0) {
         try {
-          const roomConfig = JSON.parse(results[0].config || '{}');
+          const roomConfig = parseRoomConfig(results[0].config);
 
           // 授权响应本身就带全套播放字段（scenes/folder_mappings/debug/rev），
           // 设备端 handleAuthResponse 收到即自行同步 —— 所以这里**不再**补发 sync_room_materials。
@@ -832,8 +925,10 @@ function reconcileDeviceRev(mqttId, reportedRev) {
         const cfg = parseRoomConfig(rr[0].config);
         const want = roomSceneDigest(cfg);
         if (want === reportedRev) return;
-        // 记账 + 顺手清理：Map 规模就是设备数量级，不留死条目
-        revReconcileAt.set(d.id, now);
+        // 记账：读的是 mqttId，写也必须写 mqttId —— 之前写的是 d.id，按指纹上报的设备
+        // （OTA 后 mqttId ≠ 库 id）节流键永远对不上，等于每次心跳都补发一轮全量同步
+        revReconcileAt.set(mqttId, now);
+        if (d.id !== mqttId) revReconcileAt.set(d.id, now);
         if (revReconcileAt.size > 500) {
           revReconcileAt.forEach((t, k) => { if (now - t > REV_RECONCILE_MIN_INTERVAL * 10) revReconcileAt.delete(k); });
         }
@@ -1006,8 +1101,12 @@ app.post('/api/rooms/:id/sync', (req, res) => {
 // sync 对账按孤儿清掉。不传则默认 A。
 app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
   const { roomId, materialId } = req.params;
+  // ?folder= 与 ?scene= 会拼成 delete_material 的 folder 字段下发，APK 按它解析磁盘目录
+  // （"A01" → scenea/01）：不卡形状就等于把 "../../etc" 交给设备端去删。两个都走白名单。
   const folder = req.query.folder || '01';
   const curScene = req.query.scene || 'A';   // 明确指定场景，默认 A
+  if (!isSafeFolderName(folder)) return res.status(400).json({ error: 'invalid folder name' });
+  if (!isSceneKey(curScene)) return res.status(400).json({ error: 'scene 只能是 A 或 B' });
 
   // 1. 查出文件名（查 materials 和 preset_materials 两个表）
   db.query(
@@ -1023,20 +1122,21 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
           return res.status(404).json({ error: '房间不存在' });
         }
 
-        let config = {};
-        try { config = roomRows[0].config ? JSON.parse(roomRows[0].config) : {}; } catch(e) {}
+        let config = parseRoomConfig(roomRows[0].config);
 
         // 从 folder_mappings 移除该素材：A/B 两幕同编号文件夹一起清（与添加素材到房间时写双幕对称，
         // 否则会出现"B 幕删了 A 幕还有"的幻影素材）
         let removed = false;
         if (config.scenes) {
           ['A', 'B'].forEach(scene => {
-            if (config.scenes[scene] && config.scenes[scene].folder_mappings) {
-              Object.keys(config.scenes[scene].folder_mappings).forEach(fid => {
-                const arr = config.scenes[scene].folder_mappings[fid] || [];
-                const before = arr.length;
-                config.scenes[scene].folder_mappings[fid] = arr.filter(id => id !== materialId);
-                if (arr.length !== before) removed = true;
+            const sc = config.scenes[scene];
+            if (sc && sc.folder_mappings && typeof sc.folder_mappings === 'object') {
+              Object.keys(sc.folder_mappings).forEach(fid => {
+                // 值可能已是脏形状（非数组）：arr.filter 抛在 MySQL 回调里 = 这次请求挂死不返回
+                const arr = normalizeMaterialIds(sc.folder_mappings[fid]);
+                const kept = arr.filter(id => id !== materialId);
+                if (kept.length !== arr.length) removed = true;
+                sc.folder_mappings[fid] = kept;
               });
             }
           });
@@ -1048,8 +1148,13 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
           'UPDATE rooms SET config = ? WHERE id = ?',
           [newCfgStr, roomId],
           (err3) => {
-            if (err3) console.error('删除素材更新 room config 失败:', err3);
-            else console.log('🗑 房间', roomId, 'A/B 两幕 folder', folder, '移除素材', materialId, removed ? '✓' : '(未找到)');
+            // 映射没落到库里就不能再往下发删除命令、更不能回 success：
+            // 那样前端以为删干净了，下次同步素材又回来（幻影素材）
+            if (err3) {
+              console.error('删除素材更新 room config 失败:', err3.message);
+              return res.status(500).json({ error: err3.message });
+            }
+            console.log('🗑 房间', roomId, 'A/B 两幕 folder', folder, '移除素材', materialId, removed ? '✓' : '(未找到)');
 
             // 3. 查房间下所有已授权设备
             db.query(
@@ -1127,14 +1232,12 @@ app.post('/api/devices/:id/authorize', (req, res) => {
   console.log('授权到店铺:', store, '房间:', roomId);
 
   // 先查设备，用DB中的id字段作为MQTT topic ID（APK订阅用的是这个）
+  // 与 deauthorize/block 对齐：不存在直接 404。以前这里对不存在的 id 也回 success，
+  // 还往 xvj/auth/response 广播一发 nobody 的授权 —— 界面显示"已授权"，其实一台都没动
   db.query('SELECT id FROM devices WHERE id = ?', [deviceId], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-
-    let mqttId = deviceId;
-    // 如果DB id与传入的不完全匹配（可能是别名），确保使用DB中的真实id
-    if (rows && rows.length > 0) {
-      mqttId = rows[0].id;
-    }
+    if (!rows || rows.length === 0) return res.status(404).json({ error: '设备不存在' });
+    const mqttId = rows[0].id;
 
     // 更新授权状态
     db.query(
@@ -1197,7 +1300,7 @@ app.get('/api/config/:deviceId', (req, res) => {
   db.query('SELECT config FROM devices WHERE id = ?', [req.params.deviceId], (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
     if (results.length === 0) return res.status(404).json({ error: '设备不存在' });
-    res.json(JSON.parse(results[0].config || '{}'));
+    res.json(parseRoomConfig(results[0].config));   // devices.config 是自由 JSON，脏数据同样按空处理
   });
 });
 
@@ -1339,6 +1442,9 @@ app.delete("/api/folders/:name", (req, res) => {
   // 下面要 rmSync(recursive)，名字必须先过白名单：编码斜杠可以穿过 :name 路由
   if (!isSafeFolderName(name)) return res.status(400).json({error:"invalid folder name"});
   db.query("SELECT id, url FROM materials WHERE folder=?", [name], (err, mats) => {
+    // 这里查不到就不往下删：下面紧跟 rmSync(recursive)，
+    // 按"查失败 = 没有素材"走下去会把目录删了、materials 行却留着（孤儿引用）
+    if (err) return res.status(500).json({ error: err.message });
     const list = mats || [];
     const ids = list.map(m => m.id);
     const urls = list.map(m => m.url).filter(Boolean);
@@ -1562,13 +1668,22 @@ app.post("/api/upload", (req, res) => {
 });
 
 // 【S-10e】 保存文件夹备注（写入 folder_notes 表）
+// folder 是主键且列宽 VARCHAR(10)、note VARCHAR(255)：超限/非法名在严格模式下会 500，
+// 非严格模式则静默截断 —— 库里存的备注就不再是用户写的那句话了。所以入参先按列宽校验。
 app.post("/api/folders/note", (req, res) => {
     const { folder, note } = req.body;
     if (!folder) return res.status(400).json({error:"need folder"});
-    
+    if (!isSafeFolderName(folder)) return res.status(400).json({error:"invalid folder name"});
+    if (note !== undefined && note !== null && typeof note !== 'string') {
+      return res.status(400).json({error:"note 必须是字符串"});
+    }
+    if (typeof note === 'string' && note.length > 255) {
+      return res.status(400).json({error:"备注最长 255 字"});
+    }
+
     // 保存到数据库
     db.query("INSERT INTO folder_notes (folder, note) VALUES (?, ?) ON DUPLICATE KEY UPDATE note = ?",
-      [folder, note, note],
+      [folder, note || '', note || ''],
       (err) => {
         if (err) return res.status(500).json({error:err.message});
         logAction('update', 'folder_note', {folder, note});
@@ -1610,13 +1725,12 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
 
     // 分别读取 Scene A 和 B 的 folder_mappings，返回 scene-prefixed keys 供 APK 正确 lookup
     // APK syncRoomMaterials 用 scenePrefix + folderNum 构建 "A01" / "B01" key 来查 HTTP API
-    let folderMappingsA = {};
-    let folderMappingsB = {};
-    try {
-      const config = JSON.parse(rows[0].config || '{}');
-      folderMappingsA = config.scenes?.A?.folder_mappings || {};
-      folderMappingsB = config.scenes?.B?.folder_mappings || {};
-    } catch(e) {}
+    // ⚠️ 这份清单是设备"该有哪些文件"的唯一真值来源，必须和 MQTT 下发同口径：
+    //    parseRoomConfig（脏 config 不抛异常）+ normalizeFolderMappings（值统一成 id 数组、非法文件夹键丢弃）
+    const manifestConfig = parseRoomConfig(rows[0].config);
+    const manifestScenes = (manifestConfig && manifestConfig.scenes) || {};
+    const folderMappingsA = normalizeFolderMappings(manifestScenes.A && manifestScenes.A.folder_mappings);
+    const folderMappingsB = normalizeFolderMappings(manifestScenes.B && manifestScenes.B.folder_mappings);
 
     // 收集所有需要的 material IDs（来自 A 和 B）
     const allIds = new Set();
@@ -1853,74 +1967,50 @@ app.put('/api/rooms/:id', (req, res) => {
       if (errDb) return res.status(500).json({ error: errDb.message });
       if (!rowsDb || rowsDb.length === 0) return res.status(404).json({ error: '房间不存在' });
 
-      var existingConfig = {};
-      try { existingConfig = rowsDb[0].config ? JSON.parse(rowsDb[0].config) : {}; } catch(e) {}
+      var existingConfig = parseRoomConfig(rowsDb[0].config);
       var roomName = rowsDb[0].name;
       var targetName = (name !== undefined && name !== roomName) ? name : null;
 
-      var cfg = typeof config === 'string' ? JSON.parse(config) : config;
-
-      if (!cfg.scenes) {
-        // incoming config 未带 scenes → 完整继承 DB 中的 scenes
-        cfg.scenes = existingConfig.scenes || {
-          A: { name: '第一幕', folder_mappings: {}, windows: [] },
-          B: { name: '第二幕', folder_mappings: {}, windows: [] }
-        };
+      // config 允许字符串（前端就是这么发的）或对象。解析失败/类型不对一律 400：
+      // 抛在 MySQL 回调里会被顶层 uncaughtException 吞掉，那次请求永远挂着不返回，
+      // 前端只看到"保存中…"转圈，且这个房间每次保存都稳定复现。
+      var cfg;
+      try { cfg = typeof config === 'string' ? JSON.parse(config) : config; }
+      catch (e) { return res.status(400).json({ error: 'config 不是合法 JSON 字符串' }); }
+      if (!isPlainObject(cfg)) {
+        return res.status(400).json({ error: 'config 必须是对象' });
+      }
+      if (cfg.scenes === undefined || cfg.scenes === null) {
+        cfg.scenes = {};
+      } else if (!isPlainObject(cfg.scenes)) {
+        return res.status(400).json({ error: 'config.scenes 必须是对象' });
       } else {
-        // 合并：保留 DB 中 scenes 的 windows，只更新传入的 folder_mappings
-        // 【Bug Fix】incoming config 中未包含的 scene（如只修改 Scene A 时 B 未传入）必须保留 DB 中原有数据
-        // folder_mappings 区分「未提供」与「显式空对象」：传 {} 表示清空该场景映射（否则永远无法清空）
-        var existingScenes = existingConfig.scenes || {};
-        var incomingA = cfg.scenes.A;
-        cfg.scenes.A = {
-          name: incomingA ? (incomingA.name || '第一幕') : (existingScenes.A?.name || '第一幕'),
-          folder_mappings: (incomingA && incomingA.folder_mappings && typeof incomingA.folder_mappings === 'object')
-            ? incomingA.folder_mappings
-            : (incomingA && incomingA.folder_mappings === null ? {} : (existingScenes.A?.folder_mappings || {})),
-          windows: (incomingA?.windows && incomingA.windows.length > 0)
-            ? incomingA.windows
-            : (existingScenes.A?.windows || []),
-          master: (incomingA?.master && incomingA.master.brightness != null)
-            ? { brightness: Math.min(1, Math.max(0, parseFloat(incomingA.master.brightness) || 0)) }
-            : (existingScenes.A?.master || { brightness: 1 })
-        };
-        // Scene B：未传入时保留 DB 完整数据（不被空对象覆盖）
-        if (cfg.scenes.B) {
-          cfg.scenes.B = {
-            name: cfg.scenes.B.name || '第二幕',
-            folder_mappings: (cfg.scenes.B.folder_mappings && typeof cfg.scenes.B.folder_mappings === 'object')
-              ? cfg.scenes.B.folder_mappings
-              : (cfg.scenes.B.folder_mappings === null ? {} : (existingScenes.B?.folder_mappings || {})),
-            windows: (cfg.scenes.B.windows && cfg.scenes.B.windows.length > 0)
-              ? cfg.scenes.B.windows
-              : (existingScenes.B?.windows || []),
-            master: (cfg.scenes.B.master && cfg.scenes.B.master.brightness != null)
-              ? { brightness: Math.min(1, Math.max(0, parseFloat(cfg.scenes.B.master.brightness) || 0)) }
-              : (existingScenes.B?.master || { brightness: 1 })
-          };
-        } else {
-          // B 未在 incoming config 中 → 完整保留 DB 中的 B
-          cfg.scenes.B = existingScenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
-        }
+        // 只认 A/B 两幕。脏键（典型是 "__proto__"）留在 config 里会被存库，
+        // 下次按 scenes[key] 取值时就把内容挂到了 Object.prototype 上（全进程、跨房间泄漏）
+        Object.keys(cfg.scenes).forEach(function(k) { if (!isSceneKey(k)) delete cfg.scenes[k]; });
       }
 
-      var proceedConfigUpdate = () => {
-        var newCfgStr = JSON.stringify(cfg);
-        if (targetName) { updates.push('name=?'); values.push(targetName); }
-        updates.push('config=?'); values.push(newCfgStr);
-        values.push(id);
-        db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
-          if (err) {
-            if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '该客户下已存在同名房间' });
-            return res.status(500).json({ error: err.message });
-          }
-          logAction('update', 'room', { id, name: targetName || roomName });
-          // 落库后由收敛点判定"是否真变了 / 该发哪条命令"，前端不再补 sync（见 notifyRoomConfigChanged）
-          notifyRoomConfigChanged(id, rowsDb[0].config, newCfgStr, 'PUT /rooms');
-          res.json({ success: true });
-        });
-      };
-      proceedConfigUpdate();
+      // 逐幕合并：incoming 没带的那一幕、以及 windows/master 这些不归本接口管的字段，
+      // 一律从 DB 继承 —— 前端有多处会 PUT 整份 config，任何一处少填都不该抹掉房间配置
+      var existingScenes = existingConfig.scenes || {};
+      ['A', 'B'].forEach(function(key) {
+        cfg.scenes[key] = mergeSceneConfig(cfg.scenes[key], existingScenes[key], key === 'A' ? '第一幕' : '第二幕');
+      });
+
+      var newCfgStr = JSON.stringify(cfg);
+      if (targetName) { updates.push('name=?'); values.push(targetName); }
+      updates.push('config=?'); values.push(newCfgStr);
+      values.push(id);
+      db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
+        if (err) {
+          if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '该客户下已存在同名房间' });
+          return res.status(500).json({ error: err.message });
+        }
+        logAction('update', 'room', { id, name: targetName || roomName });
+        // 落库后由收敛点判定"是否真变了 / 该发哪条命令"，前端不再补 sync（见 notifyRoomConfigChanged）
+        notifyRoomConfigChanged(id, rowsDb[0].config, newCfgStr, 'PUT /rooms');
+        res.json({ success: true });
+      });
     });
     return;
   }
@@ -1960,8 +2050,8 @@ app.put('/api/rooms/:id/windows', (req, res) => {
   db.query('SELECT config FROM rooms WHERE id = ?', [id], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!rows || rows.length === 0) return res.status(404).json({ error: '房间不存在' });
-    const existingConfig = rows[0].config ? JSON.parse(rows[0].config) : {};
-    if (!existingConfig.scenes) {
+    const existingConfig = parseRoomConfig(rows[0].config);
+    if (!isPlainObject(existingConfig.scenes)) {
       // 旧数据：初始化 scenes 结构
       existingConfig.scenes = {
         A: { name: '第一幕', folder_mappings: {}, windows: [] },
@@ -1969,8 +2059,15 @@ app.put('/api/rooms/:id/windows', (req, res) => {
       };
     }
     const targetScene = sceneId || 'A';
+    // sceneId 直接当键去赋值，必须先过白名单：'__proto__' 在 scenes['__proto__'] 上是真值
+    // （继承自 Object.prototype），赋值会把 windows/master 挂到全进程原型上 —— 跨房间泄漏、
+    // 所有 rev 一起漂移，且不重启清不掉
+    if (!isSceneKey(targetScene)) {
+      return res.status(400).json({ error: 'sceneId 只能是 A 或 B' });
+    }
     if (!existingConfig.scenes[targetScene]) {
-      return res.status(400).json({ error: '无效的场景ID' });
+      // 该幕还没建过（旧数据只存了单幕）：按标准形状补上，与上面 scenes 缺失时的初始化同构
+      existingConfig.scenes[targetScene] = mergeSceneConfig(null, null, targetScene === 'A' ? '第一幕' : '第二幕');
     }
     existingConfig.scenes[targetScene].windows = windows;
     // 场景总亮度（Arena 屏级总控对标）：传入则 clamp 到 [0,1] 后保存
@@ -2358,8 +2455,10 @@ app.post('/api/versions/upload', upload.single('apk'), async (req, res) => {
     let md5 = null;
     try { md5 = await fileMd5(req.file.path); } catch (e) { console.error('上传 APK 算 MD5 失败:', e.message); }
 
-    // 取消之前的latest标记
+    // 取消之前的latest标记（失败必须停手：留着两个 is_latest=1 时，取最新的 SELECT ... LIMIT 1
+    // 会随机挑一行，推送/轮询可能把旧版本当最新版发给设备）
     db.query('UPDATE apk_versions SET is_latest = 0', (err) => {
+      if (err) return res.status(500).json({ error: err.message });
       const filepath = '/apk/' + req.file.filename;
       db.query(
         'INSERT INTO apk_versions (version, version_code, filename, filepath, size, md5, changelog, is_latest) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
