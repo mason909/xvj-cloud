@@ -1125,8 +1125,8 @@ async function dr(e, id) {
 
 // 【F-06d】 房间工作台 // function rmDevice()
 // 名字里的 Device 只是其中一段。拼出来的顺序：工作台两个开关（调试模式/窗口配置）+ 输入截取开关
-// → 本房间已授权设备列表 → 场景选择器（第一幕/第二幕）→ 窗口模式下直接交给 renderWinEditorFull 并 return，
-// 文件夹模式下才继续画素材目录与同步按钮；最后调 updateRoomDebugToggle() 恢复开关显示态。
+// → 本房间已授权设备列表 → 场景选择器（第一幕/第二幕）→ 窗口模式下交给 renderWinEditorFull 并 return，
+// 文件夹模式下才继续画素材目录与同步按钮；两条路径结尾都会调 updateRoomDebugToggle() 恢复开关显示态。
 // 无 s.rf 时只画"请选择或创建房间"，不碰其它状态。
 function rmDevice() {
     var g = document.getElementById('dg');
@@ -1212,6 +1212,8 @@ function rmDevice() {
     if (s._windowEditorActive) {
         g.innerHTML = h;
         renderWinEditorFull();
+        // 开关 DOM 是刚重建的（一律"关"），必须在这里补一次显示态，否则窗口模式下看不到云端 config.debug
+        updateRoomDebugToggle();
         return;
     }
     
@@ -1244,8 +1246,7 @@ function rmDevice() {
     h += h2;
     g.innerHTML = h;
     // 应用调试模式的显示状态（sessionStorage 优先，否则读服务器数据）
-    // ⚠️ 窗口模式分支（上面 renderWinEditorFull 后直接 return）走不到这一行：于是切片编辑器打开时，
-    //    刚重建出来的调试模式开关一律显示"关"，与云端 config.debug 真值无关（待修）。
+    // 窗口模式分支在上面 return 前也各自调了一次，两条路径都不会漏。
     updateRoomDebugToggle();
 }
 

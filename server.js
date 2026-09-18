@@ -801,10 +801,20 @@ app.post('/api/devices/:id/block', (req, res) => {
 });
 
 // 【S-05e】 发送指令到设备（MQTT command 主题下发）
-// body.command 是原样转发的任意指令对象；只有 action==='sync' 会被服务端改写补全
+// action 必须落在 DEVICE_ACTIONS 白名单里（= APK handleCommand 的 when 分支 + 服务端会改写的 'sync'）；
+// 未知 action 一律 400，不透传 —— command 主题上的指令设备是照单执行的，不能靠前端自觉。
+const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'preset_sync', 'sync_room_materials',
+                        'update_windows', 'delete_material', 'update', 'set_debug'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
+
+  if (!command || typeof command !== 'object' || typeof command.action !== 'string') {
+    return res.status(400).json({ error: 'command 必须是带字符串 action 的对象' });
+  }
+  if (DEVICE_ACTIONS.indexOf(command.action) === -1) {
+    return res.status(400).json({ error: '不支持的 action: ' + command.action });
+  }
 
   // 转换相对URL为完整URL（与版本推送共用 APK_DOWNLOAD_BASE，换域名/上 HTTPS 只改一处）
   let cmd = { ...command };
@@ -1320,18 +1330,18 @@ function uploadFolderOf(req) {
 
 // 素材目录名白名单：/api/folders 的创建与删除、以及 /api/upload 的 destination（uploadFolderOf）
 // 都把它直接拼进文件路径，未校验时 `..%2f..%2f...` 能解到 uploads 之外，而删除用的是 rmSync(recursive)。
-// ⚠️ 长度上限 20 与 materials.folder / folder_notes.folder 的 VARCHAR(10) 不一致：
-//    11~20 字符的目录名能建目录、能上传，落库时却被截断（严格模式下直接报错），
-//    截断后 DB 里的 folder 值就不再等于磁盘目录名，GET /api/folders 的并集会露出两个入口。
+// 长度上限 10 = materials.folder / folder_notes.folder 的 VARCHAR(10)：曾经这里是 20，
+// 11~20 字符的目录名能建目录能上传、落库却被截断，DB 值不再等于磁盘目录名。
+// 生产现存目录名全是 2 字符（01…30），收紧不会打到存量数据。
 function isSafeFolderName(name) {
-  return typeof name === 'string' && /^[A-Za-z0-9_-]{1,20}$/.test(name);
+  return typeof name === 'string' && /^[A-Za-z0-9_-]{1,10}$/.test(name);
 }
 
 // 把 "/uploads/xx/yy.mp4" 解成磁盘路径，并强制结果仍落在 uploads 根内。
 // 用于 preset_materials 的增删（url 是客户端任意传入的）与 materials 的物理文件清理，
 // 不过这一道就等于按请求删盘。
 // ⚠️ 目前没有任何调用方覆盖 default_materials —— 那张表只写/查/删行，服务端从不按它的 url 碰磁盘，
-//    所以缺校验不会删文件，但前端 <video src> 会照抄该 url（等同站内任意链接注入，与 P3-10 一起处理）。
+//    所以缺校验不会删文件；但【S-13b】已把 url 收紧成"站内相对路径"，防止将来被照抄进 <video src>。
 function resolveUploadPath(url) {
   if (typeof url !== 'string' || url.indexOf('/uploads/') !== 0) return null;
   const root = path.resolve(__dirname + '/public/uploads');
@@ -1664,7 +1674,7 @@ app.delete('/api/stores/:name', (req, res) => {
   const storeName = decodeURIComponent(req.params.name);
   db.query('SELECT COUNT(*) AS c FROM rooms WHERE store_name = ?', [storeName], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    if (rows[0].c > 0) return res.status(409).json({ error: '该客户下还有 ' + rows[0].c + ' 个房间，请先删除或移动房间' });
+    if (rows[0].c > 0) return res.status(409).json({ error: '该客户下还有 ' + rows[0].c + ' 个房间，请先在设备管理页删除这些房间（房间不支持跨客户移动）' });
     db.query('DELETE FROM stores WHERE name = ?', [storeName], (err2) => {
       if (err2) return res.status(500).json({ error: err2.message });
       logAction('delete', 'store', { name: storeName });
@@ -1910,9 +1920,9 @@ app.delete('/api/rooms/:id', (req, res) => {
     if (err) return res.status(500).json({error: err.message});
     const room = rows[0];
     // 解绑前通知房间内设备停止播放（设备只认 fingerprint，缺省回退设备 id，与 push-update 一致）
-    // ⚠️ APK 侧 action:'stop' 目前只停"单播放器"，不停多窗口播放器（见 MainActivity.kt handleCommand 注释），
-    //    所以删房间后设备画面仍在播；要真正停下来得等 APK 补 releaseAllWindows。
-    //    另外这里 publish 完就继续删行了，没有等设备的 status 回执 —— 通知是"尽力而为"。
+    // action:'stop' 在 APK 侧 = stopPlayback + releaseAllWindows（168 起），多窗口画面会真黑下去；
+    //   更早的在网设备（≤167）只停单播放器，删房间后画面仍在播 —— 见 MainActivity.kt handleCommand。
+    // 另外这里 publish 完就继续删行了，没有等设备的 status 回执 —— 通知是"尽力而为"。
     db.query('SELECT id, fingerprint FROM devices WHERE room_id = ?', [id], (errD, devs) => {
       if (errD) return res.status(500).json({error: errD.message});
       var bound = devs || [];
@@ -1972,8 +1982,27 @@ app.get('/api/default-materials', (req, res) => {
 });
 
 // 【S-13b】 添加默认素材（写入 default_materials 表）
+// 长度上限与下面的 DDL 对齐（MySQL 非严格模式下超长会静默截断，所以在这里挡）；
+// type 只允许 video/image —— 前端与 APK 的类型判定只有这两种分支。
 app.post('/api/default-materials', (req, res) => {
   const { name, url, type, thumbnail } = req.body;
+  if (typeof name !== 'string' || !name.trim() || name.length > 255) {
+    return res.status(400).json({ error: 'name 必填且不超过 255 字符' });
+  }
+  if (typeof url !== 'string' || !url.trim() || url.length > 512) {
+    return res.status(400).json({ error: 'url 必填且不超过 512 字符' });
+  }
+  // 只收站内相对路径：这张表的 url 将来若被前端照抄进 <video src>/<a href>，
+  // 允许 http(s) 绝对址 = 任意外链注入；'//' 开头则是协议相对（换 host）。
+  if (!url.startsWith('/') || url.startsWith('//')) {
+    return res.status(400).json({ error: "url 必须是站内相对路径（以 '/' 开头，不能 '//'" });
+  }
+  if (type !== 'video' && type !== 'image') {
+    return res.status(400).json({ error: "type 只能是 'video' 或 'image'" });
+  }
+  if (thumbnail != null && (typeof thumbnail !== 'string' || thumbnail.length > 512)) {
+    return res.status(400).json({ error: 'thumbnail 需为不超过 512 字符的字符串' });
+  }
   const id = 'def_' + Date.now();
   db.query(
     'INSERT INTO default_materials (id, name, url, type, thumbnail) VALUES (?, ?, ?, ?, ?)',
@@ -2044,16 +2073,17 @@ app.listen(PORT, () => {
  *   - devices.authorized 的列默认值是 1，但所有 INSERT 都显式传 0，所以不影响"新设备待审核"。
  */
 function initDatabase() {
-  // ⚠️ 这段 DDL 比代码实际用到的结构落后：devices 的 INSERT/SELECT 还在写 room_id、store、
-  //    first_seen（见 handleDeviceRegister 的 INSERT 与【S-11c】店铺重命名级联），但这些列没在这里声明，
-  //    是靠手工 ALTER 加到生产库上的。表已存在时 IF NOT EXISTS 什么都不做，所以线上没事；
-  //    若要用这份代码在全新 MySQL 上冷启动，devices 会缺列并直接报错 —— 迁库前先补齐 DDL。
+  // 列结构对齐生产库（SHOW CREATE TABLE devices，2026-09-18）：mqtt_id / first_seen / store / room_id
+  // 这四列当年是手工 ALTER 上去的，DDL 里漏了会让全新 MySQL 冷启动时缺列直接报错（register 的
+  // INSERT first_seen、按 room_id 定向发送都依赖它们）。表已存在时 IF NOT EXISTS 什么都不做。
+  // 注：fingerprint 生产是 VARCHAR(64)，这里保持 VARCHAR(255) —— 只影响新建库，且更宽松不会截断。
   db.query(`
     CREATE TABLE IF NOT EXISTS devices (
       id VARCHAR(64) PRIMARY KEY,
       name VARCHAR(255),
       location VARCHAR(255),
       fingerprint VARCHAR(255),
+      mqtt_id VARCHAR(64),
       model VARCHAR(100),
       hardware VARCHAR(100),
       mac VARCHAR(50),
@@ -2061,7 +2091,10 @@ function initDatabase() {
       authorized TINYINT(1) DEFAULT 1,
       config TEXT,
       status_data TEXT,
-      online_time DATETIME
+      online_time DATETIME,
+      first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      store VARCHAR(100) DEFAULT '默认店',
+      room_id VARCHAR(36)
     )
   `);
   
@@ -2153,8 +2186,11 @@ function initDatabase() {
 // ==================== 版本管理 API ====================
 
 // APK 下载地址（nginx 80 端口直出 public/apk）
-// ⚠️ 写死公网 IP + http：换域名/上 HTTPS 时改这里一处即可，【S-05e】的相对 URL 补全也共用它。
-const APK_DOWNLOAD_BASE = 'http://47.102.106.237';
+// 基址跟随 config.serverUrl（env SERVER_URL 可覆盖），换域名/上 HTTPS 改环境变量即可，
+// 【S-05e】的相对 URL 补全也共用它。
+// ⚠️ 但 APK 侧 isTrustedApkUrl 是硬编码精确匹配 47.102.106.237：换成域名后设备会拒下 OTA，
+//    必须连 APK 一起改并发版，不能只改这里。
+const APK_DOWNLOAD_BASE = String(config.serverUrl || 'http://47.102.106.237').replace(/\/+$/, '');
 
 // 流式计算文件 MD5（避免大文件整读进内存）
 function fileMd5(fullPath) {
