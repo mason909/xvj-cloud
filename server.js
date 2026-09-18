@@ -1752,12 +1752,21 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
       `SELECT * FROM materials WHERE id IN (${placeholders})`,
       idList,
       (err2, materialsRows) => {
-        if (err2) materialsRows = [];
+        if (err2) {
+          // ⚠️ 素材查询出错绝不能退化成"这个房间没有素材"：清单会整份变成空数组，
+          // 设备按"云端说没有"把本地素材全删（一次 DB 抖动 = 现场素材被清空）。
+          // 回 500 让设备那侧 fetchRoomMaterials 判定为失败、中止本轮，保持本地现状。
+          console.error('room-materials-v2 查询 materials 失败:', err2.message);
+          return res.status(500).json({ error: '素材清单查询失败' });
+        }
         db.query(
           `SELECT * FROM preset_materials WHERE id IN (${placeholders})`,
           idList,
           (err3, presetRows) => {
-            if (err3) presetRows = [];
+            if (err3) {
+              console.error('room-materials-v2 查询 preset_materials 失败:', err3.message);
+              return res.status(500).json({ error: '素材清单查询失败' });
+            }
             // 合并去重（materials 优先）
             const merged = {};
             [...materialsRows, ...presetRows].forEach(row => {
@@ -1779,8 +1788,13 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
             // 按 scene-prefixed folder 分组（"A01", "B01"），与 APK syncRoomMaterials 的 lookup 格式对齐
             // 键归一化走 prefixedFolderKey：DB 里万一是 "A01"（前端某条路径写过带前缀的键），
             // 直接 'A'+folderNum 会产出 "AA01"，设备按 A01 查不到 → 该文件夹永远"同步不完"
-            // ⚠️ 只有非空数组的文件夹才会出现在结果里：空映射的键整个缺失（不是 []），
-            //    调用方（APK）必须把"键不存在"和"空数组"都当作该文件夹无素材，不能当同步失败。
+            // ⚠️ 只有非空数组的文件夹才会出现在结果里：空映射的键整个缺失（不是 []）。
+            //    设备端（APK syncFolderWithIds）的口径是：
+            //      键存在且为 []      = 云端按这些 id 查过、一只素材都不存在 → 明确指令，本地该目录清空
+            //      键存在且有元素     = 该目录应有的素材，多删少补
+            //      映射里有 id 但键缺失 = 信息缺失（两份视图对不上），本轮跳过该目录，不删也不下
+            //    所以这里不能图省事把出错的查询退化成空结果 —— 那等于让设备把现场素材删干净，
+            //    上面两处 err2/err3 回 500 就是为了让它整轮中止。
             Object.entries(folderMappingsA).forEach(([folderNum, ids]) => {
               if (Array.isArray(ids) && ids.length > 0) {
                 result[prefixedFolderKey('A', folderNum)] = ids.map(id => merged[id]).filter(Boolean);
