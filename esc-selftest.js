@@ -49,5 +49,6 @@ for (const c of cases) {
   if (/[<>]/.test(esc(c))) { console.log('FAIL esc 漏标签:', JSON.stringify(c)); fail++; }
   if (/["']/.test(escA(c))) { console.log('FAIL escA 漏引号:', JSON.stringify(c)); fail++; }
 }
-console.log(fail ? '--- 结果: ' + fail + ' 处失败' : '--- 结果: ' + cases.length + ' 组用例全部通过');
+console.log(fail ? '--- 结果: ' + fail + ' 处失败'
+  : '--- 结果: ' + cases.length + ' 组转义往返用例 + ' + falsyKeep.length + ' 组数字/布尔保真用例，全部通过');
 process.exit(fail ? 1 : 0);
