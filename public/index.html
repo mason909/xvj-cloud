@@ -338,9 +338,10 @@ function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'
 // HTML 属性转义（转义单双引号，防止破坏 HTML 属性结构）
 function escA(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
+// 手工全量同步（唯一还走 POST /sync 的入口）：不判配置是否变化，强制让本房间设备重对账一遍
 function doSyncRoom(roomId) {
     openModal('<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">📡 发送中...</div>');
-    fetch('/api/rooms/' + roomId + '/sync?scene=' + (s._curScene || 'A'), { method: 'POST', headers: {'Content-Type': 'application/json'} })
+    fetch('/api/rooms/' + roomId + '/sync', { method: 'POST', headers: {'Content-Type': 'application/json'} })
         .then(function(r) { return r.json(); })
         .then(function(result) {
             if (result.success) {
@@ -474,7 +475,8 @@ function createPlayer(url, type, container, poster) {
  * 【F-06】房间列表刷新 lr()   　【F-06b】选择房间渲染 sr()
  *         【F-06c】新建房间 createRoom()   　【F-06d】房间工作台 rmDevice()
  * 【F-07】素材推送 showPushDialog() & doPushToRoom()
- * 【F-08】房间内素材删除 rmRoomMat()（全量同步 doSyncRoom() 在弹窗生命周期块里）
+ * 【F-08】房间内素材删除 rmRoomMat()（只调一次 DELETE /materials，设备通知由服务端收敛点发；
+ *         doSyncRoom() 现在只服务手工「🔄 同步当前房间」按钮）
  *         【F-08b】房间调试开关 updateRoomDebugToggle() / toggleRoomDebug()
  * 【F-09】窗口编辑器 renderWinEditorFull() & saveWindows()
  * 【F-10】设备日志 loadDeviceLogs()（logAction() 只是往 POST /api/log 打埋点，服务端另有同名函数）
@@ -1298,9 +1300,10 @@ function rmDevice() {
 // API 约定：
 //   PUT /api/rooms/:id/windows  { windows: [WinConfig, ...], sceneId: 'A'|'B', master, live? }
 //   返回 { success: true, scene: 'A'|'B', windows: [...] }
-//   手动「保存并推送」= saveWindows() 不带 silent → 落库后再 doSyncRoom() 全量同步；
+//   手动「保存并推送」= saveWindows() 不带 silent → 落库即可，服务端收敛点比对配置指纹后
+//   按需给本房间设备发 update_windows（不再前端补 doSyncRoom 全量同步）；
 //   属性/几何改动的 500ms 自动同步 = saveWindows(silent) 带 live:true → 只推 update_windows
-//   轻通道（设备原地更新，不重建播放器、视频不从头播），不再走 doSyncRoom。
+//   轻通道（设备原地更新，不重建播放器、视频不从头播）。切幕/切房间前 flushAutoSync() 兜住最后一次编辑。
 
 /** 切换当前编辑的场景（A = 第一幕，B = 第二幕）
  *  BugFix-20260402：末尾调用 renderWinEditorFull()，确保切换后编辑器列表和画布同步更新。
@@ -1344,7 +1347,8 @@ function _getWinCache(cfg) {
 }
 /** 切房间时清掉上一房间的全部窗口编辑器状态（编辑器开关本身保留，重绘时会读新房间的数据） */
 function _resetWinEditorState() {
-    if (_autoSyncTimer) { clearTimeout(_autoSyncTimer); _autoSyncTimer = null; }   // 上一房间未落地的气泡同步一并作废
+    flushAutoSync();   // 切房间前先落库最后一次编辑：此刻 s.rf 仍是旧房间，缓存也还是旧房间的窗口
+                       // （定时器已由 flushAutoSync 清掉，不会到点后拿着新房间的键误判）
     _setWinCache(null);
     s._selWin = null; s._selWinMap = { A: null, B: null };
     s._cropRatioLock = {}; s._winRatioLock = {};
@@ -1352,6 +1356,7 @@ function _resetWinEditorState() {
 }
 
 function switchScene(id) {
+    flushAutoSync();   // 先把防抖里最后一次编辑落库（此时还认得旧幕），再切
     var oldS = s._curScene || 'A';
     s._selWinMap = s._selWinMap || { A: null, B: null };
     s._selWinMap[oldS] = s._selWin ? s._selWin.id : null; // 保存当前 scene 的选中窗口
@@ -2198,8 +2203,9 @@ function addWin() {
     var ridx = s.rooms.findIndex(function(r){ return r.id === s.rf; });
     if (ridx >= 0) { r.config = cfg; s.rooms[ridx].config = cfg; }
 
-    // 保存到服务器
-    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { doSyncRoom(s.rf); renderWinEditorFull(); } });
+    // 保存到服务器：落库后服务端收敛点会给本房间已授权设备发 update_windows（新窗口是结构变化，
+    // 设备自行回退全量重建），前端不再补 doSyncRoom
+    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { renderWinEditorFull(); } });
 }
 
 /**
@@ -2230,7 +2236,7 @@ function delWin(e, id) {
     if (ridx2 >= 0) { r.config = cfg; s.rooms[ridx2].config = cfg; }
 
     var _rid0 = s.rf, _k0 = _winCacheKey();   // 请求可能跨房间切换才回来，落库与回写都只认发起时的房间
-    fetch('/api/rooms/' + _rid0 + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS2}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { if (_winCacheKey() !== _k0) return; _setWinCache(wins); s._selWin = null; doSyncRoom(_rid0); renderWinEditorFull(); } });
+    fetch('/api/rooms/' + _rid0 + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS2}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { if (_winCacheKey() !== _k0) return; _setWinCache(wins); s._selWin = null; renderWinEditorFull(); } });   // 设备通知由服务端收敛点负责
 }
 
 // 侧栏数字框/下拉改属性：s._selWin 和 _winCache 里同 id 的那份都要写（两者可能已不是同一对象，
@@ -2301,7 +2307,11 @@ function updSceneMaster(v) {
     var ridx = s.rooms.findIndex(function(x){ return x.id === s.rf; });
     if (ridx >= 0) s.rooms[ridx].config = cfg;
     var wins = _getWinCache(cfg);
-    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS, master: {brightness: v}}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { doSyncRoom(s.rf); } }).catch(function(e){ console.error('总亮度推送失败', e); });
+    // 松手这一次是权威写入：不带 live → 服务端落库后经收敛点发 update_windows（含 master 亮度）
+    fetch('/api/rooms/' + s.rf + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS, master: {brightness: v}}) })
+        .then(function(res){ return res.json(); })
+        .then(function(json){ if (!json.success) console.error('总亮度保存失败:', json.error); })
+        .catch(function(e){ console.error('总亮度推送失败', e); });
 }
 
 // ============================================================================
@@ -2321,6 +2331,19 @@ function autoSyncWinConfig() {
         if (_winCacheKey() !== _k) return;
         saveWindows(true);
     }, 500);
+}
+
+/**
+ * 把防抖里还没落地的那次自动同步立刻发出。
+ * 切幕 / 切房间前必须调：定时器到点后是按"发起时的 房间|幕"键校验的，键一变就丢弃，
+ * 用户最后一次拖动/改值会静默丢失（本地缓存也被新幕的 windows 覆盖，回不来）。
+ * 调用时 s.rf / s._curScene / _winCache 都还是被编辑的那一份，所以 saveWindows 写对了目标。
+ */
+function flushAutoSync() {
+    if (!_autoSyncTimer) return;
+    clearTimeout(_autoSyncTimer);
+    _autoSyncTimer = null;
+    saveWindows(true);
 }
 
 // master 滑条 oninput：更新标签+本地配置后走实时轻推（onchange 松手仍走权威同步）
@@ -2418,7 +2441,8 @@ async function saveWindows(silent) {
                 // 【BugFix-20260402-v2】将 _winCache 同步为 config 中的独立副本
                 _setWinCache(cfg.scenes[curS].windows.slice());
             }
-            if (!silent) await doSyncRoom(_rid);
+            // 不再补 doSyncRoom：PUT /windows 落库后服务端收敛点已按需通知设备。
+            // 要"不管有没有变都重推一遍 + 拿到设备数回执"，用「🔄 同步当前房间」按钮。
             if (btn) { btn.textContent = silent ? '✅ 已自动同步' : '✅ 已保存并推送'; setTimeout(function(){ btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); }, silent ? 1200 : 2000); }
         }
         else { alert('保存失败: ' + json.error); if (btn) { btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); } }
@@ -2472,7 +2496,7 @@ async function mapPreset() {
     });
     alert('已映射全部 ' + count + ' 个预设素材');
     lr();
-    doSyncRoom(s.rf);
+    // PUT /api/rooms/:id 落库后服务端收敛点已比较映射指纹并通知设备，这里不再补 doSyncRoom
     logAction('preset_map', 'room', { room_id: s.rf, room_name: r.name, store_name: r.store, count: count });
     updateRoomDebugToggle();
 }
@@ -2558,29 +2582,15 @@ async function logAction(action, type, detail) {
 
 
 // 【F-08】 删除房间素材（发MQTT）// async function rmRoomMat()
+// 只调一次 DELETE /materials：服务端自己会清 A/B 两幕的同编号映射并写库，
+// 再由 notifyRoomConfigChanged 收敛点发 delete_material + sync。
+// 以前这里先自行 PUT config 再 DELETE 再 doSyncRoom —— 三次写两次通知，设备连着重试三轮。
 async function rmRoomMat(e, mid) {
     e.stopPropagation();
     if (!s.rf) return;
     if (!confirm('从房间移除该素材?')) return;
-    var curScene = s._curScene || 'A';
-    // 从 config.scenes[currentScene] 读取（plan A：各场景独立）
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
-    var cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {};
-    cfg.scenes = cfg.scenes || { A: { name: '第一幕', folder_mappings: {}, windows: [] }, B: { name: '第二幕', folder_mappings: {}, windows: [] } };
-    cfg.scenes.A = cfg.scenes.A || { name: '第一幕', folder_mappings: {}, windows: [] };
-    cfg.scenes.B = cfg.scenes.B || { name: '第二幕', folder_mappings: {}, windows: [] };
-    var sceneFm = cfg.scenes[curScene].folder_mappings || {};
-    if (!sceneFm[s.f]) sceneFm[s.f] = [];
-    var i = sceneFm[s.f].indexOf(mid);
-    if (i > -1) sceneFm[s.f].splice(i, 1);
-    // 发 {config} 触发后端 config 分支，只更新当前场景
-    var resp = await fetch('/api/rooms/' + s.rf, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({config: JSON.stringify(cfg)})
-    });
-    await resp.json();
-    // 通知设备立即删除本地素材文件（必须等完成再刷新UI）
+    // 通知设备立即删除本地素材文件 + 清单对账（必须等完成再刷新UI）
     try {
         var delR = await fetch('/api/rooms/' + s.rf + '/materials/' + mid + '?folder=' + s.f + '&scene=' + (s._curScene || 'A'), { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
         var delD = await delR.json();
@@ -2594,7 +2604,6 @@ async function rmRoomMat(e, mid) {
     }
     autoCloseModal(2000);
     lr();
-    doSyncRoom(s.rf);
     var mat = s.pm ? s.pm.find(function(x) { return x.id === mid; }) : null;
     if (!mat) mat = s.ms ? s.ms.find(function(x) { return x.id === mid; }) : null;
     logAction('room_remove', 'room', {
@@ -2785,15 +2794,13 @@ async function doPushToRoom() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({config: JSON.stringify(config)})
         });
-        // 立即通知房间内所有设备下载新素材
-        await fetch('/api/rooms/' + roomId + '/sync', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        // 不用再补 POST /sync：PUT /api/rooms/:id 落库后经服务端收敛点比对配置指纹，
+        // 映射真的变了才给该房间已授权设备发 sync_room_materials（以前一轮推送要通知三遍）
     }
     alert('已推送到 ' + roomIds.length + ' 个房间（' + (scene === 'A' ? '第一幕' : '第二幕') + '），共' + totalCount + '个素材，已通知设备同步');
     closeModal();
     // 刷新当前显示
     if (s.df) lr();
-    // 推送后自动同步设备
-    roomIds.forEach(function(rid) { doSyncRoom(rid); });
     // 记录操作日志
     var pushStore = document.getElementById('pushStore') ? document.getElementById('pushStore').value : '';
     var roomNames = roomIds.map(function(rid) {
