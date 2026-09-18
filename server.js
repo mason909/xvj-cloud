@@ -12,7 +12,8 @@
  * 【S-03】预设素材 API（/api/preset/materials*）
  * 【S-04】房间 CRUD API（/api/rooms*，含 PUT /api/rooms/:id/windows）
  * 【S-05】授权 & 设备管理 API（/api/devices*）
- * 【S-06】MQTT 消息处理 & 发送（mqttClient / publishToDeviceCommand）
+ * 【S-06】MQTT 消息处理 & 发送（mqttClient / publishToDeviceCommand / 载荷组装与变更收敛：
+ *         roomSceneDigest / roomSyncFields / syncCommandPayload / notifyRoomConfigChanged / reconcileDeviceRev）
  * 【S-07】素材同步 & 删除（POST /api/rooms/:id/sync、DELETE /api/rooms/:roomId/materials/:materialId）
  * 【S-08】日志 & 操作记录（logAction、/api/logs、/api/device_logs）
  * 【S-09】静态文件 & 前端页面
@@ -34,7 +35,8 @@
  *
  * MQTT 主题（服务端 subscribe('xvj/device/#') + subscribe('xvj/auth/response')）：
  *   入站  xvj/device/register       - 注册（deviceId 在 payload，无第二段，走 lastSlash===-1 分支）
- *   入站  xvj/device/{id}/status    - 心跳/状态，顺带上报 version、model、mac
+ *   入站  xvj/device/{id}/status    - 心跳/状态，顺带上报 version、model、mac；
+ *                                    带 rev（已应用配置指纹）时服务端做对账补发，见 reconcileDeviceRev
  *   入站  xvj/device/{id}/request   - 设备主动请求配置
  *   入站  xvj/device/{id}/log       - 设备日志上报（远程 DEBUG 通道）
  *   入站  xvj/auth/response         - 设备回复 deauthorize
@@ -106,6 +108,11 @@
  *   - APK filepath 统一存 /apk/xxx.apk（带前导斜杠），下发 URL = APK_DOWNLOAD_BASE + filepath；
  *     落盘路径才用 path.join(__dirname,'public',filepath)
  *   - 第二幕（场景B）默认窗口为空，由用户手动配置
+ *   - 【同步触发口径】房间 config 落库后一律只经 notifyRoomConfigChanged 决定是否打扰设备：
+ *     映射变了→sync_room_materials，仅窗口/总亮度变了→update_windows，仅 debug 变了→set_debug，
+ *     没变→一条不发。前端不再自己补 POST /sync（手工点「同步当前房间」按钮除外）。
+ *     兜底是 rev 对账：命令里带 rev=roomSceneDigest(config)，设备心跳回传已应用的 rev，
+ *     服务端发现落后就补发一次（3 分钟/台节流），所以设备离线期间的变更会在上线后收敛。
  */
 
 
@@ -167,18 +174,30 @@ setInterval(function() {
 }, 3600000);
 
 /**
+ * 房间映射里的文件夹键 → 带幕前缀的物理键："01" → "A01"。
+ * 已带前缀的（"A01" 混在 scenes.A 里）原样返回，绝不产出 "AA01"：
+ * 设备会按 AA01 建目录、窗口按 A01 找 → 判空，表现为"同步不完"。
+ */
+function prefixedFolderKey(sceneKey, folderId) {
+  return (folderId.length === 3 && folderId[0] === sceneKey) ? folderId : sceneKey + folderId;
+}
+
+/**
  * 将 scenes 对象中的 folder_mappings 键名前缀 scene 标识（A01, B01...）
  * @param {object} scenes - { A: { folder_mappings: { "01": [...] } }, B: { ... } }
  * @returns {object} - { A: { folder_mappings: { "A01": [...] } }, B: { "B01": [...] } }
  * 用途：MQTT 发送时统一格式，避免 A/B 场景共用 "01" 导致物理文件夹冲突
+ * 两处归一化（为了让"配置有没有变"可判定，见 roomSceneDigest）：
+ *   - 文件夹键排序后再生成，DB 里键顺序变了不算内容变了
+ *   - 已带幕前缀的键不二次加前缀（见 prefixedFolderKey）
  */
 function buildPrefixedScenes(scenes) {
   var result = {};
   Object.keys(scenes || {}).forEach(function(key) {
     var sceneData = scenes[key];
     var prefixedMappings = {};
-    Object.keys(sceneData.folder_mappings || {}).forEach(function(folderId) {
-      prefixedMappings[key + folderId] = sceneData.folder_mappings[folderId];
+    Object.keys(sceneData.folder_mappings || {}).sort().forEach(function(folderId) {
+      prefixedMappings[prefixedFolderKey(key, folderId)] = sceneData.folder_mappings[folderId];
     });
     result[key] = {
       name: sceneData.name,
@@ -187,7 +206,6 @@ function buildPrefixedScenes(scenes) {
     };
     if (sceneData.master) result[key].master = sceneData.master;
   });
-  console.log('[DEBUG buildPrefixedScenes] 输入 scenes keys:', JSON.stringify(Object.keys(scenes || {})), '输出 folder_mappings:', JSON.stringify(result['A'] ? result['A'].folder_mappings : {}));
   return result;
 }
 
@@ -209,6 +227,115 @@ function mergePrefixedMappings(prefixedScenes) {
     }
   });
   return merged;
+}
+
+/**
+ * 房间配置的"内容指纹"（rev）：只覆盖会影响设备播放的字段（A/B 两幕的映射+窗口+总亮度）。
+ * 用途有两处：① 写接口落库后比对新旧，配置真变了才打扰设备；② 随命令下发给设备，
+ * 设备心跳回传，服务端发现不一致就补发一次同步（对账，替代"每个入口都记得补一枪"）。
+ * 键序已由 buildPrefixedScenes 归一化；A/B 显式定序，避免 DB 里键顺序变了被当成内容变了。
+ * ⚠️ 指纹只算 scenes，不含 debug —— debug 走轻量的 set_debug，不该触发素材同步。
+ */
+function roomSceneDigest(cfg) {
+  const p = buildPrefixedScenes((cfg && cfg.scenes) || {});
+  return crypto.createHash('sha1').update(JSON.stringify([p.A || null, p.B || null])).digest('hex').slice(0, 12);
+}
+
+/**
+ * 素材映射指纹：只覆盖 folder_mappings（决定"设备上该有哪些文件"）。
+ * 用来区分"要重新对账素材"和"只是窗口位置/亮度变了"，后者发轻量 update_windows 就够了。
+ */
+function roomMappingDigest(cfg) {
+  const p = buildPrefixedScenes((cfg && cfg.scenes) || {});
+  const m = p.A ? p.A.folder_mappings : {}, n = p.B ? p.B.folder_mappings : {};
+  return crypto.createHash('sha1').update(JSON.stringify([m, n])).digest('hex').slice(0, 12);
+}
+
+/** 组装 update_windows 载荷（轻量：APK 原地改视图，结构变化时自行回退全量重建；不触碰素材） */
+function windowCommandPayload(roomId, cfg) {
+  return {
+    action: 'update_windows',
+    room_id: roomId,
+    scenes: buildPrefixedScenes((cfg && cfg.scenes) || {}),
+    rev: roomSceneDigest(cfg),
+    timestamp: Date.now()
+  };
+}
+
+/** 房间的调试模式标志（config.debug 严格 true 才算开，与所有下发口径一致） */
+function roomDebugFlag(cfg) { return !!(cfg && cfg.debug === true); }
+
+/** 安全解析 rooms.config：脏数据按空配置处理，绝不让一次解析异常把通知链路带崩 */
+function parseRoomConfig(s) {
+  if (!s) return {};
+  if (typeof s === 'object') return s;
+  try { return JSON.parse(s) || {}; } catch (e) { return {}; }
+}
+
+/**
+ * 一份房间 config → 设备"按这份配置播"所需的全部字段。
+ * auth_result 与 sync_room_materials 共用，两条链路的口径不会再各写各的漏字段。
+ */
+function roomSyncFields(cfg) {
+  const prefixedScenes = buildPrefixedScenes((cfg && cfg.scenes) || {});
+  return {
+    scenes: prefixedScenes,                                    // folder_mappings 键已带幕前缀（A01/B01）
+    folder_mappings: mergePrefixedMappings(prefixedScenes),     // A+B 全量，与 HTTP 清单接口同形
+    debug: roomDebugFlag(cfg),
+    rev: roomSceneDigest(cfg)
+  };
+}
+
+/** 组装 sync_room_materials 载荷（各发送方共用一份，不再各写各的字段） */
+function syncCommandPayload(roomId, cfg) {
+  return Object.assign(
+    { action: 'sync_room_materials', room_id: roomId },
+    roomSyncFields(cfg),
+    { timestamp: Date.now() }
+  );
+}
+
+/**
+ * 【同步时机的唯一收敛点】房间 config 落库后调用：真变了才打扰设备，且按变化性质选最轻的那条命令。
+ * - folder_mappings 变了   → sync_room_materials（全量对账，可能要下载，会重建窗口）
+ * - 只有窗口/总亮度变了    → update_windows（APK 原地改视图，不碰素材；结构变化时自行回退重建）
+ * - 只有 debug 变了        → set_debug（轻量，不动素材、不重建，见 APK setDebugMode）
+ * - 都没变                 → 一条都不发：前端补写、脚本幂等写、重复 PUT 都不再产生第二次重建
+ * 这条规则替代了原先"每个写接口各自记得通知 / 前端各自补一枪"的分散时机，
+ * 因此 rmRoomMat、doPushToRoom 这类"先 PUT 再 DELETE 再 sync"的连写会自然收敛成一次下发。
+ * @param {string} roomId
+ * @param {string|object} oldCfgStr - 落库前的 rooms.config
+ * @param {string|object} newCfgStr - 落库后的 rooms.config
+ * @param {string} reason - 日志里标明是哪个入口触发的
+ * @param {(n:number)=>void} [cb] - 回调收到实际通知的设备数
+ */
+function notifyRoomConfigChanged(roomId, oldCfgStr, newCfgStr, reason, cb) {
+  const oldCfg = parseRoomConfig(oldCfgStr);
+  const newCfg = parseRoomConfig(newCfgStr);
+  let payload = null;
+  let label = '';
+  if (roomMappingDigest(oldCfg) !== roomMappingDigest(newCfg)) {
+    payload = syncCommandPayload(roomId, newCfg);
+    label = '素材映射';
+  } else if (roomSceneDigest(oldCfg) !== roomSceneDigest(newCfg)) {
+    payload = windowCommandPayload(roomId, newCfg);
+    label = '窗口';
+  } else if (roomDebugFlag(oldCfg) !== roomDebugFlag(newCfg)) {
+    payload = { action: 'set_debug', debug: roomDebugFlag(newCfg), timestamp: Date.now() };
+    label = '调试模式';
+  }
+  if (!payload) { if (cb) cb(0); return; }
+
+  db.query(
+    'SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
+    [roomId],
+    (err, devices) => {
+      if (err || !devices || devices.length === 0) { if (cb) cb(0); return; }
+      devices.forEach(d => publishToDeviceCommand(d, payload));
+      console.log(`🔔 [${reason}] 房间 ${roomId} ${label}变更 → 已通知 ${devices.length} 台设备 (${payload.action})`);
+      if (cb) cb(devices.length);
+    }
+  );
 }
 
 const app = express();
@@ -417,6 +544,10 @@ function handleMqttMessage(topic, message) {
                 (verr) => { if (verr) console.error('同步设备版本失败:', verr.message); }
               );
             }
+            // 配置对账：心跳带回 rev 且不在下载中时，比一比房间真值，落后了就补发同步
+            if (isOnline && data.rev && data.syncing !== true) {
+              reconcileDeviceRev(deviceId, data.rev);
+            }
           }
         );
         break;
@@ -534,8 +665,9 @@ function handleDeviceRegister(deviceId, data) {
 }
 
 // ============================================================================
-// 📤 发送授权响应 — sendAuthResponse / sendSyncCommandToDevice
-//    设备上线时调用，发 MQTT 给设备，告知授权结果和 folder_mappings
+// 📤 发送授权响应 — sendAuthResponse
+//    设备上线时调用，发 MQTT 给设备，告知授权结果和播放配置（含 rev）
+//    授权响应自带全套同步字段，设备端收到即自行同步，无需再补发 sync 命令
 // ============================================================================
 
 // 发送授权响应
@@ -552,29 +684,21 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
       if (!err && results.length > 0) {
         try {
           const roomConfig = JSON.parse(results[0].config || '{}');
-          const debugFlag = roomConfig.debug === true;
 
-          // 给 scenes 的 folder_mappings 键名加 scene 前缀（A01, B01），避免物理文件夹冲突
-          var prefixedScenes = buildPrefixedScenes(roomConfig.scenes || {});
-
-          // 构建完整的推送数据
-          const payload = {
+          // 授权响应本身就带全套播放字段（scenes/folder_mappings/debug/rev），
+          // 设备端 handleAuthResponse 收到即自行同步 —— 所以这里**不再**补发 sync_room_materials。
+          // 以前两者都发：一次授权/重连 = 两轮并发全量对账 + 最多 4 次 applySceneConfigs 全量重建
+          // （视频从头播 4 遍），且两轮会把同一只缺失素材同时写进同一个文件。
+          const payload = Object.assign({
             action: 'auth_result',
             device_id: deviceId,
             authorized: true,
             message: message,
-            room_id: roomId || '',
-            scenes: prefixedScenes,
-            folder_mappings: mergePrefixedMappings(prefixedScenes),
-            debug: debugFlag,
-            timestamp: Date.now()
-          };
+            room_id: roomId || ''
+          }, roomSyncFields(roomConfig), { timestamp: Date.now() });
 
           mqttClient.publish(topic, JSON.stringify(payload), { qos: 1 });
-          console.log(`📤 已推送授权+素材配置到设备 ${deviceId}, 房间: ${roomId}, 文件夹: ${JSON.stringify(prefixedScenes.A ? prefixedScenes.A.folder_mappings : {})}`);
-
-          // 触发设备同步素材
-          sendSyncCommandToDevice(deviceId, roomId, roomConfig);
+          console.log(`📤 已推送授权+播放配置到设备 ${deviceId}, 房间: ${roomId}, rev=${payload.rev}`);
 
         } catch (e) {
           console.error('解析room config失败:', e);
@@ -642,103 +766,81 @@ function publishToDeviceCommand(device, payloadObj) {
   return targets.length;
 }
 
-// 发送同步命令到设备，触发素材下载
-// ⚠️ 与 publishToDeviceCommand 不同：这里只发单 topic，mqttId 由调用方决定
-//    （唯一调用点 sendAuthResponse 传的是 register topic 里解出的 deviceId，不是 fingerprint，
-//     也没有"没有 fingerprint 就 fallback"这回事）。授权链路用它够用；
-//    批量/定向推送一律走 notifyRoomDevicesOfSync + publishToDeviceCommand 双发。
-function sendSyncCommandToDevice(mqttId, roomId, config) {
-  var scenes = (config && config.scenes) || {};
-
-  // 给 scenes 里的 folder_mappings 键名前缀 scene 标识，避免 A/B 共用 "01" 导致物理文件夹冲突
-  var prefixedScenes = buildPrefixedScenes(scenes);
-
-  const topic = `xvj/device/${mqttId}/command`;
-  const payload = {
-    action: 'sync_room_materials',
-    room_id: roomId,
-    scenes: prefixedScenes,   // folder_mappings 键名已加 scene 前缀
-    folder_mappings: mergePrefixedMappings(prefixedScenes), // A+B 全量（A01/B01 键），各发送方统一
-    debug: config && config.debug === true,
-    timestamp: Date.now()
-  };
-  mqttClient.publish(topic, JSON.stringify(payload), { qos: 1 });
-  console.log(`📦 已发送同步命令到设备 ${mqttId}, scenes=A/B (scene-prefixed), debug=${payload.debug}`);
-}
-
 /**
- * 向指定房间的所有在线授权设备推送 sync_room_materials 命令
+ * 向指定房间的所有在线授权设备推送**全量** sync_room_materials（不判变更，手工同步/批量推送用）。
+ * 载荷一律由 syncCommandPayload 生成，与授权响应、自动通知三者同构，避免各处字段口径漂移。
  * @param {string} roomId - 房间ID
+ * @param {(n:number)=>void} [cb] - 回调实际通知的设备数
  */
-function notifyRoomDevicesOfSync(roomId) {
-  db.query(
-    'SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
-    [roomId],
-    (err, devices) => {
-      if (err || !devices || devices.length === 0) return;
-      db.query('SELECT config FROM rooms WHERE id = ?', [roomId], (err2, rows) => {
-        if (err2 || !rows || rows.length === 0) return;
-        const { config } = rows[0];
-        const cfg = config ? JSON.parse(config) : {};
-        // scene-prefixed 格式（与 sendSyncCommandToDevice / buildPrefixedScenes 一致）
-        // cfg.scenes 的 folder_mappings 键是未加前缀的（"01", "02"...），需要用 buildPrefixedScenes 转换
-        const prefixedScenes = buildPrefixedScenes(cfg.scenes || {});
-        const allFolderMappings = mergePrefixedMappings(prefixedScenes);
-        devices.forEach(({ id: deviceId, fingerprint }) => {
-          try {
-            publishToDeviceCommand({ id: deviceId, fingerprint }, {
-              action: 'sync_room_materials',
-              room_id: roomId,
-              scenes: prefixedScenes,  // buildPrefixedScenes 输出：A01/B01 keys
-              folder_mappings: allFolderMappings,  // A01, B01 keys，与 HTTP API 一致
-              debug: cfg.debug === true,
-              timestamp: Date.now()
-            });
-            console.log(`📦 [notify] 已推送 sync 到设备 ${deviceId} (房间 ${roomId})`);
-          } catch (e) {
-            console.error(`[notify] MQTT 发布失败，设备 ${deviceId}: ${e.message}`);
-          }
-        });
-      });
-    }
-  );
+function notifyRoomDevicesOfSync(roomId, cb) {
+  db.query('SELECT config FROM rooms WHERE id = ?', [roomId], (err, rows) => {
+    if (err || !rows || rows.length === 0) { if (cb) cb(0); return; }
+    const payload = syncCommandPayload(roomId, parseRoomConfig(rows[0].config));
+    db.query(
+      'SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
+      [roomId],
+      (err2, devices) => {
+        if (err2 || !devices || devices.length === 0) { if (cb) cb(0); return; }
+        devices.forEach(d => publishToDeviceCommand(d, payload));
+        console.log(`📦 [notify] 房间 ${roomId} 全量同步 → ${devices.length} 台设备 (rev=${payload.rev})`);
+        if (cb) cb(devices.length);
+      }
+    );
+  });
 }
 
 /**
- * 远程废止设备（MQTT 推送 deauthorize 命令，数据库 authorized=0）
- * @param {string} deviceId - 设备 ID
- * @returns {boolean} 是否成功（异步操作，实际返回无意义）
+ * 给单台设备推指定房间的全量播放配置（绑定房间这类"点对点"场景）。
+ * 载荷同 syncCommandPayload，与房间广播完全同构。
+ * @param {{id:string, fingerprint:?string}} device
+ * @param {string} roomId
+ * @param {string|object} roomCfg - rooms.config 原文或已解析对象
+ * @param {string} reason - 日志里标明触发入口
  */
-function deauthorizeDevice(deviceId) {
+function notifyDeviceRoomConfig(device, roomId, roomCfg, reason) {
+  const payload = syncCommandPayload(roomId, parseRoomConfig(roomCfg));
+  publishToDeviceCommand(device, payload);
+  console.log(`🔔 [${reason}] 设备 ${device.id} ← 房间 ${roomId} 全量配置 (rev=${payload.rev})`);
+}
+
+/**
+ * 【配置对账】心跳带回 rev（设备已应用的房间配置指纹）时，服务端拿房间真值比一比。
+ * 不一致就补发一次全量同步，覆盖三类"通知发过但没落地"：推送时设备正好离线、
+ * MQTT 实际是 QoS0（APK 以 0 订阅，服务端 QoS1 会被降级）、命令发出后设备崩溃重启。
+ * 有了这条，写接口就不必再"每个入口都记得补一枪"，离线期间的变更最迟一个心跳周期收敛。
+ * 节流：心跳 30s/台，同一设备 3 分钟内最多补发一次；设备上报 syncing=true（正在下载素材）
+ * 时直接跳过，避免长下载被反复打断 —— 下载完成后下一次心跳会再来对账。
+ * 老版本 APK 心跳不带 rev → 整条路径跳过，不影响现有在网设备。
+ * @param {string} mqttId - 心跳 topic 里解出的设备 ID
+ * @param {string} reportedRev - 设备已应用的配置指纹
+ */
+const REV_RECONCILE_MIN_INTERVAL = 180000;
+const revReconcileAt = new Map();   // deviceId -> 上次补发时间戳（补发过才记账）
+
+function reconcileDeviceRev(mqttId, reportedRev) {
+  const now = Date.now();
+  if (now - (revReconcileAt.get(mqttId) || 0) < REV_RECONCILE_MIN_INTERVAL) return;
   db.query(
-    'UPDATE devices SET authorized = 0, room_id = NULL WHERE id = ?',
-    [deviceId],
-    (err) => {
-      if (err) {
-        console.error('废止设备失败:', err);
-        return false;
-      }
-      
-      // 发送废止命令（共享广播 topic，166+ APK 按 device_id 过滤，旧版 APK 会误伤——见待办：per-device auth topic）
-      const topic = 'xvj/auth/response';
-      const payload = JSON.stringify({
-        action: 'deauthorize',
-        device_id: deviceId,
-        message: '设备已被废止',
-        timestamp: Date.now()
+    'SELECT id, fingerprint, room_id, authorized FROM devices WHERE id = ? OR fingerprint = ?',
+    [mqttId, mqttId],
+    (err, rows) => {
+      if (err || !rows || rows.length === 0) return;
+      const d = rows[0];
+      if (d.authorized !== 1 || !d.room_id) return;
+      db.query('SELECT config FROM rooms WHERE id = ?', [d.room_id], (e2, rr) => {
+        if (e2 || !rr || rr.length === 0) return;
+        const cfg = parseRoomConfig(rr[0].config);
+        const want = roomSceneDigest(cfg);
+        if (want === reportedRev) return;
+        // 记账 + 顺手清理：Map 规模就是设备数量级，不留死条目
+        revReconcileAt.set(d.id, now);
+        if (revReconcileAt.size > 500) {
+          revReconcileAt.forEach((t, k) => { if (now - t > REV_RECONCILE_MIN_INTERVAL * 10) revReconcileAt.delete(k); });
+        }
+        const payload = syncCommandPayload(d.room_id, cfg);
+        publishToDeviceCommand(d, payload);
+        console.log(`🩺 [对账] 设备 ${d.id} rev=${reportedRev} ≠ 房间 ${d.room_id} rev=${want} → 补发同步`);
       });
-      mqttClient.publish(topic, payload);
-      
-      // 同时通过设备特定主题发送（id+fingerprint 双发防 OTA 漂移失联）
-      db.query('SELECT id, fingerprint FROM devices WHERE id = ?', [deviceId], (e2, rows) => {
-        publishToDeviceCommand(rows && rows[0] ? rows[0] : { id: deviceId }, {
-          action: 'stop',
-          reason: 'device_deauthorized'
-        });
-      });
-      
-      console.log(`🚫 设备已废止: ${deviceId}`);
-      return true;
     }
   );
 }
@@ -835,18 +937,9 @@ app.post('/api/devices/:id/command', (req, res) => {
         if (!room_id) {
           return res.status(400).json({ error: '设备未绑定房间' });
         }
-        const roomConfig = config ? JSON.parse(config) : {};
-        // scene-prefixed scenes + folder_mappings（与 sendSyncCommandToDevice 完全一致）
-        var prefixedScenes = buildPrefixedScenes(roomConfig.scenes);
-        const syncCmd = {
-          action: 'sync_room_materials',
-          room_id: room_id,
-          scenes: prefixedScenes,
-          // 必须 A+B 全量：APK 会按 folder_mappings 的键清理本地目录，
-          // 只给 curScene 会让设备把另一幕的素材当孤儿删掉（见 mergePrefixedMappings 的说明）。
-          folder_mappings: mergePrefixedMappings(prefixedScenes),
-          debug: roomConfig.debug === true
-        };
+        const roomConfig = parseRoomConfig(config);
+        // 与授权响应 / 房间同步 / 自动通知同构的一套载荷（A01/B01 scene-prefixed + rev）
+        const syncCmd = syncCommandPayload(room_id, roomConfig);
         publishToDeviceCommand({ id: deviceId, fingerprint }, syncCmd);
         logAction('sync', 'device', { device_id: deviceId, command: syncCmd });
         res.json({ success: true, command: syncCmd });
@@ -864,57 +957,44 @@ app.post('/api/devices/:id/command', (req, res) => {
   });
 });
 
-// 房间同步：向指定房间的所有授权设备发送 sync_room_materials
-
-// 【S-07f】 房间同步：同步 scenes A+B 的完整 folder_mappings（外部信号决定播放哪个文件夹，设备必须同时有A和B的数据）
+// 【S-07f】 房间同步（手工「🔄 同步当前房间」/ 批量推送的显式入口）：
+// 强制全量下发，不判 rev 是否变化 —— 运维按这个按钮就是要设备重新对账一遍。
 app.post('/api/rooms/:id/sync', (req, res) => {
   const roomId = req.params.id;
 
-  // 查房间的 folder_mappings 和 config
   db.query('SELECT config FROM rooms WHERE id = ?', [roomId], (err, rows) => {
-    if (err || !rows || rows.length === 0) {
-      return res.status(404).json({ error: '房间不存在' });
-    }
-    const config = rows[0].config ? JSON.parse(rows[0].config) : {};
+    if (err) return res.status(500).json({ error: err.message });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: '房间不存在' });
 
-    // scene-prefixed 统一格式（与 sendSyncCommandToDevice / notifyRoomDevicesOfSync 一致；
+    // scene-prefixed 统一格式（与授权响应 / notifyRoomDevicesOfSync 一致；
     // APK 落盘目录与播放解析均以 A01/B01 形态为准，无前缀格式会导致播放指向根目录 01）
-    const prefixedScenes = buildPrefixedScenes(config.scenes);
-    const allFolderMappings = mergePrefixedMappings(prefixedScenes);
+    const syncCmd = syncCommandPayload(roomId, parseRoomConfig(rows[0].config));
 
-    // 查房间下所有已授权的设备
     db.query(
       'SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
       [roomId],
       (err2, devices) => {
         if (err2) return res.status(500).json({ error: err2.message });
 
-        if (!devices || devices.length === 0) {
-          return res.json({ success: true, sent: 0, message: '房间无授权设备' });
-        }
-
-        let sent = 0;
-        devices.forEach((d) => {
-          const syncCmd = {
-            action: 'sync_room_materials',
-            room_id: roomId,
-            scenes: prefixedScenes,          // 完整两套场景，folder_mappings 键已带场景前缀（APK 渲染窗口用）
-            folder_mappings: allFolderMappings, // A01/B01 键，与 HTTP API 返回格式一致
-            debug: config.debug === true
-          };
-          publishToDeviceCommand(d, syncCmd);
-          sent++;
+        const list = devices || [];
+        list.forEach(d => publishToDeviceCommand(d, syncCmd));
+        logAction('room_sync', 'room', { room_id: roomId, devices: list.length });
+        res.json({
+          success: true,
+          sent: list.length,
+          message: list.length ? undefined : '房间无授权设备',
+          command: syncCmd
         });
-
-        logAction('room_sync', 'room', { room_id: roomId, devices: sent });
-        res.json({ success: true, sent, command: { action: 'sync_room_materials', room_id: roomId, scenes: config.scenes } });
       }
     );
   });
 });
 
 // 【S-07d】从房间删除素材：A/B 两幕同编号文件夹一起清（与添加时写双幕对称）
-// 流程：清理 scenes A/B folder_mappings → UPDATE DB → 发 delete_material + sync_room_materials
+// 流程：清理 scenes A/B folder_mappings → UPDATE DB → 每台设备发 delete_material（立即删本地文件）
+//      → 清单对账由 notifyRoomConfigChanged 收敛点决定（真删掉了才 sync，否则一条不发）
+// ?scene= 只决定 delete_material 的 folder 前缀（= 立即删哪个物理目录）；另一幕那份由随后的
+// sync 对账按孤儿清掉。不传则默认 A。
 app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
   const { roomId, materialId } = req.params;
   const folder = req.query.folder || '01';
@@ -928,7 +1008,7 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
       if (err) return res.status(500).json({ error: err.message });
       const filename = (rows && rows[0]?.filename) || (rows && rows[0]?.name) || null;
 
-      // 2. 只从 curScene 的 folder_mappings 中移除该素材 ID（不动其他场景）
+      // 2. 从 A/B 两幕的 folder_mappings 中移除该素材 ID（与添加时写双幕对称）
       db.query('SELECT config FROM rooms WHERE id = ?', [roomId], (err2, roomRows) => {
         if (err2 || !roomRows || roomRows.length === 0) {
           return res.status(404).json({ error: '房间不存在' });
@@ -954,12 +1034,13 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
         }
 
         // 写回 DB
+        const newCfgStr = JSON.stringify(config);
         db.query(
           'UPDATE rooms SET config = ? WHERE id = ?',
-          [JSON.stringify(config), roomId],
+          [newCfgStr, roomId],
           (err3) => {
             if (err3) console.error('删除素材更新 room config 失败:', err3);
-            else console.log('🗑 房间', roomId, 'Scene', curScene, 'folder', folder, '移除素材', materialId, removed ? '✓' : '(未找到)');
+            else console.log('🗑 房间', roomId, 'A/B 两幕 folder', folder, '移除素材', materialId, removed ? '✓' : '(未找到)');
 
             // 3. 查房间下所有已授权设备
             db.query(
@@ -967,43 +1048,32 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
               [roomId],
               (err4, devices) => {
                 if (err4) return res.status(500).json({ error: err4.message });
+                const list = devices || [];
 
-                let sentDel = 0, sentSync = 0;
-                (devices || []).forEach(d => {
-                  // 3a. delete_material：让 APK 立即删本地文件（尽力发）。
-                  // folder 带场景前缀（"A01"），APK deleteMaterialFile 按前缀解析物理目录 scenea/01
-                  publishToDeviceCommand(d, {
-                    action: 'delete_material',
-                    material_id: materialId,
-                    folder: curScene + folder,
-                    filename: filename
+                // 3a. delete_material：让 APK 立即删本地文件（尽力发，不依赖清单对账）。
+                // folder 带场景前缀（"A01"），APK deleteMaterialFile 按前缀解析物理目录 scenea/01
+                list.forEach(d => publishToDeviceCommand(d, {
+                  action: 'delete_material',
+                  material_id: materialId,
+                  folder: curScene + folder,
+                  filename: filename
+                }));
+
+                // 3b. 清单对账走收敛点：真的从本房间映射里删掉了才发 sync；
+                //     removed=false（该素材本就不在此房间）时指纹未变，一条都不发。
+                notifyRoomConfigChanged(roomId, roomRows[0].config, newCfgStr, 'DELETE /rooms/materials', (synced) => {
+                  logAction('material_delete', 'room', {
+                    room_id: roomId, material_id: materialId,
+                    folder, filename, scene: curScene,
+                    removed, devices: list.length, synced
                   });
-                  sentDel++;
-
-                  // 3b. sync_room_materials：folder_mappings 统一 A+B 全量（mergePrefixedMappings）
-                  var prefixedScenes = buildPrefixedScenes(config.scenes);
-                  publishToDeviceCommand(d, {
-                    action: 'sync_room_materials',
-                    room_id: roomId,
-                    scenes: prefixedScenes,
-                    folder_mappings: mergePrefixedMappings(prefixedScenes),
-                    debug: config.debug === true
+                  res.json({
+                    success: true,
+                    sent: list.length,
+                    synced,
+                    removed_scene: curScene,
+                    was_removed: removed
                   });
-                  sentSync++;
-                });
-
-                logAction('material_delete', 'room', {
-                  room_id: roomId, material_id: materialId,
-                  folder, filename, scene: curScene,
-                  removed, devices: sentDel, synced: sentSync
-                });
-
-                res.json({
-                  success: true,
-                  sent: sentDel,
-                  synced: sentSync,
-                  removed_scene: curScene,
-                  was_removed: removed
                 });
               }
             );
@@ -1145,7 +1215,11 @@ function removeMaterialIdsFromAllRooms(ids, done) {
   const killIds = Array.isArray(ids) ? ids : [ids];
   db.query('SELECT id, config FROM rooms', [], (err, rooms) => {
     const affected = [];
-    if (err || !rooms || rooms.length === 0) return done(affected);
+    // done 只会有一次调用：pending 计数依赖"所有 UPDATE 回调都晚于同步的 forEach"，
+    // 这不变量将来可能被换成同步回调的实现破坏，用 finished 显式兜住。
+    let finished = false;
+    const finish = () => { if (finished) return; finished = true; done(affected); };
+    if (err || !rooms || rooms.length === 0) return finish();
     let pending = 0;
     rooms.forEach(room => {
       let cfg = {};
@@ -1166,10 +1240,10 @@ function removeMaterialIdsFromAllRooms(ids, done) {
       pending++;
       db.query('UPDATE rooms SET config=? WHERE id=?', [JSON.stringify(cfg), room.id], () => {
         pending--;
-        if (pending === 0) done(affected);
+        if (pending === 0) finish();
       });
     });
-    if (pending === 0) done(affected);
+    if (pending === 0) finish();
   });
 }
 
@@ -1569,7 +1643,7 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
                   filename: row.filename || row.name || row.fullFilename || row.fname || row.id,
                   url: row.url,
                   md5: row.md5 || '',
-                  folder: row.folder || '',
+                  folder: row.folder || row.folder_id || '',   // 预设素材的文件夹列叫 folder_id，不能漏成空串
                   type: row.type || 'video',
                   // 字节数：设备端下载进度条的分母权重。statSync 现算，不在表里存；
                   // url 不是站内 /uploads/ 或文件已丢 → 0，设备端会回落到"按文件数"计进度
@@ -1579,16 +1653,18 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
             });
 
             // 按 scene-prefixed folder 分组（"A01", "B01"），与 APK syncRoomMaterials 的 lookup 格式对齐
+            // 键归一化走 prefixedFolderKey：DB 里万一是 "A01"（前端某条路径写过带前缀的键），
+            // 直接 'A'+folderNum 会产出 "AA01"，设备按 A01 查不到 → 该文件夹永远"同步不完"
             // ⚠️ 只有非空数组的文件夹才会出现在结果里：空映射的键整个缺失（不是 []），
             //    调用方（APK）必须把"键不存在"和"空数组"都当作该文件夹无素材，不能当同步失败。
             Object.entries(folderMappingsA).forEach(([folderNum, ids]) => {
               if (Array.isArray(ids) && ids.length > 0) {
-                result['A' + folderNum] = ids.map(id => merged[id]).filter(Boolean);
+                result[prefixedFolderKey('A', folderNum)] = ids.map(id => merged[id]).filter(Boolean);
               }
             });
             Object.entries(folderMappingsB).forEach(([folderNum, ids]) => {
               if (Array.isArray(ids) && ids.length > 0) {
-                result['B' + folderNum] = ids.map(id => merged[id]).filter(Boolean);
+                result[prefixedFolderKey('B', folderNum)] = ids.map(id => merged[id]).filter(Boolean);
               }
             });
 
@@ -1821,8 +1897,9 @@ app.put('/api/rooms/:id', (req, res) => {
       }
 
       var proceedConfigUpdate = () => {
+        var newCfgStr = JSON.stringify(cfg);
         if (targetName) { updates.push('name=?'); values.push(targetName); }
-        updates.push('config=?'); values.push(JSON.stringify(cfg));
+        updates.push('config=?'); values.push(newCfgStr);
         values.push(id);
         db.query('UPDATE rooms SET ' + updates.join(',') + ' WHERE id=?', values, (err) => {
           if (err) {
@@ -1830,6 +1907,8 @@ app.put('/api/rooms/:id', (req, res) => {
             return res.status(500).json({ error: err.message });
           }
           logAction('update', 'room', { id, name: targetName || roomName });
+          // 落库后由收敛点判定"是否真变了 / 该发哪条命令"，前端不再补 sync（见 notifyRoomConfigChanged）
+          notifyRoomConfigChanged(id, rowsDb[0].config, newCfgStr, 'PUT /rooms');
           res.json({ success: true });
         });
       };
@@ -1854,8 +1933,9 @@ app.put('/api/rooms/:id', (req, res) => {
 // 【S-04b】 更新房间窗口配置（快捷接口，按幕保存）
 // PUT /api/rooms/:id/windows  body: { windows, sceneId:'A'|'B', master?:{brightness}, live?:true }
 //   写入 rooms.config.scenes[sceneId].windows（整幕覆盖），master 传了就 clamp 到 [0,1]。
-//   推送分两条路：live=true 只发轻量 update_windows（不触发素材同步、不记操作日志）；
-//   非 live 这里一条都不发 —— 由前端随后调 POST /api/rooms/:id/sync（doSyncRoom）统一覆盖全部已授权设备。
+//   推送分两条路：live=true（编辑器拖动中）只发轻量 update_windows，不记操作日志；
+//   非 live（保存/增删窗口/改总亮度）走 notifyRoomConfigChanged 收敛点 —— 同样发 update_windows，
+//   但若映射也变了则升级为 sync_room_materials，且指纹没变时一条都不发。
 app.put('/api/rooms/:id/windows', (req, res) => {
   const { windows, sceneId, master, live } = req.body;   // sceneId: 'A' 或 'B'; master: { brightness } 场景总亮度; live: true=编辑器实时预览轻推
   const id = req.params.id;
@@ -1895,29 +1975,21 @@ app.put('/api/rooms/:id/windows', (req, res) => {
       // live 轻推不记操作日志（拖动期间每350ms一次，避免刷屏）
       if (!live) logAction('update_windows', 'room', { id, scene: targetScene, windows });
 
-      // 查找绑定到此房间的已授权设备（APK MQTT clientId = fingerprint）。
-      // 【修复 20260911】必须过滤 authorized=1 且逐台发送：房间会残留历次卸载重装的
-      // 历史设备记录（authorized=0），此前无过滤且只取第一行，把 update_windows 全发给了
-      // 幽灵设备，真机收不到实时更新。非 live 不在服务端直发——前端保存/增删/总亮度
-      // 流程随后都会调 doSyncRoom（POST /sync 已覆盖全部已授权设备），再发一次会造成
-      // 设备重复全量重建（视频反复从头播）
-      db.query('SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1', [id], (err4, rows4) => {
-        if (!err4 && rows4 && rows4.length > 0) {
-          if (live) {
-            // 【实时预览】轻量 update_windows：只带 scenes，APK 免重建原地更新视图，
-            // 不触发素材同步；结构变化时 APK 内部自动回退全量重建
-            var _liveScenes = buildPrefixedScenes(existingConfig.scenes || {});
-            rows4.forEach((d) => {
-              publishToDeviceCommand(d, {
-                action: 'update_windows',
-                room_id: id,
-                scenes: _liveScenes,
-                timestamp: Date.now()
-              });
-            });
-          }
-        }
-      });
+      // 下发。两条路都只发 authorized=1 的设备（【修复 20260911】房间会残留历次卸载重装的
+      // authorized=0 历史记录，此前无过滤且只取第一行，update_windows 全发给了幽灵设备，真机收不到）
+      if (live) {
+        // 【实时预览】轻量 update_windows：只带 scenes，APK 免重建原地更新视图，不触发素材同步；
+        // 结构变化时 APK 内部自动回退全量重建。拖动期间直发，350ms 节流由前端负责。
+        db.query('SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1', [id], (err4, rows4) => {
+          if (err4 || !rows4 || rows4.length === 0) return;
+          var _livePayload = windowCommandPayload(id, existingConfig);
+          rows4.forEach((d) => publishToDeviceCommand(d, _livePayload));
+        });
+      } else {
+        // 保存/增删/总亮度这类非 live 写入交给收敛点：只改了窗口布局 → 一条 update_windows 就够，
+        // 不再由前端补一枪 POST /sync（那会让设备多跑一轮素材对账 + 全量重建、视频从头播）
+        notifyRoomConfigChanged(id, rows[0].config, existingConfig, 'PUT /windows');
+      }
 
       res.json({ success: true, scene: targetScene, windows });
     });
@@ -1952,14 +2024,15 @@ app.delete('/api/rooms/:id', (req, res) => {
   });
 });
 
-// 【S-05h】 绑定设备到房间（更新 devices.room_id）
+// 【S-05h】 绑定设备到房间（更新 devices.room_id）+ 立刻把新房子的播放配置推给它
+// 不推的话设备要等到下次重启/重新注册才拿到素材，界面上看就是"绑了没反应"
 app.post('/api/devices/:id/bind-room', (req, res) => {
   const { room_id } = req.body;
   const id = req.params.id;
   db.query('UPDATE devices SET room_id = ? WHERE id = ?', [room_id, id], (err) => {
     if (err) return res.status(500).json({error:err.message});
-    // 查房间名称用于日志
-    db.query('SELECT r.name as room_name, d.name as device_name FROM devices d LEFT JOIN rooms r ON r.id = ? WHERE d.id = ?', [room_id, id], (err2, rows) => {
+    // 查房间名称用于日志 + 房间 config 用于下发
+    db.query('SELECT r.name as room_name, r.config as room_config, d.name as device_name, d.fingerprint, d.authorized FROM devices d LEFT JOIN rooms r ON r.id = ? WHERE d.id = ?', [room_id, id], (err2, rows) => {
       const room = rows && rows[0];
       logAction('bind_room', 'device', {
         device_id: id,
@@ -1967,6 +2040,10 @@ app.post('/api/devices/:id/bind-room', (req, res) => {
         room_id: room_id,
         room_name: room ? room.room_name : null
       });
+      // 只有已授权的设备才推配置（未授权的真机收到也不会播，且不该绕过授权流程）
+      if (room && room.authorized === 1 && room_id && room.room_config !== null && room.room_config !== undefined) {
+        notifyDeviceRoomConfig({ id: id, fingerprint: room.fingerprint }, room_id, room.room_config, 'bind-room');
+      }
       res.json({success:true});
     });
   });
