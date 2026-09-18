@@ -1349,6 +1349,14 @@ function resolveUploadPath(url) {
   return (abs === root || abs.startsWith(root + path.sep)) ? abs : null;
 }
 
+// 素材磁盘体积（字节），现算不入库：给设备端下载进度条当分母权重。
+// 拿不到（url 不是 /uploads/ 下、文件被手工删了）就返回 0，设备端会回落到按文件数计。
+function uploadSizeBytes(url) {
+  const p = resolveUploadPath(url);
+  if (!p) return 0;
+  try { return fs.statSync(p).size; } catch (e) { return 0; }
+}
+
 function buildSafeUploadName(originalname) {
   const extMatch = originalname.match(/\.[A-Za-z0-9]+$/);
   const ext = extMatch ? extMatch[0].toLowerCase() : '';
@@ -1562,7 +1570,10 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
                   url: row.url,
                   md5: row.md5 || '',
                   folder: row.folder || '',
-                  type: row.type || 'video'
+                  type: row.type || 'video',
+                  // 字节数：设备端下载进度条的分母权重。statSync 现算，不在表里存；
+                  // url 不是站内 /uploads/ 或文件已丢 → 0，设备端会回落到"按文件数"计进度
+                  size: uploadSizeBytes(row.url)
                 };
               }
             });
