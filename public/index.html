@@ -334,9 +334,23 @@ async function syncCurrentRoom() {
 // 文本节点走 esc()、属性值走 escA()：房间/店铺/素材/窗口名、文件夹备注、设备 id 都已收口。
 // 新增渲染一律用这两个，别再手写 replace(/</g,'&lt;')：那种写法漏 &、也漏引号，
 // 落在 value="…" / title="…" 里就会被引号穿出属性去注入。
-function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// 空值判定只认 null/undefined：写成 s||'' 会把 0 和 false 一起吞成空串，
+// 窗口位置 x=0 的输入框就会变成空白（数字也要原样落地，所以这里必须严格判空）。
+function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 // HTML 属性转义（转义单双引号，防止破坏 HTML 属性结构）
-function escA(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function escA(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+/**
+ * 把字符串塞进内联 onclick 的单引号 JS 串里 —— 必须两道转义，顺序不能反。
+ * 只用 escA() 是不够的：属性值会先被 HTML 解析器解码，再交给 JS 求值，
+ * 于是 escA 换出来的 &#39; 又变回 ' ，一个带撇号的店名/房间名（如 O'Neil）就把字符串提前闭合，
+ * 后面 ";alert(1);// 直接进 JS。将来每店一个账号后，这就是门店往总部控制台注入的通道。
+ * 所以先按 JS 规则转义反斜杠/引号/换行，再用 escA 兜 HTML 属性定界，顺序不能反。
+ */
+function escJsA(s) {
+  return escA(String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    .replace(/"/g, '\\"').replace(/\r/g, '\\r').replace(/\n/g, '\\n'));
+}
 
 /**
  * 发一次写请求并拿结果：HTTP 非 2xx、或 body 里 success 不为 true 都算失败并抛出。
@@ -363,12 +377,12 @@ function doSyncRoom(roomId) {
             if (result.success) {
                 setMc('<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">✅ 已发送同步命令到 <b>' + result.sent + '</b> 个设备</div>');
             } else {
-                setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 失败: ' + (result.error || '未知错误') + '</div>');
+                setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 失败: ' + esc(result.error || '未知错误') + '</div>');
             }
             autoCloseModal(2000);
         })
         .catch(function(e) {
-            setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 错误: ' + e.message + '</div><button class="btn btn-primary" onclick="closeModal()" style="margin-top:10px">关闭</button>');
+            setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 错误: ' + esc(e.message) + '</div><button class="btn btn-primary" onclick="closeModal()" style="margin-top:10px">关闭</button>');
         });
 }
 
@@ -658,7 +672,7 @@ function rf() {
         var note = s.folders && s.folders[x] || '';
         // 备注是自由文本（服务端只卡长度不卡内容），这里不过 esc() 就等于一个存活的存储型 XSS：
         // 每次进入素材页都会重放一遍
-        h += '<div class="tab ' + (x === s.f ? 'active' : '') + '" onclick="sf(\'' + escA(x) + '\')"><span class="tab-n">' + esc(x) + '</span><span class="tab-d" ondblclick="rn(event,\'' + escA(x) + '\')">' + esc(note || '+') + '</span></div>';
+        h += '<div class="tab ' + (x === s.f ? 'active' : '') + '" onclick="sf(\'' + escJsA(x) + '\')"><span class="tab-n">' + esc(x) + '</span><span class="tab-d" ondblclick="rn(event,\'' + escJsA(x) + '\')">' + esc(note || '+') + '</span></div>';
     });
     h += '</div>';
     b.innerHTML = h;
@@ -721,9 +735,9 @@ function rm() {
             thumb = x.url ? '<img src="' + escA(x.url) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">?</div>';
         }
         h += '<div class="card ' + (sel ? 'selected' : '') + (isPreset ? ' card-presetted' : '') + '">';
-        h += '<input type="checkbox" class="card-check" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();tc(\'' + escA(x.id) + '\')">';
-        h += '<button class="card-del" onclick="dm(event,\'' + escA(x.id) + '\')">x</button>';
-        h += '<button class="card-preset" onclick="event.stopPropagation();cp2p(\'' + escA(x.id) + '\')" title="复制到预设">预设</button>';
+        h += '<input type="checkbox" class="card-check" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();tc(\'' + escJsA(x.id) + '\')">';
+        h += '<button class="card-del" onclick="dm(event,\'' + escJsA(x.id) + '\')">x</button>';
+        h += '<button class="card-preset" onclick="event.stopPropagation();cp2p(\'' + escJsA(x.id) + '\')" title="复制到预设">预设</button>';
         h += '<div class="card-pv" title="双击预览（Esc 关闭）" data-pv-url="' + escA(x.url) + '" data-pv-type="' + escA(x.type) + '" data-pv-thumb="' + escA(x.thumbnail) + '">' + thumb + '</div>';
         h += '<div class="card-name">' + esc(x.filename || x.name) + '</div>';
         h += '</div>';
@@ -921,7 +935,7 @@ function prm() {
         var t = kind === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">▶</div>')
             : kind === 'audio' ? '<div class="card-thumb">♪</div>'
             : (url ? '<img src="' + escA(url) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">?</div>');
-        h += '<div class="card"><button class="card-del" onclick="dpm(event,\'' + escA(x.id) + '\')">x</button>';
+        h += '<div class="card"><button class="card-del" onclick="dpm(event,\'' + escJsA(x.id) + '\')">x</button>';
         h += '<div class="card-pv" title="双击预览（Esc 关闭）" data-pv-url="' + escA(url) + '" data-pv-type="' + escA(kind) + '" data-pv-thumb="' + escA(thumbUrl) + '">' + t + '</div>';
         h += '<div class="card-name">' + esc(x.filename) + '</div></div>';
     });
@@ -964,10 +978,10 @@ async function lu() {
         h += '<div class="device-card"><div class="device-header"><span class="device-id" title="' + escA(d.id) + '">' + esc(String(d.id).substring(0, 16)) + '</span>' + st + '</div>';
         h += '<div class="device-info"><b>型号:</b> ' + esc(d.model || '-') + '　<b>指纹:</b> <span title="' + escA(fp) + '">' + esc(fpShort) + '</span></div>';
         h += '<div class="device-info"><b>首次:</b> ' + ft + '　<b>最后在线:</b> ' + timeAgo(d.online_time) + '</div>';
-        h += '<div class="device-actions"><select id="store_' + d.id + '" class="device-select">' + storeOptions + '</select>';
-        h += '<button class="btn btn-primary" onclick="ar(\'' + d.id + '\')">授权</button>';
-        h += '<button class="btn btn-secondary" onclick="blockDevice(\'' + d.id + '\')" title="加入屏蔽名单：不再出现在列表，重新注册也会被拒绝">忽略</button>';
-        h += '<button class="btn btn-secondary" style="color:#e94560" onclick="delDevice(\'' + d.id + '\')" title="删除记录并清理日志；若设备仍在线会重新注册出现">删除</button></div></div>';
+        h += '<div class="device-actions"><select id="store_' + escA(d.id) + '" class="device-select">' + storeOptions + '</select>';
+        h += '<button class="btn btn-primary" onclick="ar(\'' + escJsA(d.id) + '\')">授权</button>';
+        h += '<button class="btn btn-secondary" onclick="blockDevice(\'' + escJsA(d.id) + '\')" title="加入屏蔽名单：不再出现在列表，重新注册也会被拒绝">忽略</button>';
+        h += '<button class="btn btn-secondary" style="color:#e94560" onclick="delDevice(\'' + escJsA(d.id) + '\')" title="删除记录并清理日志；若设备仍在线会重新注册出现">删除</button></div></div>';
     }
     h += '</div>';
     g.innerHTML = h;
@@ -1196,10 +1210,10 @@ function rmDevice() {
             h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #2a2a2a">';
             h += '<div style="display:flex;align-items:center;gap:8px">';
             h += '<div style="width:7px;height:7px;border-radius:50%;background:' + dotColor + ';flex-shrink:0"></div>';
-            h += '<span style="color:#ccc;font-size:13px" title="' + d.id + '">' + shortId + '</span>';
+            h += '<span style="color:#ccc;font-size:13px" title="' + escA(d.id) + '">' + esc(shortId) + '</span>';
             h += '<span class="device-status ' + statusClass + '" style="font-size:11px;padding:1px 6px;border-radius:10px">' + statusText + '</span>';
             h += '</div>';
-            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="unbindRoom(\'' + d.id + '\')">解绑</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="unbindRoom(\'' + escJsA(d.id) + '\')">解绑</button>';
             h += '</div>';
         });
         h += '</div>';
@@ -1214,16 +1228,16 @@ function rmDevice() {
     h += '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
     h += '<span style="color:#888;font-size:11px;flex-shrink:0">场景:</span>';
     h += '<button class="btn btn-sm ' + (curS==='A'?'btn-primary':'btn-secondary') + '" onclick="switchScene(\'A\')" style="padding:3px 12px;font-size:11px">' + ((function(){
-        try{var c=typeof r.config==='string'?JSON.parse(r.config):(r.config||{});return(c.scenes&&c.scenes.A)?c.scenes.A.name:'第一幕';}catch(e){return '第一幕';}})() + '</button>');
+        try{var c=typeof r.config==='string'?JSON.parse(r.config):(r.config||{});return(c.scenes&&c.scenes.A)?esc(c.scenes.A.name):'第一幕';}catch(e){return '第一幕';}})() + '</button>');
     h += '<button class="btn btn-sm ' + (curS==='B'?'btn-primary':'btn-secondary') + '" onclick="switchScene(\'B\')" style="padding:3px 12px;font-size:11px">' + ((function(){
-        try{var c=typeof r.config==='string'?JSON.parse(r.config):(r.config||{});return(c.scenes&&c.scenes.B)?c.scenes.B.name:'第二幕';}catch(e){return '第二幕';}})() + '</button>');
+        try{var c=typeof r.config==='string'?JSON.parse(r.config):(r.config||{});return(c.scenes&&c.scenes.B)?esc(c.scenes.B.name):'第二幕';}catch(e){return '第二幕';}})() + '</button>');
     h += '</div>';
     
     // 获取当前场景的 folder_mappings
     var sceneFM = {};
     try {
         var _rc2 = typeof r.config === 'string' ? JSON.parse(r.config) : (r.config || {});
-        sceneFM = (_rc2.scenes && _rc2.scenes[curS]) ? _rc2.scenes[curS].folder_mappings : {};
+        sceneFM = (_rc2.scenes && _rc2.scenes[curS] && _rc2.scenes[curS].folder_mappings) || {};
     } catch(e) {}
     
     h += '<div class="tabs" style="margin-top:10px;' + hideTabs + '">';
@@ -1271,7 +1285,7 @@ function rmDevice() {
             var type = m.type || (m.filename.match(/\.(mp4|webm|avi|mov)$/i) ? 'video' : 'image');
             var thumbUrl = m.thumbnail ? (m.thumbnail.startsWith('/') ? m.thumbnail : m.thumbnail) : null;
             var t = type === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '">' : '<div class="card-thumb">▶</div>') : (m.url ? '<img src="' + escA(m.url) + '">' : '<div class="card-thumb">?</div>');
-            h2 += '<div class="card"><button class="card-del" onclick="rmRoomMat(event,\'' + escA(m.id) + '\')">x</button><div>' + t + '</div><div class="card-name">' + esc(m.filename) + '</div></div>';
+            h2 += '<div class="card"><button class="card-del" onclick="rmRoomMat(event,\'' + escJsA(m.id) + '\')">x</button><div>' + t + '</div><div class="card-name">' + esc(m.filename) + '</div></div>';
         });
     }
     h2 += '</div>';
@@ -1343,9 +1357,9 @@ function rmDevice() {
  *  切换时 s._selWin 从新 scene 的 windows 数组中恢复，不再清空导致按钮失效。
  */
 
-// 【工具函数】加载并隔离 room config：A/B windows 数组独立引用 + 补齐 scenes 骨架
-// 目前只有 switchScene() 用它（两个分支各一次）；selWin()/renderWinEditorFull()/saveWindows()
-// 自己解析 r.config，再经 _getWinCache() 拿本房间本幕的 windows。
+// 【工具函数】加载并隔离 room config：A/B windows 数组独立引用 + 补齐 scenes 骨架（含幕内缺字段）
+// 凡是要写 cfg.scenes[X] 的入口都先过它（switchScene() 两个分支、addWin()）；
+// selWin()/renderWinEditorFull()/saveWindows() 自己解析 r.config，再经 _getWinCache() 拿本房间本幕的 windows。
 function _loadRoomCfg(r) {
     var c = {};
     try { c = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
@@ -1355,8 +1369,17 @@ function _loadRoomCfg(r) {
     }
     // 新房间 config='{}' 无 scenes 结构，切场景/写窗口前补齐骨架，避免 cfg.scenes[X] 抛 TypeError
     if (!c.scenes) c.scenes = {};
-    if (!c.scenes.A) c.scenes.A = { name: '第一幕', folder_mappings: {}, windows: [], master: { brightness: 1 } };
-    if (!c.scenes.B) c.scenes.B = { name: '第二幕', folder_mappings: {}, windows: [], master: { brightness: 1 } };
+    ['A', 'B'].forEach(function (k) {
+        var sc = c.scenes[k];
+        var skeleton = { name: k === 'A' ? '第一幕' : '第二幕', folder_mappings: {}, windows: [], master: { brightness: 1 } };
+        // 幕对象整个缺失或不是对象 -> 换骨架；存在但缺字段（手改过库、老数据只有 name）-> 逐字段补默认。
+        // 只判缺失不够：下游每处 cfg.scenes.A.folder_mappings[id] 都会在下一次索引时抛 TypeError，
+        // 而渲染函数没有分段 try，一处炸掉整块工作台就停在半屏。
+        if (!sc || typeof sc !== 'object') { c.scenes[k] = skeleton; return; }
+        if (!sc.folder_mappings || typeof sc.folder_mappings !== 'object') sc.folder_mappings = skeleton.folder_mappings;
+        if (!Array.isArray(sc.windows)) sc.windows = skeleton.windows;
+        if (!sc.master || typeof sc.master !== 'object') sc.master = skeleton.master;
+    });
     return c;
 }
 
@@ -1540,9 +1563,9 @@ function _winGeomRowsHtml(w, asCrop) {
     var h = '';
     [['wpX', '位置 X', 'x', 0], ['wpY', '位置 Y', 'y', 0], ['wpW', '宽度', 'width', 64], ['wpH', '高度', 'height', 64]].forEach(function(r) {
         var call = asCrop ? "updWinCropField('" + r[2] + "',this.value)" : "updWinField('" + r[2] + "',parseInt(this.value)||" + r[3] + ")";
-        h += '<div class="win-prop-row"><label>' + r[1] + '</label><input type="number" id="' + r[0] + '" value="' + val(r[2]) + '"' + unit + ' oninput="' + call + '"' + (asCrop ? ' onblur="' + call + '"' : '') + '></div>';
+        h += '<div class="win-prop-row"><label>' + r[1] + '</label><input type="number" id="' + r[0] + '" value="' + escA(val(r[2])) + '"' + unit + ' oninput="' + call + '"' + (asCrop ? ' onblur="' + call + '"' : '') + '></div>';
     });
-    h += '<div class="win-prop-row"><label>比例</label><button class="lock-btn' + (locked?' active':'') + '" id="wpRatioLock" onclick="' + (asCrop ? 'toggleCropRatio' : 'toggleWinRatio') + '(\'' + w.id + '\')">' + (locked?'🔒':'🔓') + ' 锁定</button></div>';
+    h += '<div class="win-prop-row"><label>比例</label><button class="lock-btn' + (locked?' active':'') + '" id="wpRatioLock" onclick="' + (asCrop ? 'toggleCropRatio' : 'toggleWinRatio') + '(\'' + escJsA(w.id) + '\')">' + (locked?'🔒':'🔓') + ' 锁定</button></div>';
     h += '<div class="win-ratio-presets">';
     ratioPresets.forEach(function(p) { h += '<button class="win-ratio-btn" onclick="' + (asCrop ? 'setCropRatio' : 'setWinRatio') + '(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>'; });
     h += '</div>';
@@ -1602,7 +1625,7 @@ function renderWinEditorFull() {
     h += '<div class="win-sidebar">';
     h += '<div class="win-list"><div class="win-list-header"><span>窗口</span><button class="btn btn-primary" style="padding:2px 8px;font-size:11px" onclick="addWin()">+ 添加</button></div><div class="win-list-body" id="winListBody">';
     if (wins.length === 0) { h += '<div style="color:#555;font-size:11px;text-align:center;padding:20px 0">暂无窗口</div>'; }
-    else { wins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="event.stopPropagation();selWin(\'' + escA(w.id) + '\')"><span class="win-item-name">' + esc(w.name||w.id) + '</span><button class="win-item-del" onclick="delWin(event,\'' + escA(w.id) + '\')">×</button></div>'; }); }
+    else { wins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="event.stopPropagation();selWin(\'' + escJsA(w.id) + '\')"><span class="win-item-name">' + esc(w.name||w.id) + '</span><button class="win-item-del" onclick="delWin(event,\'' + escJsA(w.id) + '\')">×</button></div>'; }); }
     h += '</div></div>';
     h += '<div class="win-prop-panel" id="winPropPanel"><div class="win-prop-title">属性</div>';
     if (s._selWin) {
@@ -1626,15 +1649,15 @@ function renderWinEditorFull() {
             h += '<option value=""' + (!ct.folderId ? ' selected' : '') + '>自动（首个有素材文件夹）</option>';
             _fids.forEach(function(_fid) {
                 var _cnt = (_scFM[_fid] && _scFM[_fid].length) ? _scFM[_fid].length : 0;
-                h += '<option value="' + _fid + '"' + (String(ct.folderId) === _fid ? ' selected' : '') + '>文件夹 ' + _fid + (_cnt > 0 ? '（' + _cnt + '个素材）' : '（无素材）') + '</option>';
+                h += '<option value="' + escA(_fid) + '"' + (String(ct.folderId) === _fid ? ' selected' : '') + '>文件夹 ' + esc(_fid) + (_cnt > 0 ? '（' + _cnt + '个素材）' : '（无素材）') + '</option>';
             });
             h += '</select></div>';
         }
         if (ctType === 'color') {
-            h += '<div class="win-prop-row"><label>颜色</label><input type="color" id="wpColor" value="' + (ct.color||'#000000') + '" oninput="updWinContent(\'color\',this.value)" style="width:60px;height:28px;border-radius:4px;border:1px solid #3a3a3a;background:#2a2a2a;cursor:pointer"></div>';
+            h += '<div class="win-prop-row"><label>颜色</label><input type="color" id="wpColor" value="' + escA(ct.color||'#000000') + '" oninput="updWinContent(\'color\',this.value)" style="width:60px;height:28px;border-radius:4px;border:1px solid #3a3a3a;background:#2a2a2a;cursor:pointer"></div>';
         }
         h += _winGeomRowsHtml(w);
-        h += '<div class="win-prop-row"><label>Z序</label><input type="number" id="wpZ" value="' + (w.zIndex||1) + '" oninput="updWinField(\'zIndex\',parseInt(this.value)||1)" style="width:60px"></div>';
+        h += '<div class="win-prop-row"><label>Z序</label><input type="number" id="wpZ" value="' + escA(w.zIndex||1) + '" oninput="updWinField(\'zIndex\',parseInt(this.value)||1)" style="width:60px"></div>';
         // Arena 对标属性：透明度/亮度/显隐（缺省值兜底，老配置=旧行为）；镜像/旋转与截取画板共用
         var _wop = (w.opacity == null) ? 1 : w.opacity;
         var _wbr = (w.brightness == null) ? 1 : w.brightness;
@@ -1697,7 +1720,7 @@ function renderWinCanvas(wins) {
         _applyWinTransform(el, w);
         var _wc = _cropOf(w);
         var _cropMark = (_wc.w >= 0.999 && _wc.h >= 0.999) ? '' : '✂ ';
-        el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + _cropMark + (w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:9px;color:#888">' + typeLabel + '</span>';
+        el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + _cropMark + esc(w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:9px;color:#888">' + esc(typeLabel) + '</span>';
         el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px;z-index:9" data-dir="br"></div>';
         el.dataset.winId = w.id;
         el.tabIndex = 0;   // 可聚焦：聚焦=方向键当前作用于这个窗口框
@@ -1918,7 +1941,7 @@ function renderCropEditor(wins, area) {
     wins.forEach(function(w) {
         var _wc2 = _cropOf(w);
         var _mk2 = (_wc2.w >= 0.999 && _wc2.h >= 0.999) ? '' : '✂ ';
-        h += '<div class="win-item' + (cur && w.id === cur.id ? ' active' : '') + '" onclick="selWin(\'' + escA(w.id) + '\')"><span class="win-item-name">' + _mk2 + esc(w.name || w.id) + '</span><span class="crop-win-meta">' + (w.width||0) + '×' + (w.height||0) + '</span></div>';
+        h += '<div class="win-item' + (cur && w.id === cur.id ? ' active' : '') + '" onclick="selWin(\'' + escJsA(w.id) + '\')"><span class="win-item-name">' + _mk2 + esc(w.name || w.id) + '</span><span class="crop-win-meta">' + (w.width||0) + '×' + (w.height||0) + '</span></div>';
     });
     h += '</div>';
     if (cur) {
@@ -2205,18 +2228,10 @@ function addWin() {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
     var curS = s._curScene || 'A';
-    var cfg = {};
-    try { cfg = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
-
-    // 【BugFix-20260402-v2】确保当前场景的 windows 是独立数组（不被 A/B 共享引用）
-    if (!cfg.scenes) { cfg.scenes = { A:{name:'第一幕',folder_mappings:{},windows:[]}, B:{name:'第二幕',folder_mappings:{},windows:[]} }; }
-    cfg.scenes.A = cfg.scenes.A || { name:'第一幕', folder_mappings:{}, windows:[] };
-    cfg.scenes.B = cfg.scenes.B || { name:'第二幕', folder_mappings:{}, windows:[] };
-    // 如果 A 和 B 的 windows 仍是同一引用，彻底拆开
-    if (cfg.scenes.A.windows === cfg.scenes.B.windows) {
-        cfg.scenes.A.windows = (cfg.scenes.A.windows || []).slice();
-        cfg.scenes.B.windows = (cfg.scenes.B.windows || []).slice();
-    }
+    // 【BugFix】这里以前自己解析 config + 手写一份 scenes 骨架，只补「整个幕缺失」；
+    // 幕对象存在但没带 windows 时，下面那句 windows.slice() 直接抛 TypeError，点「+ 添加」毫无反应。
+    // 统一走 _loadRoomCfg()：它是补齐 scenes 骨架的唯一入口，A/B 引用拆分也在那里做。
+    var cfg = _loadRoomCfg(r);
     var wins = cfg.scenes[curS].windows.slice(); // ← 永远拷贝，不直接用原数组
 
     // Date.now() 在同一毫秒的连续调用里会重复（连点 + 添加），id 撞车会让两片切片共用编辑态
@@ -2643,10 +2658,10 @@ async function rmRoomMat(e, mid) {
         if (delD.success) {
             setMc('<div style="padding:30px;text-align:center;color:#4caf50">✅ 删除指令已发送（' + (delD.sent||0) + '台设备收到），设备将自动同步</div>');
         } else {
-            setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 删除失败: ' + (delD.error||'') + '</div>');
+            setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 删除失败: ' + esc(delD.error||'') + '</div>');
         }
     } catch(e) {
-        setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 删除请求失败: ' + e.message + '</div>');
+        setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 删除请求失败: ' + esc(e.message) + '</div>');
     }
     autoCloseModal(2000);
     lr();
@@ -2669,13 +2684,13 @@ function rd() {
         var act = s.df === sn ? 'active' : '';
         var det = (s.storeDetails || []).find(function(x) { return x.name === sn; });
         var tip = det ? (det.room_count + ' 个房间 · ' + det.device_count + ' 台设备') : '';
-        h += '<div class="tab ' + act + '" title="' + escA(tip) + '" onclick="sd(\'' + escA(sn) + '\')" oncontextmenu="rs(event,\'' + escA(sn) + '\');return false;"><span class="tab-n">' + esc(sn) + '</span><span class="folder-del" onclick="ds(event,\'' + escA(sn) + '\')">×</span></div>';
+        h += '<div class="tab ' + act + '" title="' + escA(tip) + '" onclick="sd(\'' + escJsA(sn) + '\')" oncontextmenu="rs(event,\'' + escJsA(sn) + '\');return false;"><span class="tab-n">' + esc(sn) + '</span><span class="folder-del" onclick="ds(event,\'' + escJsA(sn) + '\')">×</span></div>';
     });
     h += '<div class="tab" onclick="as()" style="border-style:dashed">+</div></div>';
     h += '<div class="tabs" style="margin-top:10px">';
     s.rooms.forEach(function(rn) {
         var act = s.rf === rn.id ? 'active' : '';
-        h += '<div class="tab ' + act + '" onclick="sr(\'' + escA(rn.id) + '\')" oncontextmenu="rr(event,\'' + escA(rn.id) + '\',\'' + escA(rn.name) + '\');return false;"><span class="tab-n">' + esc(rn.name) + '</span><span class="folder-del" onclick="dr(event,\'' + escA(rn.id) + '\')">×</span></div>';
+        h += '<div class="tab ' + act + '" onclick="sr(\'' + escJsA(rn.id) + '\')" oncontextmenu="rr(event,\'' + escJsA(rn.id) + '\',\'' + escJsA(rn.name) + '\');return false;"><span class="tab-n">' + esc(rn.name) + '</span><span class="folder-del" onclick="dr(event,\'' + escJsA(rn.id) + '\')">×</span></div>';
     });
     h += '<div class="tab" onclick="createRoom()" style="border-style:dashed">+</div></div>';
     document.getElementById('df').innerHTML = h;
@@ -2742,7 +2757,7 @@ async function showPushDialog() {
     h += '<select id="pushStore" style="padding:12px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;width:100%;margin-top:5px;font-size:16px" onchange="loadPushRooms()">';
     if (s.stores && s.stores.length > 0) {
         s.stores.forEach(function(store) {
-            h += '<option value="' + store + '">' + store + '</option>';
+            h += '<option value="' + escA(store) + '">' + esc(store) + '</option>';
         });
     } else {
         h += '<option value="">无可用店铺</option>';
@@ -2949,11 +2964,11 @@ async function lv() {
     versions.forEach(function(v) {
         var badge = v.is_latest ? '<span style="background:#28a745;padding:2px 8px;border-radius:4px;font-size:12px;margin-left:10px">最新</span>' : '';
         h += '<div style="background:#1a1a1a;padding:15px;border-radius:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">';
-        h += '<div><div style="font-weight:bold;font-size:16px">v' + v.version + ' (Code: ' + v.version_code + ')' + badge + '</div>';
-        h += '<div style="color:#888;font-size:12px;margin-top:5px">' + (v.size/1024/1024).toFixed(2) + ' MB | ' + (v.changelog || '无更新日志') + '</div>';
-        h += '<div style="color:#666;font-size:11px">' + v.created_at + '</div></div>';
+        h += '<div><div style="font-weight:bold;font-size:16px">v' + esc(v.version) + ' (Code: ' + esc(v.version_code) + ')' + badge + '</div>';
+        h += '<div style="color:#888;font-size:12px;margin-top:5px">' + (v.size/1024/1024).toFixed(2) + ' MB | ' + esc(v.changelog || '无更新日志') + '</div>';
+        h += '<div style="color:#666;font-size:11px">' + esc(v.created_at) + '</div></div>';
         h += '<div><button onclick="pushVersionToAll(' + v.id + ')" style="background:#e94560;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;margin-right:8px">推送</button>';
-        h += '<a href="' + v.filepath + '" target="_blank" style="color:#e94560;margin-right:10px">下载</a>';
+        h += '<a href="' + escA(v.filepath) + '" target="_blank" style="color:#e94560;margin-right:10px">下载</a>';
         h += '<button onclick="dv(' + v.id + ')" style="background:#dc3545;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">删除</button></div>';
         h += '</div>';
     });
@@ -2971,14 +2986,17 @@ async function lvd() {
     var h = '<table style="width:100%;border-collapse:collapse"><tr style="background:#1a1a1a"><th style="padding:10px;text-align:left">设备ID</th><th style="padding:10px;text-align:left">店铺</th><th style="padding:10px;text-align:left">版本</th><th style="padding:10px;text-align:left">状态</th><th style="padding:10px;text-align:left">操作</th></tr>';
     devices.forEach(function(d) {
         var statusColor = d.status === 'online' ? '#28a745' : '#666';
-        var versionInfo = d.version ? escA(d.version) + ' (' + d.version_code + ')' : '未知';
-        var safeId = escA(d.id);
+        var versionInfo = d.version ? esc(d.version) + ' (' + esc(d.version_code) + ')' : '未知';
+        // 设备 id 由设备自己上报（服务端只截长度），所以同一行里三种落点各用各的：
+        // 属性用 escA、文本用 esc、内联 JS 串用 escJsA；文本必须先截断再转义，
+        // 反顺序会把实体切断（&#39 少个分号），页面上就露出裸转义串。
+        var idText = esc(String(d.id || '').substring(0, 16));
         h += '<tr style="border-bottom:1px solid #333">';
-        h += '<td style="padding:10px" title="' + safeId + '">' + safeId.substring(0, 16) + '</td>';
-        h += '<td style="padding:10px">' + escA(d.store || '-') + '</td>';
+        h += '<td style="padding:10px" title="' + escA(d.id) + '">' + idText + '</td>';
+        h += '<td style="padding:10px">' + esc(d.store || '-') + '</td>';
         h += '<td style="padding:10px">' + versionInfo + '</td>';
-        h += '<td style="padding:10px"><span style="color:' + statusColor + '">' + escA(d.status) + '</span></td>';
-        h += '<td style="padding:10px"><button onclick="pushUpdate(\'' + d.id + '\')" style="background:#e94560;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">推送更新</button></td>';
+        h += '<td style="padding:10px"><span style="color:' + statusColor + '">' + esc(d.status) + '</span></td>';
+        h += '<td style="padding:10px"><button onclick="pushUpdate(\'' + escJsA(d.id) + '\')" style="background:#e94560;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">推送更新</button></td>';
         h += '</tr>';
     });
     h += '</table>';
@@ -3109,18 +3127,18 @@ async function loadDeviceLogs() {
             var lvlBg = lvl === 'error' ? 'rgba(244,67,54,0.1)' : (lvl === 'warn' ? 'rgba(255,152,0,0.1)' : 'transparent');
 
             h += '<div style="border-bottom:1px solid #2a2a2a;padding:6px 4px;background:' + lvlBg + ';border-left:3px solid ' + lvlColor + '">';
-            h += '<span style="color:#555;font-size:10px;margin-right:8px">' + time + '</span>';
-            h += '<span style="color:#4caf50;font-size:10px;margin-right:8px" title="' + escA(tid) + '">' + shortId + '</span>';
+            h += '<span style="color:#555;font-size:10px;margin-right:8px">' + esc(time) + '</span>';
+            h += '<span style="color:#4caf50;font-size:10px;margin-right:8px" title="' + escA(tid) + '">' + esc(shortId) + '</span>';
             h += '<span style="color:' + lvlColor + ';font-size:10px;font-weight:bold;margin-right:8px">[' + lvl.toUpperCase() + ']</span>';
-            if (module) h += '<span style="color:#9c27b0;font-size:10px;margin-right:4px">' + module + '</span>';
-            if (action) h += '<span style="color:#2196f3;font-size:10px;margin-right:8px">' + action + '</span>';
+            if (module) h += '<span style="color:#9c27b0;font-size:10px;margin-right:4px">' + esc(module) + '</span>';
+            if (action) h += '<span style="color:#2196f3;font-size:10px;margin-right:8px">' + esc(action) + '</span>';
             h += '<span style="color:#ccc">' + esc(message) + '</span>';
             h += '</div>';
         });
         container.innerHTML = h;
         container.scrollTop = 0;
     } catch(e) {
-        container.innerHTML = '<div style="padding:20px;color:#f44336">加载失败: ' + e.message + '</div>';
+        container.innerHTML = '<div style="padding:20px;color:#f44336">加载失败: ' + esc(e.message) + '</div>';
     }
 }
 
