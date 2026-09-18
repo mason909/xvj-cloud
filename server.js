@@ -1229,7 +1229,6 @@ app.post('/api/devices/:id/authorize', (req, res) => {
   const deviceId = req.params.id;
   const store = decodeURIComponent(req.query.store || req.body.store || '默认店');
   const roomId = req.query.room_id || req.body.room_id || null;
-  console.log('授权到店铺:', store, '房间:', roomId);
 
   // 先查设备，用DB中的id字段作为MQTT topic ID（APK订阅用的是这个）
   // 与 deauthorize/block 对齐：不存在直接 404。以前这里对不存在的 id 也回 success，
@@ -1238,6 +1237,9 @@ app.post('/api/devices/:id/authorize', (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!rows || rows.length === 0) return res.status(404).json({ error: '设备不存在' });
     const mqttId = rows[0].id;
+    // 日志放在存在性校验之后：打在前面时，探测/打空的请求也会在 journal 里留下
+    // "授权到店铺"，排查时看不出是真授权还是空跑
+    console.log('授权到店铺:', deviceId, '->', store, '房间:', roomId);
 
     // 更新授权状态
     db.query(
