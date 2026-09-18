@@ -348,6 +348,20 @@ function roomDebugFlag(cfg) { return !!(cfg && cfg.debug === true); }
 function isSafeDeviceId(s) { return typeof s === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(s); }
 
 /**
+ * 设备自报字段（model/hardware/mac/version/log_time…）的统一收口：只接受字符串并按列宽截断，
+ * 非字符串（数字/对象/null，JSON 里随便就能写）一律当"没报"处理成空串。
+ * 为什么是截断而不是照抄：生产 MySQL 带 STRICT_TRANS_TABLES，超长值不是被裁掉而是整条语句报错 ——
+ * 心跳里一个 120 字符的 model 就能让新设备永远进不了 devices 表，而那条 INSERT 没有回调，
+ * 现场表现就是"设备明明在线，后台列表里查无此机"，日志里一个字都不留。
+ * 真实数据都在个位长度（model=23116PN5BC / hardware=qcom / mac=17 位 / 指纹 64 位十六进制），
+ * 按列宽给的上限对正常设备恒为无操作。
+ */
+function clampStr(v, max) {
+  if (typeof v !== 'string') return '';
+  return v.length > max ? v.substring(0, max) : v;
+}
+
+/**
  * 安全解析 rooms.config：脏数据按空配置处理，绝不让一次解析异常把通知链路带崩。
  * 一律返回"普通对象"：数组/字符串/数字这类合法 JSON 但不是配置形状的值，也当空配置，
  * 否则调用方 cfg.scenes 拿到 undefined 还算好事，拿到 "abc".scenes 就是另一个故事了。
@@ -606,7 +620,9 @@ function handleMqttMessage(topic, message) {
       case 'status': {
         if (!data) break;
         const isOnline = data.status === 'online';
-        const fingerprint = data.fingerprint || deviceId;
+        // 自报指纹必须过和 topic 同一道形状闸（64 位十六进制），否则它会把任意串带进
+        // "WHERE id = ? OR fingerprint = ?" 的匹配；不合格就退回 deviceId，别拿脏值当身份
+        const fingerprint = (isSafeDeviceId(data.fingerprint) && data.fingerprint) || deviceId;
         const searchId = deviceId.substring(0, 32);
         db.query(
           "UPDATE devices SET status = ?, status_data = ?, online_time = NOW() WHERE (id = ? OR fingerprint = ? OR id LIKE ? OR id LIKE ?) AND status <> 'blocked'",
@@ -623,7 +639,8 @@ function handleMqttMessage(topic, message) {
                 `INSERT INTO devices (id, name, fingerprint, model, hardware, mac, status, authorized, online_time, first_seen) 
                  VALUES (?, ?, ?, ?, ?, ?, 'online', 0, NOW(), NOW())
                  ON DUPLICATE KEY UPDATE status=IF(status<>'blocked','online',status), online_time=IF(status<>'blocked',NOW(),online_time), fingerprint=COALESCE(fingerprint, VALUES(fingerprint))`,
-                [deviceId, '未命名设备', fingerprint, data.model || '', data.hardware || '', data.mac || '']
+                [deviceId, '未命名设备', fingerprint, clampStr(data.model, 100), clampStr(data.hardware, 100), clampStr(data.mac, 50)],
+                (nerr) => { if (nerr) console.error('❌ 心跳建新设备失败:', deviceId, nerr.message); }
               );
             } else if (result && result.affectedRows > 0) {
               console.log('✅ 设备状态已更新: ' + deviceId);
@@ -631,9 +648,10 @@ function handleMqttMessage(topic, message) {
             // 设备版本上报：status 消息携带 version/version_code 时同步 device_versions
             if (data.version || data.version_code) {
               const vCode = parseInt(data.version_code, 10) || 0;
+              const vName = clampStr(data.version, 50);   // device_versions.version 是 VARCHAR(50)
               db.query(
                 'INSERT INTO device_versions (device_id, version, version_code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE version = ?, version_code = ?',
-                [deviceId, data.version || '', vCode, data.version || '', vCode],
+                [deviceId, vName, vCode, vName, vCode],
                 (verr) => { if (verr) console.error('同步设备版本失败:', verr.message); }
               );
             }
@@ -659,7 +677,9 @@ function handleMqttMessage(topic, message) {
       case 'log': {
         const payload = message.toString();
         const spaceIdx = payload.indexOf(' ');
-        const logTime = spaceIdx > 0 ? payload.substring(0, spaceIdx) : payload;
+        // device_logs.log_time 是 VARCHAR(32)：超长（设备时钟/格式异常，或有人刷 topic）时
+        // STRICT 模式下整条 INSERT 会失败，日志一条都落不了库，所以按列宽截
+        const logTime = clampStr(spaceIdx > 0 ? payload.substring(0, spaceIdx) : payload, 32);
         // APK payload 格式: "time LEVEL module action msg..."，time 已剥离，首段为级别
         let logMsg = spaceIdx > 0 ? payload.substring(spaceIdx + 1) : payload;
         let level = 'info';
@@ -667,6 +687,9 @@ function handleMqttMessage(topic, message) {
         if (['ERROR', 'WARN', 'INFO', 'DEBUG'].includes(lvSeg)) {
           level = lvSeg.toLowerCase();
         }
+        // 单条上限 4000 字符：正常运维日志几十~几百字符，够排障用；
+        // 少了这道闸，一条 topic 就能往 device_logs 塞 64KB 的 TEXT 行，把保留 2000 条的清理撑爆
+        if (logMsg.length > 4000) logMsg = logMsg.substring(0, 4000) + '…(截断)';
         console.log('📝 写日志: deviceId=' + deviceId + ' time=' + logTime + ' level=' + level + ' msg=' + logMsg.substring(0, 60));
         db.query(
           'INSERT INTO device_logs (device_id, log_time, level, message) VALUES (?, ?, ?, ?)',
@@ -699,7 +722,8 @@ function handleMqttMessage(topic, message) {
  */
 function handleDeviceRegister(deviceId, data) {
   // debug: handleDeviceRegister
-  const fingerprint = data.fingerprint || deviceId;
+  // 与 status 分支同闸：自报指纹形状不合格就当没报，退回 deviceId（见 isSafeDeviceId）
+  const fingerprint = (isSafeDeviceId(data.fingerprint) && data.fingerprint) || deviceId;
   
   // 查询设备是否已授权
   console.log(`🔎 开始查询设备: ${deviceId}, 指纹: ${fingerprint}`);
@@ -720,7 +744,10 @@ function handleDeviceRegister(deviceId, data) {
           `INSERT INTO devices (id, name, fingerprint, model, hardware, mac, status, authorized, online_time, first_seen)
            VALUES (?, ?, ?, ?, ?, ?, 'online', 0, NOW(), NOW())
            ON DUPLICATE KEY UPDATE status=IF(status<>'blocked','online',status), online_time=IF(status<>'blocked',NOW(),online_time)`,
-          [deviceId, data.device_id || deviceId, fingerprint, data.model, data.hardware, data.mac]
+          [deviceId, clampStr(data.device_id, 64) || deviceId, fingerprint, clampStr(data.model, 100), clampStr(data.hardware, 100), clampStr(data.mac, 50)],
+          // 这条以前没有回调：注册入库一旦失败（旧库列宽不匹配、设备刷超长字段），
+          // 现象只是"后台查无此机"，journal 里一个字都不留。至少把错误留在日志里。
+          (rerr) => { if (rerr) console.error('❌ 新设备注册入库失败:', deviceId, rerr.message); }
         );
         sendAuthResponse(deviceId, false, '等待审核授权', '');
       } else {
@@ -747,7 +774,8 @@ function handleDeviceRegister(deviceId, data) {
             `UPDATE devices SET status='online', online_time=NOW(), 
              fingerprint=?, model=?, hardware=?, mac=? 
              WHERE id = ?`,
-            [fingerprint, data.model, data.hardware, data.mac, deviceId]
+            [fingerprint, clampStr(data.model, 100), clampStr(data.hardware, 100), clampStr(data.mac, 50), deviceId],
+            (uerr) => { if (uerr) console.error('❌ 设备信息更新失败:', deviceId, uerr.message); }
           );
           
           sendAuthResponse(deviceId, true, '欢迎回来', device.room_id || '');
