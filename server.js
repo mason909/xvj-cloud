@@ -905,7 +905,8 @@ app.post('/api/devices/:id/block', (req, res) => {
 // 【S-05e】 发送指令到设备（MQTT command 主题下发）
 // action 必须落在 DEVICE_ACTIONS 白名单里（= APK handleCommand 的 when 分支 + 服务端会改写的 'sync'）；
 // 未知 action 一律 400，不透传 —— command 主题上的指令设备是照单执行的，不能靠前端自觉。
-const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'preset_sync', 'sync_room_materials',
+// 老 APK(167) 里那条 preset_sync 分支只是留着没人调用，服务端先收掉入口即可，不需要设备升级。
+const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
                         'update_windows', 'delete_material', 'update', 'set_debug'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
