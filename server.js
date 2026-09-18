@@ -864,6 +864,14 @@ app.get('/api/devices', (req, res) => {
 
 // 【S-05c】 手工添加设备接口已移除：绕过审核直接 authorized=1 与注册审批流程矛盾，且前端无入口
 
+// 授权失效广播（删记录 / 屏蔽 / 废止 三处共用）。
+// ⚠️ 仍是全设备可见的广播（P1-4 延后项：改定向得先让 APK 双订阅新旧两个主题），
+//    设备端按 payload 里的 device_id 自己比对认领，不匹配就忽略。
+function publishAuthRevoked(deviceId, reason) {
+  mqttClient.publish('xvj/auth/response',
+    JSON.stringify({ action: 'deauthorize', device_id: deviceId, message: reason }));
+}
+
 // 【S-05d】 删除设备记录 — 仅限未授权设备；级联清理版本/日志，通知设备端授权失效
 // 注意：设备若仍在线会重新注册再次出现，要永久屏蔽请用「忽略」（POST /api/devices/:id/block）
 app.delete('/api/devices/:id', (req, res) => {
@@ -872,7 +880,7 @@ app.delete('/api/devices/:id', (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!rows || rows.length === 0) return res.status(404).json({ error: '设备不存在' });
     if (rows[0].authorized === 1) return res.status(409).json({ error: '设备已授权，请先解绑或废止后再删除' });
-    mqttClient.publish('xvj/auth/response', JSON.stringify({ action: 'deauthorize', device_id: did, message: '设备记录已被删除' }));
+    publishAuthRevoked(did, '设备记录已被删除');
     db.query('DELETE FROM device_versions WHERE device_id = ?', [did], () => {
       db.query('DELETE FROM device_logs WHERE device_id = ?', [did], () => {
         db.query('DELETE FROM devices WHERE id = ?', [did], (err2) => {
@@ -895,7 +903,7 @@ app.post('/api/devices/:id/block', (req, res) => {
     if (rows[0].authorized === 1) return res.status(409).json({ error: '设备已授权，不能屏蔽运行中的设备' });
     db.query("UPDATE devices SET status = 'blocked', authorized = 0, room_id = NULL WHERE id = ?", [deviceId], (err2) => {
       if (err2) return res.status(500).json({ error: err2.message });
-      mqttClient.publish('xvj/auth/response', JSON.stringify({ action: 'deauthorize', device_id: deviceId, message: '设备已被屏蔽' }));
+      publishAuthRevoked(deviceId, '设备已被屏蔽');
       logAction('block', 'device', { device_id: deviceId });
       res.json({ success: true });
     });
@@ -1089,25 +1097,24 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
 app.post('/api/devices/:id/deauthorize', (req, res) => {
   const deviceId = req.params.id;
 
-  // 操作数据库：更新 devices 表，将授权状态设为 0（与 block 对齐清 room_id，废止后不再挂在房间上）
-  db.query(
-    'UPDATE devices SET authorized = 0, status = "deauthorized", room_id = NULL WHERE id = ?',
-    [deviceId],
-    (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      
-      // 发送废止命令
-      const topic = 'xvj/auth/response';
-      const payload = JSON.stringify({
-        action: 'deauthorize',
-        device_id: deviceId,
-        message: '设备已被废止'
-      });
-      mqttClient.publish(topic, payload);
-      logAction('deauthorize', 'device', { device_id: deviceId });
-      res.json({ success: true, message: '设备已废止' });
-    }
-  );
+  // 与 block 对齐：先确认设备存在。否则对一个不存在的 id 也会回 success，
+  // 还顺带往 xvj/auth/response 广播一发 nobody 的 deauthorize（日志里看不出是打空的）
+  db.query('SELECT id FROM devices WHERE id = ?', [deviceId], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: '设备不存在' });
+
+    // 操作数据库：更新 devices 表，将授权状态设为 0（与 block 对齐清 room_id，废止后不再挂在房间上）
+    db.query(
+      'UPDATE devices SET authorized = 0, status = "deauthorized", room_id = NULL WHERE id = ?',
+      [deviceId],
+      (err2) => {
+        if (err2) return res.status(500).json({ error: err2.message });
+        publishAuthRevoked(deviceId, '设备已被废止');
+        logAction('deauthorize', 'device', { device_id: deviceId });
+        res.json({ success: true, message: '设备已废止' });
+      }
+    );
+  });
 });
 
 // 【S-05f】 重新授权设备 — 更新 devices.authorized=1，MQTT 推送授权响应
