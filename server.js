@@ -7,31 +7,41 @@
  * 【代码索引】编辑时搜索 "【S-XX】" 快速定位
  * ─────────────────────────────────────────────
  * 【S-01】数据库初始化 & MySQL 连接池
- * 【S-02】素材管理 API（/api/materials）
- * 【S-03】预设素材 API（/api/preset/*）
- * 【S-04】房间 CRUD API（/api/rooms*）
+ * 【S-02】素材管理 API（GET /api/materials、DELETE /api/materials/:id、POST /api/upload）
+ *         注意：没有 POST /api/materials，入库只走 /api/upload
+ * 【S-03】预设素材 API（/api/preset/materials*）
+ * 【S-04】房间 CRUD API（/api/rooms*，含 PUT /api/rooms/:id/windows）
  * 【S-05】授权 & 设备管理 API（/api/devices*）
- * 【S-06】MQTT 消息处理 & 发送（mqttClient）
- * 【S-07】素材同步 & 删除（DELETE /api/rooms/:roomId/materials/:materialId）
- * 【S-08】日志 & 操作记录（logAction）
+ * 【S-06】MQTT 消息处理 & 发送（mqttClient / publishToDeviceCommand）
+ * 【S-07】素材同步 & 删除（POST /api/rooms/:id/sync、DELETE /api/rooms/:roomId/materials/:materialId）
+ * 【S-08】日志 & 操作记录（logAction、/api/logs、/api/device_logs）
  * 【S-09】静态文件 & 前端页面
- * 【S-10】文件夹管理 API（/api/folders*）
+ * 【S-10】文件夹管理 API（/api/folders、/api/folders/note、/api/folders/notes）
  * 【S-11】店铺管理 API（/api/stores*）
- * 【S-12】版本管理 API（/api/versions*、/api/device/versions*）
+ * 【S-12】版本管理 API（/api/versions*、/api/device/version*、push-update）
+ * 【S-13】配置 & 默认素材 & 未注册设备（/api/config*、/api/default-materials*、/api/unregistered）
  * ─────────────────────────────────────────────
  *
  * 核心表：
- *   materials          - 素材库（原始视频文件）
+ *   materials          - 素材库（原始视频文件，上传时重封装为 faststart，md5 存的是重封装后的字节）
  *   preset_materials   - 预设素材（从素材库复制，可跨房间复用）
- *   rooms              - 房间配置中心（folder_mappings 是设备同步唯一真相）
+ *   rooms              - 房间配置中心。真相在 config 这个 JSON 列
+ *                        （config.scenes.A/B.folder_mappings 才是设备同步依据）；
+ *                        表上的 folder_mappings 列是建表遗留，只在 INSERT 时写 '{}'，读侧无人使用
  *   devices            - 设备注册表
- *   operation_logs      - 前端操作日志（logAction 写入）
+ *   operation_logs     - 前端操作日志（logAction 写入，每小时清理 30 天前）
  *   device_logs        - 设备日志（APP MQTT log 主题上报）
  *
- * MQTT 主题：
- *   xvj/device/{id}/status  - 设备状态上报
- *   xvj/device/{id}/command  - 服务端命令下发
- *   xvj/device/{id}/log     - 设备日志上报（远程 DEBUG 通道）
+ * MQTT 主题（服务端 subscribe('xvj/device/#') + subscribe('xvj/auth/response')）：
+ *   入站  xvj/device/register       - 注册（deviceId 在 payload，无第二段，走 lastSlash===-1 分支）
+ *   入站  xvj/device/{id}/status    - 心跳/状态，顺带上报 version、model、mac
+ *   入站  xvj/device/{id}/request   - 设备主动请求配置
+ *   入站  xvj/device/{id}/log       - 设备日志上报（远程 DEBUG 通道）
+ *   入站  xvj/auth/response         - 设备回复 deauthorize
+ *   出站  xvj/device/{id}/command   - 服务端命令下发（对 {id, fingerprint} 去重双发，见 publishToDeviceCommand）
+ *   出站  xvj/device/{id}/config    - 只有 POST /api/config/:deviceId 会发；该接口与这条主题目前
+ *                                    都没有任何调用方（前端和 APK 都不碰），实际处于停用状态
+ *   出站  xvj/auth/response         - ⚠️ 全设备共享广播（P1-4 已知：载荷含完整 scenes/folder_mappings）
  *
  * 素材三层架构：
  *   素材库 [M] ──cp2p──→ 预设素材 [P] ──mapPreset──→ 房间 [D]
@@ -39,11 +49,17 @@
  * ==========================================================
  * 场景系统（多窗口）
  * ==========================================================
- * 场景数据结构（存储在 rooms.config.scenes）：
+ * 场景数据结构（存储在 rooms.config.scenes，每幕一份）：
  *   {
- *     A: { name: '第一幕', folder_mappings: {...}, windows: [WinConfig, ...] },
- *     B: { name: '第二幕', folder_mappings: {...}, windows: [WinConfig, ...] }
+ *     A: { name: '第一幕',
+ *          folder_mappings: { "01": [presetMaterialId, ...], "02": [...] },   // 键是未加前缀的两位编号
+ *          windows: [WinConfig, ...],
+ *          master: { brightness: Number } },   // 场景总亮度 0..1，服务端在 PUT windows 时夹取
+ *     B: { ... }
  *   }
+ *   ⚠️ 出口一致性：DB 里存未加前缀的 "01"，凡经 buildPrefixedScenes 下发给设备的
+ *   folder_mappings 键一律变成 "A01"/"B01"（避免 A/B 共用物理目录名）。
+ *   但 windows 是原样透传的（content.folderId 仍是 "01"），由 APK 端按 A01/01 双键回退查表。
  *
  * WinConfig（窗口配置）：服务端整体透传，不解析下列渲染字段，新增字段无需改代码
  *   {
@@ -63,26 +79,32 @@
  *     crop: { x: Number, y: Number, w: Number, h: Number },
  *                         // 输入截取（对标 Arena Slice InputRect）：素材画面内归一化 0..1 的取景区，
  *                         // 设备把该区域拉伸填满窗口框；缺省即全画面 {x:0,y:0,w:1,h:1}
- *     content: {                    // 窗口内容
- *       type: 'COLOR' | 'VIDEO' | 'HDMI' | 'IMAGE',
+ *     content: {                    // 窗口内容。取值以前端 saveWindows() 实际写入的为准
+ *       type: 'SCENE_A' | 'SCENE_B' | 'HDMI' | 'color',
+ *                         // SCENE_A/SCENE_B = 播该幕对应文件夹的素材；color 是小写（测试背景）
+ *                         // 没有 IMAGE 分支，旧文档里的 'COLOR'/'VIDEO'/'IMAGE' 大写取值都不存在
  *       // type=HDMI 时：
  *       inputIndex?: Number,        // HDMI 输入索引（0-based）
- *       // type=COLOR 时：
+ *       // type=color 时：
  *       color?: String,             // 背景色，如 "#000000"
- *       // type=VIDEO 时：
- *       folderId?: String           // 对应素材文件夹 ID，如 "01"
+ *       // type=SCENE_A|SCENE_B 时：
+ *       folderId?: String           // 对应素材文件夹 ID，如 "01"（未加场景前缀）
  *     }
  *   }
  *
- * 设备开机流程：
- *   1. APP 启动 → loadConfig() → 从 scenes_json 缓存恢复 → 窗口1播放文件夹01
- *   2. MQTT 连接成功 → 收到 sync_room_materials → applySceneConfigs(scenes)
- *   3. scenes 为空 → 离线模式，使用 scenes_json 缓存恢复
+ * 设备开机流程（详见 MainActivity.kt）：
+ *   1. APP 启动 → loadConfig() 读 SharedPreferences 的 scenes_json 缓存 → applySceneConfigs 恢复窗口
+ *   2. MQTT 连上 → 发 register → 服务端回 xvj/auth/response（带 scenes）→ 缓存并再次 applySceneConfigs
+ *   3. 收到 sync_room_materials / update_windows 等 command → 同步素材或只重排窗口
+ *   4. 拿不到 scenes（未授权或离线）→ 停在欢迎视频 / 用 scenes_json 缓存
  *
  * 重要约定：
- *   - 房间是配置中心，设备只是执行器
- *   - 设备授权前用 fingerprint，注册后用 uuid
- *   - APK filepath 统一存在 /apk/xxx.apk，URL 用 path.basename 构造
+ *   - 房间是配置中心，设备只是执行器；窗口数据必须按房间隔离（见记忆 xvj-room-isolation）
+ *   - 设备身份 = deviceId：APK 首启拿 fingerprint 播种后写进 SharedPreferences，之后不再变
+ *     （服务端 sendAuthResponse 只是原样回显 topic 里的 id，不会改派 uuid）；
+ *     因历史版本指纹算法不同会漂移，定向下发对 {id, fingerprint} 去重双发兜底
+ *   - APK filepath 统一存 /apk/xxx.apk（带前导斜杠），下发 URL = APK_DOWNLOAD_BASE + filepath；
+ *     落盘路径才用 path.join(__dirname,'public',filepath)
  *   - 第二幕（场景B）默认窗口为空，由用户手动配置
  */
 
@@ -94,6 +116,9 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 
 // 故障记录文件路径
+// ⚠️ /workspace/... 是早先容器环境的遗留绝对路径；现在服务跑在裸机上，若该目录不存在，
+//    下面的 fs.appendFile 会静默失败（回调 () => {} 没判 err），崩溃信息只剩 journalctl。
+//    排障时先确认这个文件到底有没有在长，再看里面有没有内容。
 const FAULT_LOG = '/workspace/xvj-backup/故障记录.md';
 
 /**
@@ -190,7 +215,8 @@ const app = express();
 const PORT = config.port;
 
 /**
- * API 认证中间件（验证 x-api-key 或 query.apiKey）
+ * API 认证中间件（验证 x-api-key 头或 ?apiKey= 查询参数，值取 config.apiKey）
+ * ⚠️ 密钥目前内嵌在前端 index.html 里，公开可提取 —— 写接口等于无鉴权（P3-10，待登录态改造）
  * @param {object} req - Express 请求对象
  * @param {object} res - Express 响应对象
  * @param {function} next - 下一个中间件
@@ -207,13 +233,18 @@ function requireAuth(req, res, next) {
 app.use(cors());
 app.use(express.json());
 
-// 写操作统一要求 API 密钥（GET 保持开放：设备端/APK 只做 GET）
+// 写操作统一要求 API 密钥；GET/OPTIONS/HEAD 全开放。
+// 设备侧确实只做 GET（/api/config、/api/room-materials-v2），其余通信全走 MQTT；
+// 但 POST /api/device/version 与 POST /api/log 也是写接口，同样要带 key —— 现有 APK 不调它们
+// （版本上报走 status 心跳字段，日志走 xvj/device/{id}/log），这两个 HTTP 口是给脚本/旧版留的。
 app.use('/api', (req, res, next) => {
   if (req.method === 'GET' || req.method === 'OPTIONS' || req.method === 'HEAD') return next();
   requireAuth(req, res, next);
 });
 
-// Serve static files (index.html)
+// 【S-09】 静态页面入口。
+// ⚠️ 浏览器实际访问的是 80 端口的 nginx（root=/var/www/xvj/public，index.html 由 nginx 直出并带
+//    Cache-Control: no-cache），这条 :3000 路由只在 curl 直连本机时命中，改这里不会改变用户看到的内容。
 app.get('/', (req, res) => {
   res.sendFile('/var/www/xvj/index.html');
 });
@@ -242,10 +273,7 @@ app.get('/api/config', (req, res) => {
 });
 
 // ============================================================================
-// 📦 数据库连接配置
-// ============================================================================
-// ============================================================================
-// 📦 数据库连接配置
+// 📦 【S-01】数据库连接池（真正的建表/迁移在文件末尾的 initDatabase 里）
 // ============================================================================
 // MySQL 连接配置
 const db = mysql.createPool({
@@ -259,15 +287,15 @@ const db = mysql.createPool({
 });
 
 // ============================================================================
-// 📡 MQTT 配置与消息处理
-//    主题：xvj/device/{id}/status（设备状态）、
-//          xvj/device/{id}/register（设备注册）、
-//          xvj/auth/response（授权响应）、
-//          xvj/device/{id}/command（服务器→设备指令）
+// 📡 【S-06】MQTT 配置与消息处理
+//    订阅：xvj/device/#（register|status|request|log|command 五种尾段）+ xvj/auth/response
+//    发布：xvj/device/{id}/command（指令）、xvj/device/{id}/config（配置回写）、
+//          xvj/auth/response（授权响应，⚠️ 广播，所有设备都订阅同一条）
+//    主题明细见文件头 "MQTT 主题" 段
 // ============================================================================
 const mqttBroker = `mqtt://${config.mqtt.host}:${config.mqtt.port}`;
-const mqttPassword = process.env.MQTT_PASSWORD || '';
 
+// 服务端凭据只从 config.mqtt 读（broker 鉴权三阶段见记忆 xvj-server-access）
 const mqttOptions = {
   clientId: 'xvj_server_' + Math.random().toString(16).substr(2, 8),
   cleanSession: true
@@ -615,7 +643,10 @@ function publishToDeviceCommand(device, payloadObj) {
 }
 
 // 发送同步命令到设备，触发素材下载
-// sendSyncCommandToDevice: mqttId = fingerprint（APK 订阅的 topic），若没有则 fallback 到 deviceId
+// ⚠️ 与 publishToDeviceCommand 不同：这里只发单 topic，mqttId 由调用方决定
+//    （唯一调用点 sendAuthResponse 传的是 register topic 里解出的 deviceId，不是 fingerprint，
+//     也没有"没有 fingerprint 就 fallback"这回事）。授权链路用它够用；
+//    批量/定向推送一律走 notifyRoomDevicesOfSync + publishToDeviceCommand 双发。
 function sendSyncCommandToDevice(mqttId, roomId, config) {
   var scenes = (config && config.scenes) || {};
 
@@ -770,38 +801,40 @@ app.post('/api/devices/:id/block', (req, res) => {
 });
 
 // 【S-05e】 发送指令到设备（MQTT command 主题下发）
+// body.command 是原样转发的任意指令对象；只有 action==='sync' 会被服务端改写补全
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
 
-  // 转换相对URL为完整URL
+  // 转换相对URL为完整URL（与版本推送共用 APK_DOWNLOAD_BASE，换域名/上 HTTPS 只改一处）
   let cmd = { ...command };
   if (cmd.url && cmd.url.startsWith('/')) {
-    cmd.url = 'http://47.102.106.237' + cmd.url;
+    cmd.url = APK_DOWNLOAD_BASE + cmd.url;
   }
 
   // sync 命令需要补全 room_id + folder_mappings（服务器查数据库，APK 不需要重复传）
   if (cmd.action === 'sync') {
     db.query(
-      'SELECT d.room_id, d.fingerprint, r.folder_mappings, r.config FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
+      'SELECT d.room_id, d.fingerprint, r.config FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
       [deviceId],
       (err, rows) => {
         if (err || !rows || rows.length === 0) {
           return res.status(404).json({ error: '设备未找到' });
         }
-        const { room_id, fingerprint, folder_mappings, config } = rows[0];
+        const { room_id, fingerprint, config } = rows[0];
         if (!room_id) {
           return res.status(400).json({ error: '设备未绑定房间' });
         }
         const roomConfig = config ? JSON.parse(config) : {};
         // scene-prefixed scenes + folder_mappings（与 sendSyncCommandToDevice 完全一致）
         var prefixedScenes = buildPrefixedScenes(roomConfig.scenes);
-        const curScene = roomConfig.current_scene || 'A';
         const syncCmd = {
           action: 'sync_room_materials',
           room_id: room_id,
           scenes: prefixedScenes,
-          folder_mappings: prefixedScenes[curScene] ? prefixedScenes[curScene].folder_mappings : {},
+          // 必须 A+B 全量：APK 会按 folder_mappings 的键清理本地目录，
+          // 只给 curScene 会让设备把另一幕的素材当孤儿删掉（见 mergePrefixedMappings 的说明）。
+          folder_mappings: mergePrefixedMappings(prefixedScenes),
           debug: roomConfig.debug === true
         };
         publishToDeviceCommand({ id: deviceId, fingerprint }, syncCmd);
@@ -1032,15 +1065,14 @@ app.post('/api/devices/:id/authorize', (req, res) => {
 });
 
 // ============================================================================
-// 📁 素材管理 API — /api/materials
-//    GET    查素材库（支持 ?folder= 参数）
-//    POST   手动新增素材（少用）
-//    DELETE 删除素材（同时删物理文件 + 写日志）
+// 📦 素材管理 API — 【S-02】
+//    GET    /api/materials        查素材库（支持 ?folder= 参数）
+//    DELETE /api/materials/:id    删除素材（同时删物理文件 + 写日志）
+//    POST   /api/upload           入库唯一入口（multipart 文件 → 重封装 → 建 DB 行）
+//    ⚠️ 没有 POST /api/materials，历史注释里的"手动新增素材（少用）"早已不存在
 // ============================================================================
 
-// 7. 获取素材列表
-
-// 【S-02】 素材管理 API：GET|POST /api/materials | DELETE /api/materials/:id（清理时序已修复：Promise.all 等候后 res.json）
+// 【S-02】 素材列表（可按 ?folder= 筛选）// GET /api/materials
 app.get('/api/materials', (req, res) => {
   const { folder } = req.query;
   let sql = 'SELECT * FROM materials';
@@ -1070,7 +1102,9 @@ app.get('/api/materials', (req, res) => {
   });
 });
 
-// 9. 获取配置
+// 【S-13d】 读写"设备级自由配置"（devices.config 列，与房间配置无关）
+// ⚠️ 目前无调用方：APK 从不请求 /api/config/:deviceId，前端也没有入口。
+//    GET  读 devices.config；POST 覆盖写库并把同一份 JSON 发到该设备的 xvj/device/{id}/config（QoS 0，不保留）
 app.get('/api/config/:deviceId', (req, res) => {
   db.query('SELECT config FROM devices WHERE id = ?', [req.params.deviceId], (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -1079,7 +1113,7 @@ app.get('/api/config/:deviceId', (req, res) => {
   });
 });
 
-// 10. 设置设备配置
+// 【S-13e】 设置设备配置（同上，停用中）
 app.post('/api/config/:deviceId', (req, res) => {
   const config = JSON.stringify(req.body);
   db.query('UPDATE devices SET config = ? WHERE id = ?', [config, req.params.deviceId], (err) => {
@@ -1179,7 +1213,8 @@ app.delete('/api/preset/materials/:id', (req, res) => {
 });
 
 
-// 【S-10a】 文件夹管理 — 列出 /public/uploads 下所有目录
+// 【S-10a】 列出素材文件夹 — 取并集：materials.folder 出现过的值 ∪ /public/uploads 下的实际目录。
+// 只建了空目录（POST /api/folders）也能列出来，上传过才会进 DB。
 app.get("/api/folders", (req, res) => {
   db.query("SELECT DISTINCT folder FROM materials", (err, rows) => {
     let folders = [];
@@ -1194,7 +1229,8 @@ app.get("/api/folders", (req, res) => {
   });
 });
 
-// 【S-10b】 创建素材文件夹（物理目录 + materials 表关联）
+// 【S-10b】 创建素材文件夹 — 只 mkdirSync 物理目录，不写任何表；
+// 关联是后续 /api/upload?folder= 落库时才建立的。重名幂等（已存在直接返回成功）。
 app.post("/api/folders", (req, res) => {
   const name = req.body.name;
   if (!name) return res.status(400).json({error:"need name"});
@@ -1230,6 +1266,9 @@ app.delete("/api/folders/:name", (req, res) => {
 });
 
 
+// 【S-02c】 删除素材库条目：素材 + 同 URL 的全部预设一起删（它们共享同一物理文件）
+// 时序：查记录 → 清所有房间映射（回调里才继续，防孤儿引用）→ 删物理文件 → 删 materials/preset 行
+//       → 通知受影响房间设备同步 → res.json
 app.delete("/api/materials/:id", (req, res) => {
   const id = req.params.id;
   const fs = require('fs');
@@ -1279,14 +1318,20 @@ function uploadFolderOf(req) {
   return isSafeFolderName(folder) ? folder : null;
 }
 
-// 素材目录名白名单：/api/folders 的创建与删除都把它直接拼进文件路径，
-// 未校验时 `..%2f..%2f...` 能解到 uploads 之外，而删除用的是 rmSync(recursive)。
+// 素材目录名白名单：/api/folders 的创建与删除、以及 /api/upload 的 destination（uploadFolderOf）
+// 都把它直接拼进文件路径，未校验时 `..%2f..%2f...` 能解到 uploads 之外，而删除用的是 rmSync(recursive)。
+// ⚠️ 长度上限 20 与 materials.folder / folder_notes.folder 的 VARCHAR(10) 不一致：
+//    11~20 字符的目录名能建目录、能上传，落库时却被截断（严格模式下直接报错），
+//    截断后 DB 里的 folder 值就不再等于磁盘目录名，GET /api/folders 的并集会露出两个入口。
 function isSafeFolderName(name) {
   return typeof name === 'string' && /^[A-Za-z0-9_-]{1,20}$/.test(name);
 }
 
 // 把 "/uploads/xx/yy.mp4" 解成磁盘路径，并强制结果仍落在 uploads 根内。
-// 预设/默认素材的 url 是客户端任意传入的，删文件前不过这一道就等于按请求删盘。
+// 用于 preset_materials 的增删（url 是客户端任意传入的）与 materials 的物理文件清理，
+// 不过这一道就等于按请求删盘。
+// ⚠️ 目前没有任何调用方覆盖 default_materials —— 那张表只写/查/删行，服务端从不按它的 url 碰磁盘，
+//    所以缺校验不会删文件，但前端 <video src> 会照抄该 url（等同站内任意链接注入，与 P3-10 一起处理）。
 function resolveUploadPath(url) {
   if (typeof url !== 'string' || url.indexOf('/uploads/') !== 0) return null;
   const root = path.resolve(__dirname + '/public/uploads');
@@ -1486,7 +1531,7 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
 
     const idList = Array.from(allIds);
     const placeholders = idList.map(() => '?').join(',');
-    // 并行查询 materials 和 preset_materials
+    // 两次查询是串行的（第二条在第一条回调里），不是并行 —— 表小，先不优化
     db.query(
       `SELECT * FROM materials WHERE id IN (${placeholders})`,
       idList,
@@ -1513,6 +1558,8 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
             });
 
             // 按 scene-prefixed folder 分组（"A01", "B01"），与 APK syncRoomMaterials 的 lookup 格式对齐
+            // ⚠️ 只有非空数组的文件夹才会出现在结果里：空映射的键整个缺失（不是 []），
+            //    调用方（APK）必须把"键不存在"和"空数组"都当作该文件夹无素材，不能当同步失败。
             Object.entries(folderMappingsA).forEach(([folderNum, ids]) => {
               if (Array.isArray(ids) && ids.length > 0) {
                 result['A' + folderNum] = ids.map(id => merged[id]).filter(Boolean);
@@ -1783,15 +1830,15 @@ app.put('/api/rooms/:id', (req, res) => {
     res.json({success: true});
   });
 });
-// 更新房间的窗口配置（快捷接口，支持指定场景）
-// PUT /api/rooms/:id/windows  body: { windows, sceneId }
-// 【窗口配置系统】sceneId 指定保存到 scenes.A.windows 还是 scenes.B.windows
-// 保存后立即调用 sendSyncCommandToDevice() 推送 MQTT，让设备实时更新窗口
+// 【S-04b】 更新房间窗口配置（快捷接口，按幕保存）
+// PUT /api/rooms/:id/windows  body: { windows, sceneId:'A'|'B', master?:{brightness}, live?:true }
+//   写入 rooms.config.scenes[sceneId].windows（整幕覆盖），master 传了就 clamp 到 [0,1]。
+//   推送分两条路：live=true 只发轻量 update_windows（不触发素材同步、不记操作日志）；
+//   非 live 这里一条都不发 —— 由前端随后调 POST /api/rooms/:id/sync（doSyncRoom）统一覆盖全部已授权设备。
 app.put('/api/rooms/:id/windows', (req, res) => {
   const { windows, sceneId, master, live } = req.body;   // sceneId: 'A' 或 'B'; master: { brightness } 场景总亮度; live: true=编辑器实时预览轻推
   const id = req.params.id;
 
-// 【S-04b】 窗口配置 // PUT /api/rooms/:id/windows
   if (!Array.isArray(windows)) {
     return res.status(400).json({ error: 'windows 必须是数组' });
   }
@@ -1863,6 +1910,9 @@ app.delete('/api/rooms/:id', (req, res) => {
     if (err) return res.status(500).json({error: err.message});
     const room = rows[0];
     // 解绑前通知房间内设备停止播放（设备只认 fingerprint，缺省回退设备 id，与 push-update 一致）
+    // ⚠️ APK 侧 action:'stop' 目前只停"单播放器"，不停多窗口播放器（见 MainActivity.kt handleCommand 注释），
+    //    所以删房间后设备画面仍在播；要真正停下来得等 APK 补 releaseAllWindows。
+    //    另外这里 publish 完就继续删行了，没有等设备的 status 回执 —— 通知是"尽力而为"。
     db.query('SELECT id, fingerprint FROM devices WHERE room_id = ?', [id], (errD, devs) => {
       if (errD) return res.status(500).json({error: errD.message});
       var bound = devs || [];
@@ -1912,6 +1962,8 @@ app.get('/api/unregistered', (req, res) => {
 
 // ==================== 默认素材 API（default_materials 表）====================
 // 【S-13a】 获取默认素材列表（从 default_materials 表读取）
+// ⚠️ 全孤儿接口：前端 index.html 与 APK 都没有任何调用点，服务端同步链路（folder_mappings /
+//    room-materials-v2）也从不消费这张表。留着只是因为表还在库里。动它之前先确认真的不要了。
 app.get('/api/default-materials', (req, res) => {
   db.query('SELECT * FROM default_materials ORDER BY id DESC', (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -1982,10 +2034,20 @@ app.listen(PORT, () => {
 });
 
 /**
- * 数据库初始化 — 建表（devices / materials / operation_logs / folder_notes / apk_versions / device_versions）
- * 全部使用 CREATE TABLE IF NOT EXISTS，安全幂等
+ * 【S-01】数据库初始化 —— app.listen 之后才调用，建 7 张表：
+ *   devices / materials / preset_materials / folder_notes / operation_logs / apk_versions / device_versions
+ * 幂等性说明：
+ *   - CREATE TABLE IF NOT EXISTS 对"表已存在、但缺新列"毫无作用，所以加列一律靠显式
+ *     ALTER TABLE ... ADD COLUMN，靠 catch 掉 ER_DUP_FIELDNAME 来幂等（见下面 apk_versions.md5）。
+ *   - 另有 3 张表不在此函数内，是模块加载时裸 db.query 建的（stores×2、rooms、default_materials），
+ *     它们先于连接池就绪执行，失败只会打日志，不会挡住启动。
+ *   - devices.authorized 的列默认值是 1，但所有 INSERT 都显式传 0，所以不影响"新设备待审核"。
  */
 function initDatabase() {
+  // ⚠️ 这段 DDL 比代码实际用到的结构落后：devices 的 INSERT/SELECT 还在写 room_id、store、
+  //    first_seen（见 handleDeviceRegister 的 INSERT 与【S-11c】店铺重命名级联），但这些列没在这里声明，
+  //    是靠手工 ALTER 加到生产库上的。表已存在时 IF NOT EXISTS 什么都不做，所以线上没事；
+  //    若要用这份代码在全新 MySQL 上冷启动，devices 会缺列并直接报错 —— 迁库前先补齐 DDL。
   db.query(`
     CREATE TABLE IF NOT EXISTS devices (
       id VARCHAR(64) PRIMARY KEY,
@@ -2091,6 +2153,7 @@ function initDatabase() {
 // ==================== 版本管理 API ====================
 
 // APK 下载地址（nginx 80 端口直出 public/apk）
+// ⚠️ 写死公网 IP + http：换域名/上 HTTPS 时改这里一处即可，【S-05e】的相对 URL 补全也共用它。
 const APK_DOWNLOAD_BASE = 'http://47.102.106.237';
 
 // 流式计算文件 MD5（避免大文件整读进内存）
@@ -2195,6 +2258,8 @@ app.delete('/api/versions/:id', (req, res) => {
 });
 
 // 【S-12e】 设备上报版本（写入 device_versions 表）
+// 走 HTTP 的这条口目前没有任何客户端调用（APK 不发，前端只读 /api/device/versions）。
+// 在用的版本上报路径是 MQTT status 心跳 —— 见入站 status 分支里"设备版本上报"那段，它同样写 device_versions。
 app.post('/api/device/version', (req, res) => {
   const {device_id, version, version_code} = req.body;
   if (!device_id) return res.status(400).json({error:'device_id required'});

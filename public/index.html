@@ -331,7 +331,9 @@ async function syncCurrentRoom() {
     };
 }
 
-// HTML 转义（防止 XSS）// 【S-10】素材/店铺/房间名全部经过此函数处理
+// 文本节点走 esc()、属性值走 escA()（素材名/店铺名/房间名的主要路径都已收口）。
+// 仍未收口、在自己 replace(/</g,'&lt;') 的地方：ar() 的房间行、推送弹窗的 loadPushRooms()、
+// 房间/客户头部的 name 与 title 拼接 —— 改这三处时记得换成 esc/escA。
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 // HTML 属性转义（转义单双引号，防止破坏 HTML 属性结构）
 function escA(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -355,9 +357,11 @@ function doSyncRoom(roomId) {
 
 
 // ============ 弹窗 / 预览播放器生命周期 ============
-// #mc 由 6 处功能共用（预览、同步确认、同步结果、授权选房、推送、输入框），
-// 所以「写弹窗内容」必须走 setMc()：它先释放上一个播放器。否则关掉预览后 <video>
+// #mc 由 7 处功能共用（预览、同步确认、同步结果、授权选房、推送、输入框、房间素材删除结果），
+// 所以「写弹窗内容」必须走 setMc()/openModal()：它们先释放上一个播放器。否则关掉预览后 <video>
 // 仍留在 DOM 里解码+缓冲（实测关窗 1.5s 内 currentTime 又前进 1.5s，整片已缓存）。
+// 预览是唯一例外，它走 createPlayer(url, type, container)——内部同样先 stopPreview()。
+// 结论：任何人往 #mc 里塞东西，只允许 setMc()/openModal()/createPlayer() 三个入口。
 var _modalAutoTimer = null;
 
 function stopPreview() {
@@ -395,6 +399,7 @@ function autoCloseModal(ms) {
     _modalAutoTimer = setTimeout(closeModal, ms);
 }
 
+// 判定预览介质：DB 的 type 优先，扩展名兜底（历史行 type 为 null，只有 url 能说话）
 function _pvKind(type, url) {
     var m = String(url || '').match(/\.([A-Za-z0-9]+)(\?|$)/);
     var ext = m ? m[1].toLowerCase() : '';
@@ -403,11 +408,14 @@ function _pvKind(type, url) {
     return 'image';
 }
 
+// 播放/加载失败的唯一善后：先释放播放器再写错误面板（顺序反了会把 onerror 自己触发的循环写满）
 function _pvFail(container, msg, url) {
     stopPreview();
     container.innerHTML = '<div class="pv-err">⚠️ ' + esc(msg) + '<div class="pv-err-url">' + esc(url || '') + '</div></div>';
 }
 
+// image / audio / video 三种预览共用这一个入口。
+// 不走 setMc()：容器由调用方给（可能是 #mc，也可能是别的槽位），但第一步同样是 stopPreview()。
 function createPlayer(url, type, container, poster) {
     stopPreview();
     container.innerHTML = '';
@@ -432,6 +440,7 @@ function createPlayer(url, type, container, poster) {
     v.style.background = '#000';
     v.style.width = kind === 'video' ? '100%' : '360px';
     v.style.maxHeight = '80vh';
+    // 音量记住就行，静音状态不记：这里的 muted=true 是自动播放被拒的兜底，不是用户的选择
     var vol = parseFloat(localStorage.getItem('xvol'));
     v.volume = isNaN(vol) ? 1 : Math.min(Math.max(vol, 0), 1);
     v.addEventListener('volumechange', function () {
@@ -453,21 +462,28 @@ function createPlayer(url, type, container, poster) {
 }
 
 /* ============================================================
- * 【代码索引】搜索 "【F-XX】" 快速定位
+ * 【代码索引】搜索 "【F-XX】" 快速定位（带 b 的是同一模块里的第二个入口）
  * ─────────────────────────────────────────────────────────
- * 【F-01】全局状态对象 var s = {...}
- * 【F-02】菜单切换 sp(p) & 各页初始化
- * 【F-03】素材管理页 lm() / lp() / lr()
- * 【F-04】设备管理 ld() & 未注册设备 lu()
- * 【F-05】授权 & 设备绑定 ar() / bindDev()
- * 【F-06】房间视图 sr() & rmDevice()
+ * 【F-00】API 密钥注入：fetch/XHR 统一补 x-api-key
+ * 【F-01】全局状态对象 s
+ * 【F-02】菜单切换 sp(p)（各页初始化在这里分派）
+ * 【F-03】素材管理页 lm()     　【F-03b】预设素材页 lp()
+ * 【F-04】未注册设备 lu()     　【F-04b】设备列表 ld()
+ * 【F-05】设备授权 ar()→confirmAuth()（一次 POST /api/devices/:id/authorize 同时完成授权与绑房）
+ *         unbind() 解绑授权、unbindRoom() 只解房间绑定
+ * 【F-06】房间列表刷新 lr()   　【F-06b】选择房间渲染 sr()
+ *         【F-06c】新建房间 createRoom()   　【F-06d】房间工作台 rmDevice()
  * 【F-07】素材推送 showPushDialog() & doPushToRoom()
- * 【F-08】房间内素材 doSyncRoom() & rmRoomMat()
+ * 【F-08】房间内素材删除 rmRoomMat()（全量同步 doSyncRoom() 在弹窗生命周期块里）
+ *         【F-08b】房间调试开关 updateRoomDebugToggle() / toggleRoomDebug()
  * 【F-09】窗口编辑器 renderWinEditorFull() & saveWindows()
- * 【F-10】日志 & 操作记录 logAction() | loadDeviceLogs()
+ * 【F-10】设备日志 loadDeviceLogs()（logAction() 只是往 POST /api/log 打埋点，服务端另有同名函数）
+ * 【F-11】客户/店铺两级 Tab rd()（sd 切店 / as 建店 / ds 删店 / rs 店改名 / rr 房间改名）
+ * 【F-12】版本管理页 lv() & lvd() & uv() & dv() & pushUpdate() & pushVersionToAll()
  * ─────────────────────────────────────────────────────────
  */
 
+// 【F-01】 全局状态对象 // var s = {...}
 var s = {
     folders: JSON.parse(localStorage.getItem('xfolds') || '{}'),
     p: localStorage.getItem('xp') || 'materials',
@@ -506,6 +522,7 @@ document.addEventListener('keydown', function(e) {
     if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyB') { e.preventDefault(); toggleNav(); }
 });
 
+// 【F-02】 菜单切换与各页初始化 // function sp(p)
 function sp(p) {
     s.p = p;
     localStorage.setItem('xp', p);
@@ -722,6 +739,8 @@ function _bindPvDelegation(id) {
     });
 }
 
+// 双击预览入口（由 _bindPvDelegation 调用）。这里不用 openModal()：
+// createPlayer() 已经把 #mc 写好并释放了上一个播放器，此处只负责揭开遮罩 + 取消待关闭定时器。
 function pv(u, t, th) {
     if (!u) return;
     // 不再 encodeURI(u)：路径里的 % 会被二次编码成 %25，历史素材（文件名带空格/中文）反而 404
@@ -729,8 +748,6 @@ function pv(u, t, th) {
     clearTimeout(_modalAutoTimer);
     document.getElementById('m').classList.add('show');
 }
-
-function dc() { closeModal(); }
 
 function ul(files) {
     if (!files.length) return;
@@ -1076,6 +1093,7 @@ function sr(id) {
     });
 }
 
+// 【F-06c】 新建房间：必须先有店铺（s.df），POST /api/rooms 后自动选中新房间并刷新工作台
 function createRoom() {
     if (!s.df) { alert('请先选择或创建客户'); return; }
     inputModal('新建房间（' + s.df + '）', '请输入房间号(例: 201)', '', function(n) {
@@ -1095,6 +1113,8 @@ function createRoom() {
     });
 }
 
+// 删除房间（tab 上的 ×）：DELETE /api/rooms/:id —— 服务端先给房内设备 publish action:'stop'，
+// 再把 devices.room_id 置空（设备不删，等重新绑定），最后删 rooms 行；素材本身不受影响。
 async function dr(e, id) {
     e.stopPropagation();
     if (!confirm('删除此房间?')) return;
@@ -1103,6 +1123,11 @@ async function dr(e, id) {
     await lr();
 }
 
+// 【F-06d】 房间工作台 // function rmDevice()
+// 名字里的 Device 只是其中一段。拼出来的顺序：工作台两个开关（调试模式/窗口配置）+ 输入截取开关
+// → 本房间已授权设备列表 → 场景选择器（第一幕/第二幕）→ 窗口模式下直接交给 renderWinEditorFull 并 return，
+// 文件夹模式下才继续画素材目录与同步按钮；最后调 updateRoomDebugToggle() 恢复开关显示态。
+// 无 s.rf 时只画"请选择或创建房间"，不碰其它状态。
 function rmDevice() {
     var g = document.getElementById('dg');
     if (!s.rf) {
@@ -1219,6 +1244,8 @@ function rmDevice() {
     h += h2;
     g.innerHTML = h;
     // 应用调试模式的显示状态（sessionStorage 优先，否则读服务器数据）
+    // ⚠️ 窗口模式分支（上面 renderWinEditorFull 后直接 return）走不到这一行：于是切片编辑器打开时，
+    //    刚重建出来的调试模式开关一律显示"关"，与云端 config.debug 真值无关（待修）。
     updateRoomDebugToggle();
 }
 
@@ -1242,7 +1269,7 @@ function rmDevice() {
 //
 // 【Bug 修复历史（2026-04-02）】
 // Bug1: switchScene() 未调用 renderWinEditorFull() → 切换标签后编辑器列表/画布不更新
-// Bug2: saveWins() 后 s.rooms[idx].config 内存未同步 → 属性面板显示旧数据
+// Bug2: saveWindows() 后 s.rooms[idx].config 内存未同步 → 属性面板显示旧数据
 // Bug3: updWinContent() 改完属性后无重渲染 → 面板和画布标签不刷新
 //
 // 窗口（Window）数据模型（与 rooms.config.scenes[sceneId].windows 对应）：
@@ -1259,17 +1286,20 @@ function rmDevice() {
 //     rotation: 0|90|180|270,      // 内容在框内旋转
 //     crop: { x, y, w, h },        // 输入截取 = Arena InputRect，素材画面内归一化 0..1 的取景区，
 //                                  // 该区域拉伸填满窗口框（允许变形）；缺省即全画面 {0,0,1,1}
-//     content: { type: 'COLOR'|'SCENE_A'|'SCENE_B'|'HDMI'|'IMAGE', ... }
+//     content: { type: 'SCENE_A'|'SCENE_B'|'HDMI'|'color', ... }   // 没有 IMAGE；颜色是小写 'color'
 //   }
 //
-// 设备开机行为（APK 逻辑）：
-//   场景A windows 数组为空 → APK 自动创建全屏窗口1播放文件夹01
-//   场景B windows 数组为空 → APK 保持黑屏，等待用户手动配置
+// 设备开机行为（APK applySceneConfigs）：
+//   A 幕 windows 为空 → 自动补一个全屏窗口，播哪个文件夹由 A 幕 folder_mappings 里
+//   第一个「有素材」的映射决定，不是写死 01
+//   B 幕 windows 为空 → 保持黑屏，等待用户手动配置
 //
 // API 约定：
-//   PUT /api/rooms/:id/windows  { windows: [WinConfig, ...], sceneId: 'A'|'B' }
+//   PUT /api/rooms/:id/windows  { windows: [WinConfig, ...], sceneId: 'A'|'B', master, live? }
 //   返回 { success: true, scene: 'A'|'B', windows: [...] }
-//   保存后自动调用 doSyncRoom(id) 推送至设备
+//   手动「保存并推送」= saveWindows() 不带 silent → 落库后再 doSyncRoom() 全量同步；
+//   属性/几何改动的 500ms 自动同步 = saveWindows(silent) 带 live:true → 只推 update_windows
+//   轻通道（设备原地更新，不重建播放器、视频不从头播），不再走 doSyncRoom。
 
 /** 切换当前编辑的场景（A = 第一幕，B = 第二幕）
  *  BugFix-20260402：末尾调用 renderWinEditorFull()，确保切换后编辑器列表和画布同步更新。
@@ -1279,8 +1309,9 @@ function rmDevice() {
  *  切换时 s._selWin 从新 scene 的 windows 数组中恢复，不再清空导致按钮失效。
  */
 
-// 【工具函数】加载并隔离 room config：A/B windows 数组独立引用
-// 用于所有窗口操作入口（selWin/switchScene/renderWinEditorFull）
+// 【工具函数】加载并隔离 room config：A/B windows 数组独立引用 + 补齐 scenes 骨架
+// 目前只有 switchScene() 用它（两个分支各一次）；selWin()/renderWinEditorFull()/saveWindows()
+// 自己解析 r.config，再经 _getWinCache() 拿本房间本幕的 windows。
 function _loadRoomCfg(r) {
     var c = {};
     try { c = r.config ? (typeof r.config === 'string' ? JSON.parse(r.config) : r.config) : {}; } catch(e) {}
@@ -1446,17 +1477,6 @@ var _canvasScale = 1, _canvasOffsetX = 0, _canvasOffsetY = 0;
 var _dragging = null;
 
 /**
- * 渲染完整窗口编辑器界面
- * 包含：
- *   - 可视化画布（拖拽/缩放窗口）
- *   - 窗口列表（点击选中）
- *   - 选中窗口属性编辑面板（名称、位置、尺寸、内容类型）
- *   - 场景 A/B 标签卡切换
- *   - 保存并推送按钮
- */
-
-// 【F-09】 窗口编辑器 // function renderWinEditorFull()
-/**
  * 几何行（位置/尺寸/比例锁定/比例预设）——同一套控件、两种编辑对象：
  *   asCrop=false → 窗口配置的「输出窗口」，单位设备像素，回调 updWinField
  *   asCrop=true  → 「输入截取」侧栏的取景框（绿框），单位输入画面像素（_IN_W×_IN_H），回调 updWinCropField
@@ -1501,6 +1521,16 @@ function _winFlipRotRowsHtml(w) {
     return h;
 }
 
+// 【F-09】 窗口编辑器 // function renderWinEditorFull()
+/**
+ * 渲染完整窗口编辑器界面
+ * 包含：
+ *   - 可视化画布（拖拽/缩放窗口；开启「输入截取」后同一块画布改成编辑取景框）
+ *   - 窗口列表（点击选中）
+ *   - 选中窗口属性编辑面板（名称、位置、尺寸、内容类型、透明度/亮度、镜像/旋转、取景）
+ *   - 场景 A/B 标签卡切换
+ *   - 保存并推送按钮（改动本身另有 500ms 防抖的静默自动同步，见 autoSyncWinConfig）
+ */
 function renderWinEditorFull() {
     // 【BugFix-20260402-v3】渲染前检查并修复 A/B 共享数组
     var _r = s.rooms.find(function(x) { return x.id === s.rf; });
@@ -1588,6 +1618,10 @@ function renderWinEditorFull() {
     renderWinCanvas(wins);
 }
 
+// 画布：把当前幕的 windows 铺成可拖/可缩的矩形。
+// 设计空间固定 1920×1080（与 APK 端的轴向等比换算同一套基准），_canvasScale/_canvasOffset* 是本模块共用的
+// 屏幕坐标↔设计坐标换算量，所以每次重绘都要按容器尺寸先重算；空白血框 winDeviceFrame 表示整屏边界。
+// 拖拽/缩放的 document mousemove/mouseup 监听在这里先 remove 再 add，避免每次重绘都叠一层。
 function renderWinCanvas(wins) {
     var area = document.getElementById('winCanvasArea');
     var canvas = document.getElementById('winCanvas');
@@ -2198,6 +2232,9 @@ function delWin(e, id) {
     fetch('/api/rooms/' + _rid0 + '/windows', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({windows: wins, sceneId: curS2}) }).then(function(res){ return res.json(); }).then(function(json){ if (json.success) { if (_winCacheKey() !== _k0) return; _setWinCache(wins); s._selWin = null; doSyncRoom(_rid0); renderWinEditorFull(); } });
 }
 
+// 侧栏数字框/下拉改属性：s._selWin 和 _winCache 里同 id 的那份都要写（两者可能已不是同一对象，
+// 只写一个就会出现"编辑框跟着动、画布不动"），然后只重绘矩形（_renderWinRects）不整块重渲染，
+// 最后 autoSyncWinConfig() 去抖推送 live update_windows。
 function updWinField(field, value) {
     if (!s._selWin) return;
     var id = s._selWin.id, wins = s._winCache || [];
@@ -2439,7 +2476,9 @@ async function mapPreset() {
     updateRoomDebugToggle();
 }
 
-// 更新调试模式按钮状态
+// 【F-08b】 房间调试开关（updateRoomDebugToggle 显示态 / toggleRoomDebug 写入）
+// 注意开关态优先读 sessionStorage('debug_'+房间id)：它是本标签页最后一次点击的结果，
+// 会盖过服务器 config.debug。换标签页/清会话前，按钮显示的不一定是云端真值。
 async function updateRoomDebugToggle() {
     var el = document.getElementById('roomDebugToggle');
     var slider = document.getElementById('roomDebugSlider');
@@ -2563,6 +2602,9 @@ async function rmRoomMat(e, mid) {
     });
 }
 
+// 【F-11】 客户/店铺 & 房间两级 Tab // function rd()
+// rd() 画两行 tab：上排店铺（点 sd 切店 / 右键 rs 改名 / × 删店 ds），下排房间（点 sr 选房 / 右键 rr 改名 / × 删房 dr）。
+// 状态口径：当前店铺 = s.df（并写 localStorage('xstore')），当前房间 = s.rf；渲染完若有选中房间就交给 rmDevice() 画工作区。
 function rd() {
     var g = document.getElementById('dg');
     if (!s.df && s.stores.length > 0) s.df = s.stores[0];
@@ -2628,6 +2670,7 @@ function ds(e, store) {
     }).catch(function(err) { alert('删除失败: ' + err.message); });
 }
 
+// 【F-07】 推送弹窗 // async function showPushDialog()
 // ==================== 推送 ====================
 async function showPushDialog() {
     console.log('showPushDialog called, selected:', s.selected);
@@ -2686,7 +2729,7 @@ async function loadPushRooms() {
             h += '<span>' + String(room.name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
             h += '</label>';
         });
-        h += '<div style="margin-top:20px"><button class="btn btn-primary" onclick="doPushToRoom()">确认推送</button> <button class="btn" onclick="document.getElementById(\'m\').classList.remove(\'show\')">取消</button></div>';
+        h += '<div style="margin-top:20px"><button class="btn btn-primary" onclick="doPushToRoom()">确认推送</button> <button class="btn" onclick="closeModal()">取消</button></div>';
         div.innerHTML = h;
     } catch(e) {
         console.error('Error loading rooms:', e);
@@ -4063,6 +4106,9 @@ body {
 
 
 
+// 【F-10】 设备日志页 // async function loadDeviceLogs()
+// 页面底部这个 `var s = s || {}` 不是重新定义全局状态，只是给后加的日志功能补挂一个定时器字段；
+// 真正的 s 定义在文件开头（【F-01】）。
 var s = s || {};
 s.logAutoRefreshTimer = null;
 
