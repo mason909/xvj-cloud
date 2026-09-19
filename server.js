@@ -133,20 +133,31 @@ const FAULT_LOG = '/workspace/xvj-backup/故障记录.md';
  * @param {string} type - 故障类型（如 '进程崩溃'）
  * @param {string} msg - 简短消息
  * @param {object} detail - 详细信息
+ * @param {Function} [done] - 落盘后回调（崩溃路径要先写完再 exit，所以这里用同步追加）
  */
-function writeFault(type, msg, detail) {
+function writeFault(type, msg, detail, done) {
   const ts = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
   const entry = `## [${ts}] ${type}\n\n**消息**: ${msg}\n\n**详情**: \`${JSON.stringify(detail)}\`\n\n---\n`;
-  fs.appendFile(FAULT_LOG, entry, () => {});
+  // appendFile + 空回调时，写失败（目录不存在/磁盘满）是彻底静默的 —— 崩溃现场最需要的那条记录反而没了。
+  // 同步写在三个调用点（进程崩溃、Promise 拒绝、Express 错误兜底）都是低频路径，不会卡到事件循环。
+  try { fs.appendFileSync(FAULT_LOG, entry); }
+  catch (e) { console.error('⚠️ 故障记录写入失败（' + FAULT_LOG + '）:', e.message); }
   console.error('[故障记录]', type, msg, detail);
+  if (done) done();
 }
 
-// 进程级崩溃捕获
+// 进程级崩溃捕获：记完就退出，交给 systemd（Restart=always）重启。
+// 以前只记不退，注释里也写了"继续跑状态未知"——但 Node 的语义正是如此：抛出点之后的
+// 清理不会执行，MySQL 连接池/MQTT client/正在写一半的文件全处在未知状态，进程变成
+// "监听还在、事件循环还在、出事那块的逻辑已经废了"的僵尸，systemd 看它是 active 就不会重启。
+// 2026-09-08 全站瘫 3 小时正是这个形状：与其带病硬撑，不如干净地重启一次（设备会自动重连重注册）。
 process.on('uncaughtException', (err) => {
-  writeFault('进程崩溃 (uncaughtException)', err.message, { stack: err.stack });
+  writeFault('进程崩溃 (uncaughtException)', err.message, { stack: err.stack }, () => process.exit(1));
 });
+// unhandledRejection 与 uncaughtException 同构处理（Node 15+ 的默认行为本来就是直接崩，
+// 这里只是把现场记下来再退，而不是偷偷把错误吞掉）
 process.on('unhandledRejection', (reason) => {
-  writeFault('Promise拒绝 (unhandledRejection)', String(reason), {});
+  writeFault('Promise拒绝 (unhandledRejection)', String(reason && reason.stack || reason), {}, () => process.exit(1));
 });
 const path = require('path');
 const fs = require('fs');
@@ -160,8 +171,17 @@ const config = require('./config');
  * @param {object} details - 详细信息（JSON 序列化后存储）
  */
 function logAction(action, target, details) {
+  // details 是 undefined 时 JSON.stringify 返回 undefined（不是字符串 "undefined"），
+  // mysql2 会在"绑参阶段"同步抛 Bind parameters must not contain undefined —— 那是 throw 而不是
+  // 回调里的 err，会把调用方整个请求打成 500（POST /api/log 不带 detail 就是这条路径）。
+  // 已经是字符串就不要再 stringify 一遍，否则库里是双重转义的 "\"{...}\""。
+  let detailJson = null;
+  if (typeof details === 'string') detailJson = details;
+  else if (details !== undefined && details !== null) {
+    try { detailJson = JSON.stringify(details); } catch (e) { detailJson = String(details); }
+  }
   db.query("INSERT INTO operation_logs (action, target, details) VALUES (?, ?, ?)",
-    [action, target, JSON.stringify(details)],
+    [action, target, detailJson],
     (err) => { if (err) console.error('日志记录失败:', err.message); }
   );
 }
@@ -362,6 +382,34 @@ function clampStr(v, max) {
 }
 
 /**
+ * 列表条数入参：只收 1..max 的整数，其它（缺省、0、负数、'abc'、超大）一律回落默认值。
+ * 以前是 `parseInt(q) || 默认`，`?limit=-1` 会原样进 `LIMIT -1` 让 MySQL 抛语法错误 ——
+ * 手滑改一下地址栏就能把日志页打成 500。
+ */
+function clampLimit(v, dflt, max) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n) || n < 1) return dflt;
+  return Math.min(n, max);
+}
+
+/**
+ * 删单个文件，失败只记日志。
+ * 文件末尾的 uncaughtException 处理器现在会 exit(1)（僵尸进程比重启更糟），而这些
+ * "清垃圾"的 unlinkSync 恰恰最容易抛 ENOENT/EBUSY（客户端断流后 multer 已自行回收、
+ * 杀毒/IO 占用）。在 MySQL 回调里抛出来 = 整站重启，所以删除一律走这里。
+ * @returns {boolean} 是否真的删掉了（不存在也算干净）
+ */
+function safeUnlink(p) {
+  try {
+    if (p && fs.existsSync(p)) fs.unlinkSync(p);
+    return true;
+  } catch (e) {
+    console.error('🗑 删除文件失败:', p, e.message);
+    return false;
+  }
+}
+
+/**
  * 安全解析 rooms.config：脏数据按空配置处理，绝不让一次解析异常把通知链路带崩。
  * 一律返回"普通对象"：数组/字符串/数字这类合法 JSON 但不是配置形状的值，也当空配置，
  * 否则调用方 cfg.scenes 拿到 undefined 还算好事，拿到 "abc".scenes 就是另一个故事了。
@@ -536,10 +584,31 @@ if (config.mqtt.username) {
 
 const mqttClient = mqtt.connect(mqttBroker, mqttOptions);
 
+// 连接级错误必须有人听：EventEmitter 上 'error' 无监听者时会把异常抛给 uncaughtException，
+// 而那个处理器现在的行为是记一条就 exit(1) —— broker 抖一下就能让整个后台反复重启。
+// 有了这个监听，掉线/鉴权被拒至少会以一行明确的原因留在 journal 里。
+mqttClient.on('error', (err) => console.error('❌ MQTT 客户端错误:', err.message));
+
+/**
+ * 统一发布出口：每次 publish 都带错误回调。
+ * mqtt.js 在客户端处于 connecting/offline（重连窗口）时不 throw，只把错误交给回调；
+ * 没有回调就是静默丢弃 —— 命令没送到设备，HTTP 侧照样回 success:true，界面上"已推送"。
+ */
+function pubMqtt(topic, payload, opts) {
+  mqttClient.publish(topic, payload, opts || {}, (err) => {
+    if (err) console.error('❌ MQTT 发布失败:', topic, err.message);
+  });
+}
+
 mqttClient.on('connect', () => {
   console.log('✅ MQTT 连接成功');
-  mqttClient.subscribe('xvj/device/#');
-  mqttClient.subscribe('xvj/auth/response');
+  // subscribe 同样要回调：broker 侧 ACL 收紧后订阅会静默失败，那样所有设备心跳都收不到，
+  // 而日志里只有"MQTT 连接成功"这一句，排查时会以为链路是通的。
+  ['xvj/device/#', 'xvj/auth/response'].forEach(function(t) {
+    mqttClient.subscribe(t, (err) => {
+      if (err) console.error('❌ MQTT 订阅失败:', t, err.message);
+    });
+  });
 });
 
 mqttClient.on('message', (topic, message) => {
@@ -624,9 +693,14 @@ function handleMqttMessage(topic, message) {
         // "WHERE id = ? OR fingerprint = ?" 的匹配；不合格就退回 deviceId，别拿脏值当身份
         const fingerprint = (isSafeDeviceId(data.fingerprint) && data.fingerprint) || deviceId;
         const searchId = deviceId.substring(0, 32);
+        // 心跳原文整条进 status_data：设备哪天多报几段堆栈就会超 TEXT 的 64KB，
+        // STRICT_TRANS_TABLES 下是整条 UPDATE 失败（带回调，日志有痕迹，但后果是
+        // 这台设备的 status/online_time 永远刷不动 —— 后台看起来一直离线）。
+        // 状态文本是给人看的，截一份足够，不值得让它拖垮在线判定。
+        const statusData = clampStr(message, 4000);
         db.query(
           "UPDATE devices SET status = ?, status_data = ?, online_time = NOW() WHERE (id = ? OR fingerprint = ? OR id LIKE ? OR id LIKE ?) AND status <> 'blocked'",
-          [isOnline ? 'online' : 'offline', message, deviceId, fingerprint, deviceId + '%', searchId + '%'],
+          [isOnline ? 'online' : 'offline', statusData, deviceId, fingerprint, deviceId + '%', searchId + '%'],
           (err, result) => {
             if (err) console.error('更新设备状态失败:', err.message);
             if (result && result.affectedRows > 0) {
@@ -818,12 +892,14 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             room_id: roomId || ''
           }, roomSyncFields(roomConfig), { timestamp: Date.now() });
 
-          mqttClient.publish(topic, JSON.stringify(payload), { qos: 1 });
+          pubMqtt(topic, JSON.stringify(payload), { qos: 1 });
           console.log(`📤 已推送授权+播放配置到设备 ${deviceId}, 房间: ${roomId}, rev=${payload.rev}`);
 
         } catch (e) {
           console.error('解析room config失败:', e);
-          // 即使解析失败也发送授权响应
+          // 即使解析失败也发送授权响应。载荷刻意不带 scenes/rev：与"查不到房间"那两条退路同口径
+          //（见下面的 else 分支），让设备保持上一轮画面，而不是拿一份空 scenes 骨架去拆掉在播的窗口；
+          // 不带 rev 就不会 markAppliedRev，配置修好后心跳对账会自己补发一轮。
           const payload = JSON.stringify({
             action: 'auth_result',
             device_id: deviceId,
@@ -834,7 +910,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
             debug: false,
             timestamp: Date.now()
           });
-          mqttClient.publish(topic, payload);
+          pubMqtt(topic, payload);
         }
       } else {
         // 查不到房间配置，也发送授权响应
@@ -848,7 +924,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
           debug: false,
           timestamp: Date.now()
         });
-        mqttClient.publish(topic, payload);
+        pubMqtt(topic, payload);
       }
     });
   } else {
@@ -862,7 +938,7 @@ function sendAuthResponse(deviceId, authorized, message, roomId) {
       folder_mappings: {},
       timestamp: Date.now()
     });
-    mqttClient.publish(topic, payload);
+    pubMqtt(topic, payload);   // 未授权分支同样要带错误回调：这台设备在等审批，通知丢了界面却显示"已发送"
   }
 }
 
@@ -882,7 +958,7 @@ function publishToDeviceCommand(device, payloadObj) {
   if (targets.length === 0) return 0;
   var buf = JSON.stringify(payloadObj);
   targets.forEach(function(t) {
-    mqttClient.publish('xvj/device/' + t + '/command', buf, { qos: 1 });
+    pubMqtt('xvj/device/' + t + '/command', buf, { qos: 1 });
   });
   return targets.length;
 }
@@ -991,8 +1067,8 @@ app.get('/api/devices', (req, res) => {
 // ⚠️ 仍是全设备可见的广播（P1-4 延后项：改定向得先让 APK 双订阅新旧两个主题），
 //    设备端按 payload 里的 device_id 自己比对认领，不匹配就忽略。
 function publishAuthRevoked(deviceId, reason) {
-  mqttClient.publish('xvj/auth/response',
-    JSON.stringify({ action: 'deauthorize', device_id: deviceId, message: reason }));
+  pubMqtt('xvj/auth/response',
+    JSON.stringify({ action: 'deauthorize', device_id: deviceId, message: reason }), { qos: 1 });
 }
 
 // 【S-05d】 删除设备记录 — 仅限未授权设备；级联清理版本/日志，通知设备端授权失效
@@ -1122,11 +1198,11 @@ app.post('/api/rooms/:id/sync', (req, res) => {
   });
 });
 
-// 【S-07d】从房间删除素材：A/B 两幕同编号文件夹一起清（与添加时写双幕对称）
-// 流程：清理 scenes A/B folder_mappings → UPDATE DB → 每台设备发 delete_material（立即删本地文件）
+// 【S-07d】从房间删除素材：只清 ?scene= 指定的那一幕（前端两条写入路径都只写一幕）
+// 流程：清理该幕 folder_mappings → UPDATE DB → 每台设备发 delete_material（立即删本地文件）
 //      → 清单对账由 notifyRoomConfigChanged 收敛点决定（真删掉了才 sync，否则一条不发）
-// ?scene= 只决定 delete_material 的 folder 前缀（= 立即删哪个物理目录）；另一幕那份由随后的
-// sync 对账按孤儿清掉。不传则默认 A。
+// ?scene= 同时决定"清哪一幕的映射"和"delete_material 的 folder 前缀（= 立即删哪个物理目录）"；
+// 另一幕的同一素材不动。不传则默认 A。
 app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
   const { roomId, materialId } = req.params;
   // ?folder= 与 ?scene= 会拼成 delete_material 的 folder 字段下发，APK 按它解析磁盘目录
@@ -1152,11 +1228,14 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
 
         let config = parseRoomConfig(roomRows[0].config);
 
-        // 从 folder_mappings 移除该素材：A/B 两幕同编号文件夹一起清（与添加素材到房间时写双幕对称，
-        // 否则会出现"B 幕删了 A 幕还有"的幻影素材）
+        // 只清 ?scene= 指定的那一幕。以前 A/B 两幕一起清，注释的理由是"与添加时写双幕对称"，
+        // 但那前提早就不成立了：前端两条写入路径（素材推送、预设映射到房间）都只写当前一幕，
+        // 于是"同一个素材两幕都用"是运营者一份份点出来的合法配置 —— 在 A 幕点「×」把 B 幕的
+        // 那份也悄悄删了，而且设备还会收到 delete_material 把 B 幕正在用的文件从磁盘删掉。
+        // 另一幕若因此变成孤儿，由随后的清单对账按"该目录应有的素材"清掉，不需要在这里越权代删。
         let removed = false;
         if (config.scenes) {
-          ['A', 'B'].forEach(scene => {
+          [curScene].forEach(scene => {
             const sc = config.scenes[scene];
             if (sc && sc.folder_mappings && typeof sc.folder_mappings === 'object') {
               Object.keys(sc.folder_mappings).forEach(fid => {
@@ -1182,7 +1261,7 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
               console.error('删除素材更新 room config 失败:', err3.message);
               return res.status(500).json({ error: err3.message });
             }
-            console.log('🗑 房间', roomId, 'A/B 两幕 folder', folder, '移除素材', materialId, removed ? '✓' : '(未找到)');
+            console.log('🗑 房间', roomId, curScene + ' 幕 folder', folder, '移除素材', materialId, removed ? '✓' : '(未找到)');
 
             // 3. 查房间下所有已授权设备
             db.query(
@@ -1255,7 +1334,9 @@ app.post('/api/devices/:id/deauthorize', (req, res) => {
 // 避免APK订阅的topic永远不匹配
 app.post('/api/devices/:id/authorize', (req, res) => {
   const deviceId = req.params.id;
-  const store = decodeURIComponent(req.query.store || req.body.store || '默认店');
+  // Express 已经把 query/body 解过一道码，这里再 decode 会把名字里的 % 当转义开头：
+  // 「50%店」→ URIError → 500，这家店永远改不了状态。
+  const store = req.query.store || req.body.store || '默认店';
   const roomId = req.query.room_id || req.body.room_id || null;
 
   // 先查设备，用DB中的id字段作为MQTT topic ID（APK订阅用的是这个）
@@ -1336,12 +1417,14 @@ app.get('/api/config/:deviceId', (req, res) => {
 
 // 【S-13e】 设置设备配置（同上，停用中）
 app.post('/api/config/:deviceId', (req, res) => {
-  const config = JSON.stringify(req.body);
-  db.query('UPDATE devices SET config = ? WHERE id = ?', [config, req.params.deviceId], (err) => {
+  // 局部变量以前叫 config，把模块顶部的 `const config = require('./config')` 遮掉了：
+  // 这个路由里一旦有人想读 broker 地址/mqtt 凭据就会拿到 JSON 字符串，且不会报错只会不对。
+  const cfgJson = JSON.stringify(req.body);
+  db.query('UPDATE devices SET config = ? WHERE id = ?', [cfgJson, req.params.deviceId], (err) => {
     if (err) return res.status(500).json({ error: err.message });
-    
+
     const topic = `xvj/device/${req.params.deviceId}/config`;
-    mqttClient.publish(topic, config);
+    pubMqtt(topic, cfgJson);
     res.json({ success: true });
   });
 });
@@ -1403,15 +1486,21 @@ app.get('/api/preset/materials', (req, res) => {
 app.post('/api/preset/materials', (req, res) => {
   const { folder_id, filename, url, type, thumbnail, md5 } = req.body;
   if (!folder_id || !url) return res.status(400).json({ error: 'need folder_id and url' });
+  // folder_id 会被拼进房间映射键、也会随同步下发给设备当目录线索，口径与素材库文件夹名一致
+  //（同一把 isSafeFolderName 闸）；以前它是自由文本，手发一个 'a/../../b' 也能进库。
+  if (!isSafeFolderName(String(folder_id))) return res.status(400).json({ error: 'invalid folder_id' });
   // 这条 url 会被前端当播放地址、也会被删素材时当磁盘路径用，只允许指向 uploads 根内
   if (!resolveUploadPath(url)) return res.status(400).json({ error: 'invalid url' });
   if (thumbnail && !resolveUploadPath(thumbnail)) return res.status(400).json({ error: 'invalid thumbnail' });
-  const id = 'pm_' + Date.now();
-  const safeName = filename || url.split('/').pop() || '未知文件';
-  const fileType = type || (safeName.endsWith('.mp4') || safeName.endsWith('.avi') ? 'video' : 'image');
+  // 批量"复制到预设"是前端 for...of 串行发的，纯 Date.now() 在同一毫秒里会撞 PRIMARY KEY，
+  // 撞了只是"这一条没进去"，用户完全看不出来 —— 补 4 位随机后缀（历史 id 仍是 pm_ 前缀，不解析格式）
+  const id = 'pm_' + Date.now() + '_' + crypto.randomBytes(2).toString('hex');
+  const safeName = clampStr(filename || url.split('/').pop() || '未知文件', 255);
+  // type 只有 video/image 两种播放语义（设备端按它选解码器/ImageView），别的值一律按 video 收
+  const fileType = (type === 'video' || type === 'image') ? type : (safeName.endsWith('.mp4') || safeName.endsWith('.avi') ? 'video' : 'image');
   db.query(
     'INSERT INTO preset_materials (id, folder_id, filename, url, type, thumbnail, md5) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, folder_id, safeName, url, fileType, thumbnail || null, md5 || null],
+    [id, String(folder_id), safeName, url, fileType, thumbnail || null, clampStr(md5, 32) || null],
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
       logAction('create', 'preset_material', { id, folder_id, filename: safeName, url });
@@ -1478,17 +1567,41 @@ app.delete("/api/folders/:name", (req, res) => {
     const list = mats || [];
     const ids = list.map(m => m.id);
     const urls = list.map(m => m.url).filter(Boolean);
-    removeMaterialIdsFromAllRooms(ids, (affected) => {
-      const dir = __dirname + "/public/uploads/"+name;
-      if (require('fs').existsSync(dir)) require('fs').rmSync(dir, {recursive:true});
-      db.query("DELETE FROM materials WHERE folder=?", [name], ()=>{});
-      if (urls.length > 0) {
-        const ph = urls.map(() => '?').join(',');
-        db.query(`DELETE FROM preset_materials WHERE url IN (${ph})`, urls, ()=>{});
-      }
-      affected.forEach(rid => notifyRoomDevicesOfSync(rid));
-      logAction('delete', 'folder', { folder: name, materials: ids.length, rooms_notified: affected.length });
-      res.json({success:true, removed_materials: ids.length, rooms_notified: affected.length});
+    // 房间映射里存的是 pm_* 预设 id（素材库 id 从不进映射），所以清理列表必须并上同 URL 的预设 id。
+    // 以前只传素材 id：凡经"素材推送到房间"建的映射一条都删不掉，这些房间也进不了 affected，
+    // 于是既不通知设备也不清配置，现场能继续播被删素材最多 3 分钟（等心跳对账兜回来）。
+    // 预设查失败同样停手，理由与上面materials 查询一致：少一份 id 就是一份悬空引用。
+    const killPresets = (presetIds) => {
+      const killIds = ids.concat(presetIds);
+      removeMaterialIdsFromAllRooms(killIds, (affected) => {
+        const dir = __dirname + "/public/uploads/" + name;
+        if (require('fs').existsSync(dir)) require('fs').rmSync(dir, { recursive: true });
+        // 行删失败只记日志不中断响应：目录已经真删了，回 500 反而会让前端以为什么都没发生
+        //（materials 行留着 = 指向不存在文件的孤儿，日志里能一眼看到并手工清）
+        db.query("DELETE FROM materials WHERE folder=?", [name], (errDel) => {
+          if (errDel) console.error('❌ 删文件夹后 materials 行未清:', name, errDel.message);
+          const dropPresets = () => {
+            if (urls.length === 0) return finish();
+            const ph = urls.map(() => '?').join(',');
+            db.query(`DELETE FROM preset_materials WHERE url IN (${ph})`, urls, (errP) => {
+              if (errP) console.error('❌ 删文件夹后 preset_materials 未清:', name, errP.message);
+              finish();
+            });
+          };
+          const finish = () => {
+            affected.forEach(rid => notifyRoomDevicesOfSync(rid));
+            logAction('delete', 'folder', { folder: name, materials: ids.length, presets: presetIds.length, rooms_notified: affected.length });
+            res.json({ success: true, removed_materials: ids.length, rooms_notified: affected.length });
+          };
+          dropPresets();
+        });
+      });
+    };
+    if (urls.length === 0) return killPresets([]);
+    const ph = urls.map(() => '?').join(',');
+    db.query(`SELECT id FROM preset_materials WHERE url IN (${ph})`, urls, (err2, presets) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      killPresets((presets || []).map(p => p.id));
     });
   });
 });
@@ -1647,9 +1760,14 @@ app.post("/api/upload", (req, res) => {
     const originalName = req.file.originalname || 'file';
     const extMatch = originalName.match(/\.[A-Za-z0-9]+$/);
     const ext = extMatch ? extMatch[0].toLowerCase() : '';
+    // 类型只认扩展名白名单。以前还写 `|| mimetype.startsWith('video')` 兜底，
+    // 而落盘名保留客户端扩展名（buildSafeUploadName），于是
+    // `evil.html` + `Content-Type: video/mp4` 就能判定成 video，在 /uploads/ 下写出一个
+    // 同源 text/html —— 上传型 stored XSS（上传接口的那道 x-api-key 就写在页面里，等于公开）。
+    // 兜底等于把白名单作废，删掉它才是收口：能落盘的扩展名必然在两组白名单之内。
     let type = null;
-    if (UPLOAD_VIDEO_EXT.includes(ext) || req.file.mimetype.startsWith("video")) type = "video";
-    else if (UPLOAD_IMAGE_EXT.includes(ext) || req.file.mimetype.startsWith("image")) type = "image";
+    if (UPLOAD_VIDEO_EXT.includes(ext)) type = "video";
+    else if (UPLOAD_IMAGE_EXT.includes(ext)) type = "image";
     if (!type) {
       try { require('fs').unlinkSync(req.file.path); } catch (e) {}
       return res.status(400).json({ error: "unsupported file type: " + ext });
@@ -1662,8 +1780,12 @@ app.post("/api/upload", (req, res) => {
 
     const finish = (md5) => {
       const id = uuidv4();
+      // name/filename/resolution 都按列宽截断：STRICT_TRANS_TABLES 下超宽是整条 INSERT 失败，
+      // 而这里的失败分支会把刚上传完的大文件连同缩略图一起 unlink ——
+      // 用户看到的只有"上传失败"五个字，200MB 白传了。文件名是用户随便起的，拦不住，只能截。
       db.query("INSERT INTO materials (id,name,filename,url,type,folder,thumbnail,resolution,md5) VALUES (?,?,?,?,?,?,?,?,?)",
-        [id, displayName, originalName, url, type, folder, thumbnail, resolution, md5 || null],
+        [id, clampStr(displayName, 255), clampStr(originalName, 255), url, type, folder, thumbnail,
+         resolution ? clampStr(resolution, 20) : null, md5 || null],
         (e) => {
           if (e) {
             try { require('fs').unlinkSync(req.file.path); } catch (e2) {}
@@ -1724,7 +1846,7 @@ app.post("/api/folders/note", (req, res) => {
 
 // 【S-08a】 查询操作日志（从 operation_logs 表读取）
 app.get('/api/logs', (req, res) => {
-  const limit = parseInt(req.query.limit) || 20;
+  const limit = clampLimit(req.query.limit, 20, 500);
   db.query("SELECT * FROM operation_logs ORDER BY id DESC LIMIT ?", [limit], (err, rows) => {
     if (err) return res.status(500).json({error:err.message});
     res.json(rows);
@@ -1845,7 +1967,8 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
 // ==================== 设备日志 API（远程 DEBUG） ====================
 // 【S-08b】 查询设备日志（从 device_logs 表读取，支持按 device_id / level 筛选）
 app.get('/api/device_logs', (req, res) => {
-  const limit = parseInt(req.query.limit) || 100;
+  // 前端日志页固定要 1000 条，上限留到 2000；负数/非数字回落 100（见 clampLimit）
+  const limit = clampLimit(req.query.limit, 100, 2000);
   const deviceId = req.query.device_id;
   const level = (req.query.level || '').toUpperCase();
   let sql = "SELECT * FROM device_logs";
@@ -1895,7 +2018,9 @@ app.post('/api/stores', (req, res) => {
 
 // 【S-11c】 店铺重命名（级联同步 rooms.store_name 与 devices.store，防止产生孤儿房间）
 app.put('/api/stores/:name', (req, res) => {
-  const oldName = decodeURIComponent(req.params.name);
+  // params 已由 Express 解过码，再 decode 一次会把名字里的 % 当转义开头：
+  // 「50%店」→ URIError → 500（永远改不了名）；'100%25' 二次解成 '100%'，还可能撞上另一家真店铺
+  const oldName = req.params.name;
   const { newName } = req.body;
   if (!newName || !newName.trim()) return res.status(400).json({ error: '新名称不能为空' });
   const target = newName.trim();
@@ -1924,7 +2049,7 @@ app.put('/api/stores/:name', (req, res) => {
 
 // 【S-11d】 删除店铺（名下还有房间时拒绝，防止产生孤儿房间）
 app.delete('/api/stores/:name', (req, res) => {
-  const storeName = decodeURIComponent(req.params.name);
+  const storeName = req.params.name;  // 同 S-11c：params 已由 Express 解码，二次 decode 会把含 % 的店名变 500
   db.query('SELECT COUNT(*) AS c FROM rooms WHERE store_name = ?', [storeName], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     if (rows[0].c > 0) return res.status(409).json({ error: '该客户下还有 ' + rows[0].c + ' 个房间，请先在设备管理页删除这些房间（房间不支持跨客户移动）' });
@@ -1936,7 +2061,15 @@ app.delete('/api/stores/:name', (req, res) => {
   });
 });
 
-db.query(`CREATE TABLE IF NOT EXISTS stores (
+// 顶层裸建表统一走 ensureTable：建表失败以前是彻底静默（无回调时 mysql2 直接丢错误），
+// 结果就是「✅ 数据库初始化完成」照打，第一次请求才以 500 暴露。
+function ensureTable(name, ddl) {
+  db.query(ddl, (err) => {
+    if (err) console.error('❌ 建表失败 ' + name + ':', err.message);
+  });
+}
+
+ensureTable('stores', `CREATE TABLE IF NOT EXISTS stores (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(100) NOT NULL UNIQUE,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -1945,15 +2078,19 @@ db.query(`CREATE TABLE IF NOT EXISTS stores (
 
 
 // ==================== 房间管理 API ====================
-db.query(`CREATE TABLE IF NOT EXISTS rooms (
-  id INT AUTO_INCREMENT PRIMARY KEY,
+// 列结构对齐生产库（SHOW CREATE TABLE rooms，2026-09-18）：id 是 'room_<ts>' 字符串主键，
+// 不是自增 INT —— 建新房间走 INSERT id（S-04h），以前写 INT 主键的话全新库上要么建不出表、
+// 要么插不进去。TEXT 两列也不能带 DEFAULT（MySQL 1101：TEXT 不支持默认值），
+// 以前的 `TEXT DEFAULT '{}'` 让这张表在全新 MySQL 上根本建不出来。
+ensureTable('rooms', `CREATE TABLE IF NOT EXISTS rooms (
+  id VARCHAR(36) PRIMARY KEY,
   store_name VARCHAR(100) NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  folder_mappings TEXT DEFAULT '{}',
-  config TEXT DEFAULT '{}',
+  name VARCHAR(50) NOT NULL,
+  folder_mappings TEXT,
+  config TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY unique_store_room (store_name, name)
+  UNIQUE KEY unique_room (store_name, name)
 )`);
 
 // 【S-04f】 获取房间列表
@@ -2259,13 +2396,9 @@ app.delete('/api/default-materials/:id', (req, res) => {
   });
 });
 
-db.query(`CREATE TABLE IF NOT EXISTS stores (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  name VARCHAR(100) NOT NULL UNIQUE,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)`);
-
-db.query(`CREATE TABLE IF NOT EXISTS default_materials (
+// stores 的建表在上面 S-11 系列之前已经做过（ensureTable），这里不再重复声明；
+// 两份 IF NOT EXISTS 只会让人搞清哪份是权威定义。
+ensureTable('default_materials', `CREATE TABLE IF NOT EXISTS default_materials (
   id VARCHAR(64) PRIMARY KEY,
   name VARCHAR(255),
   url VARCHAR(512),
@@ -2486,47 +2619,70 @@ app.post('/api/versions/upload', upload.single('apk'), async (req, res) => {
   const {version, version_code, changelog} = req.body;
   if (!version || !version_code) return res.status(400).json({error:'version and version_code required'});
   const code = parseInt(version_code, 10);
-  if (isNaN(code) || code <= 0) { fs.unlinkSync(req.file.path); return res.status(400).json({error:'version_code 必须是正整数'}); }
+  if (isNaN(code) || code <= 0) { safeUnlink(req.file.path); return res.status(400).json({error:'version_code 必须是正整数'}); }
 
   // 查重：同一 version_code 不允许重复上传
   db.query('SELECT id, version FROM apk_versions WHERE version_code = ?', [code], async (err, dups) => {
     if (err) return res.status(500).json({error:err.message});
     if (dups && dups.length > 0) {
-      fs.unlinkSync(req.file.path);
+      safeUnlink(req.file.path);
       return res.status(409).json({error:'版本号 ' + code + ' 已存在（v' + dups[0].version + '），请使用新的版本号'});
     }
 
     let md5 = null;
     try { md5 = await fileMd5(req.file.path); } catch (e) { console.error('上传 APK 算 MD5 失败:', e.message); }
 
-    // 取消之前的latest标记（失败必须停手：留着两个 is_latest=1 时，取最新的 SELECT ... LIMIT 1
-    // 会随机挑一行，推送/轮询可能把旧版本当最新版发给设备）
-    db.query('UPDATE apk_versions SET is_latest = 0', (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      const filepath = '/apk/' + req.file.filename;
-      db.query(
-        'INSERT INTO apk_versions (version, version_code, filename, filepath, size, md5, changelog, is_latest) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
-        [version, code, req.file.filename, filepath, req.file.size, md5, changelog || ''],
-        (err2, result) => {
-          if (err2) return res.status(500).json({error:err2.message});
-          res.json({success:true, id:result.insertId, filepath, md5});
+    // 先插新行（is_latest=0），成功后再把旧的清零、把新的置 1。
+    // 以前是反顺序：先 UPDATE 全表 is_latest=0 再 INSERT —— INSERT 一失败（version 超 VARCHAR(50)、
+    // 连接抖一下都算），全库就没有任何"最新版"了：/api/version/latest 回 {}、push-update 404，
+    // OTA 链路静默断到下次上传为止，而 public/apk 里还留着刚落盘的大包没人引用。
+    const filepath = '/apk/' + req.file.filename;
+    db.query(
+      'INSERT INTO apk_versions (version, version_code, filename, filepath, size, md5, changelog, is_latest) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
+      [clampStr(version, 50), code, req.file.filename, filepath, req.file.size, md5, changelog || ''],
+      (err2, result) => {
+        if (err2) {
+          // 行没建成，文件就是纯垃圾，立刻回收（200MB 级别）
+          safeUnlink(req.file.path);
+          return res.status(500).json({error:err2.message});
         }
-      );
-    });
+        const newRowId = result.insertId;
+        // 两条 UPDATE 任一失败都回滚新行：留着两个 is_latest=1 时，取最新的
+        // SELECT ... LIMIT 1 会随机挑一行，推送/轮询可能把旧版本当最新版发给设备
+        const promote = () => db.query('UPDATE apk_versions SET is_latest = 1 WHERE id = ?', [newRowId], (err3) => {
+          if (err3) return rollback(err3);
+          res.json({success:true, id:newRowId, filepath, md5});
+        });
+        const rollback = (err3) => db.query('DELETE FROM apk_versions WHERE id = ?', [newRowId], () => {
+          safeUnlink(req.file.path);
+          res.status(500).json({error:err3.message});
+        });
+        db.query('UPDATE apk_versions SET is_latest = 0', (err) => {
+          if (err) return rollback(err);
+          promote();
+        });
+      }
+    );
   });
 });
 
 // 【S-12d】 删除 APK 版本（物理文件 + apk_versions 表记录）
+// 最新版不许直接删：删掉后 is_latest 一行都不剩，/api/version/latest 回 {}、
+// push-update 一律 404，OTA 链路就这么静默断掉（界面上只是"某一行不见了"）。
+// 要换新最新版就上传新版本（S-12c 会自动把 latest 移过去）。
 app.delete('/api/versions/:id', (req, res) => {
   const id = req.params.id;
-  db.query('SELECT filepath FROM apk_versions WHERE id = ?', [id], (err, results) => {
+  db.query('SELECT filepath, is_latest FROM apk_versions WHERE id = ?', [id], (err, results) => {
     if (err) return res.status(500).json({error:err.message});
-    if (results.length > 0) {
-      const fullPath = path.join(__dirname, 'public', results[0].filepath);
-      if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
-    }
+    if (results.length === 0) return res.status(404).json({error:'版本记录不存在'});
+    if (results[0].is_latest) return res.status(409).json({error:'这是当前最新版，删掉后设备将无版本可更新；请先上传新版本再删旧版'});
+    // 先删记录再删文件：反顺序时若 DELETE 失败，就留下一行"记录在、文件已无"的死链，
+    // 设备按 URL 下载 404，而界面看上去一切正常
     db.query('DELETE FROM apk_versions WHERE id = ?', [id], (err2) => {
       if (err2) return res.status(500).json({error:err2.message});
+      const fullPath = path.join(__dirname, 'public', results[0].filepath);
+      safeUnlink(fullPath);
+      logAction('delete', 'apk_version', { id, filepath: results[0].filepath });
       res.json({success:true});
     });
   });
