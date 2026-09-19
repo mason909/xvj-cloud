@@ -1769,7 +1769,7 @@ app.post("/api/upload", (req, res) => {
     if (UPLOAD_VIDEO_EXT.includes(ext)) type = "video";
     else if (UPLOAD_IMAGE_EXT.includes(ext)) type = "image";
     if (!type) {
-      try { require('fs').unlinkSync(req.file.path); } catch (e) {}
+      safeUnlink(req.file.path);
       return res.status(400).json({ error: "unsupported file type: " + ext });
     }
 
