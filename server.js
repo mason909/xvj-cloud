@@ -1125,6 +1125,16 @@ app.post('/api/devices/:id/command', (req, res) => {
   if (DEVICE_ACTIONS.indexOf(command.action) === -1) {
     return res.status(400).json({ error: '不支持的 action: ' + command.action });
   }
+  // 这两条的载荷必须由服务端按房间当前配置生成：裸发 update_windows 会让 APK 收到一份没有 scenes
+  // 的窗口更新；裸发 delete_material 会照调用方随口给的 folder 前缀去删设备磁盘目录。
+  // 正确入口是 PUT /api/rooms/:id/windows 与 DELETE /api/rooms/:roomId/materials/:materialId，
+  // 它们落库后自己会走通知漏斗（notifyRoomConfigChanged），不需要从这里补一发。
+  if (command.action === 'update_windows' || command.action === 'delete_material') {
+    return res.status(400).json({
+      error: command.action + ' 的载荷需由服务端按房间配置生成，请走对应的房间接口'
+        + '（窗口：PUT /api/rooms/:id/windows；删素材：DELETE /api/rooms/:roomId/materials/:materialId）'
+    });
+  }
 
   // 转换相对URL为完整URL（与版本推送共用 APK_DOWNLOAD_BASE，换域名/上 HTTPS 只改一处）
   let cmd = { ...command };
@@ -1132,8 +1142,10 @@ app.post('/api/devices/:id/command', (req, res) => {
     cmd.url = APK_DOWNLOAD_BASE + cmd.url;
   }
 
-  // sync 命令需要补全 room_id + folder_mappings（服务器查数据库，APK 不需要重复传）
-  if (cmd.action === 'sync') {
+  // sync / sync_room_materials 走同一条补全路径：两条发到设备上的都是 syncCommandPayload 组装的
+  // 全套载荷（room_id + 带幕前缀的映射 + scenes + debug + rev）。允许调用方只给 action —— 它没有
+  // 这些信息，而"裸发一条素材清单同步"正是最容易把设备本地素材判空的用法。
+  if (cmd.action === 'sync' || cmd.action === 'sync_room_materials') {
     db.query(
       'SELECT d.room_id, d.fingerprint, r.config FROM devices d LEFT JOIN rooms r ON d.room_id = r.id WHERE d.id = ?',
       [deviceId],
@@ -1471,6 +1483,37 @@ function removeMaterialIdsFromAllRooms(ids, done) {
   });
 }
 
+/**
+ * removeMaterialIdsFromAllRooms 的只读对照版：给定一批素材 id（素材行本身 + 同 URL 的预设行），
+ * 报出哪些房间的哪些映射槽位会命中，供前端在删除前展示影响面。
+ * 遍历口径与写版逐字对齐（只走 A/B 两幕、非数组槽位跳过）—— 两边算法一旦不一致，
+ * "预告"就成了误导，比不预告更糟。新加一幕或改映射结构时两处一起改。
+ */
+function findMaterialUsageInRooms(ids, done) {
+  const killIds = Array.isArray(ids) ? ids : [ids];
+  db.query('SELECT id, name, store_name, config FROM rooms', [], (err, rooms) => {
+    if (err) { console.error('📋 用量查询失败:', err.message); return done([]); }
+    const hits = [];
+    (rooms || []).forEach(room => {
+      let cfg = {};
+      try { cfg = room.config ? JSON.parse(room.config) : {}; } catch (e) { return; }
+      const slots = [];
+      ['A', 'B'].forEach(sc => {
+        const fm = cfg.scenes && cfg.scenes[sc] && cfg.scenes[sc].folder_mappings;
+        if (!fm || typeof fm !== 'object') return;
+        Object.keys(fm).forEach(k => {
+          const arr = fm[k];
+          if (!Array.isArray(arr)) return;
+          const n = arr.filter(x => killIds.includes(x)).length;
+          if (n) slots.push({ scene: sc, folder: k, count: n });
+        });
+      });
+      if (slots.length) hits.push({ id: room.id, name: room.name, store_name: room.store_name, slots });
+    });
+    done(hits);
+  });
+}
+
 // ==================== 预设素材 API ====================
 // 前端模型：预设"文件夹"即 01-30 数字编号（folder_id），与素材库文件夹编号对齐
 
@@ -1606,6 +1649,41 @@ app.delete("/api/folders/:name", (req, res) => {
   });
 });
 
+
+/**
+ * 【S-02b】 删除影响面预告（只读）：给下面的 DELETE 用同一套 killIds 口径
+ * （素材行本身 + 同 URL 的预设行），前端据此把确认框写成"会打到哪几间房"而不是"确定删除?"。
+ * 没做成 DELETE 的 dry-run 参数：那要给 removeMaterialIdsFromAllRooms 塞"只算不写"分支，
+ * 一个布尔把两条语义不同的路径揉进同一函数，比抽出这个只读版更容易出错。
+ */
+app.get("/api/materials/:id/usage", (req, res) => {
+  db.query("SELECT id, name, filename, url, type, folder, thumbnail, md5, created_at FROM materials WHERE id=?",
+    [req.params.id], (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!rows || !rows[0]) return res.status(404).json({ error: '素材不存在' });
+      const mat = rows[0];
+      db.query("SELECT id, folder_id, filename, type FROM preset_materials WHERE url=?", [mat.url],
+        (err1, presets) => {
+          if (err1) return res.status(500).json({ error: err1.message });
+          const ps = presets || [];
+          // 同 URL 的其它素材行：删物理文件会让它们变成"记录在、文件没了"的空壳
+          db.query("SELECT id, name, folder FROM materials WHERE url=? AND id<>?", [mat.url, mat.id],
+            (err2, twins) => {
+              if (err2) return res.status(500).json({ error: err2.message });
+              findMaterialUsageInRooms([mat.id, ...ps.map(p => p.id)], (rooms) => {
+                res.json({
+                  material: mat,
+                  bytes: uploadSizeBytes(mat.url) + uploadSizeBytes(mat.thumbnail),
+                  presets: ps,
+                  rooms,
+                  slot_count: rooms.reduce((n, r) => n + r.slots.reduce((m, s) => m + s.count, 0), 0),
+                  twin_materials: twins || []
+                });
+              });
+            });
+        });
+    });
+});
 
 // 【S-02c】 删除素材库条目：素材 + 同 URL 的全部预设一起删（它们共享同一物理文件）
 // 时序：查记录 → 清所有房间映射（回调里才继续，防孤儿引用）→ 删物理文件 → 删 materials/preset 行
@@ -1845,9 +1923,24 @@ app.post("/api/folders/note", (req, res) => {
 });
 
 // 【S-08a】 查询操作日志（从 operation_logs 表读取）
+// 【S-08a】 查询操作日志（从 operation_logs 表读取）
+// target/action 是等值筛（下拉直接给候选值），q 是 LIKE 模糊查 details（里面是 JSON，
+// 想按房间 id / 素材 id 找就得 substring）。LIKE 前的 % 与 _ 必须转义，
+// 否则用户输 "01" 会命中 "A010"、输 "%" 变成全表匹配。
 app.get('/api/logs', (req, res) => {
   const limit = clampLimit(req.query.limit, 20, 500);
-  db.query("SELECT * FROM operation_logs ORDER BY id DESC LIMIT ?", [limit], (err, rows) => {
+  const where = [];
+  const args = [];
+  const target = clampStr(req.query.target, 50);
+  const action = clampStr(req.query.action, 50);
+  const q = clampStr(req.query.q, 100);
+  if (target && target !== 'all') { where.push('target = ?'); args.push(target); }
+  if (action && action !== 'all') { where.push('action = ?'); args.push(action); }
+  if (q) { where.push('details LIKE ?'); args.push('%' + q.replace(/[\\%_]/g, ch => '\\' + ch) + '%'); }
+  const sql = "SELECT id, action, target, details, created_at FROM operation_logs" +
+    (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY id DESC LIMIT ?';
+  args.push(limit);
+  db.query(sql, args, (err, rows) => {
     if (err) return res.status(500).json({error:err.message});
     res.json(rows);
   });

@@ -188,6 +188,17 @@ body.nav-off .brand-name{display:inline}
 .win-list{min-height:110px}
 .crop-slice-list{max-height:110px}
 }
+/* 工具栏控件与操作记录行：原先每个下拉都抄一遍内联样式，收成一个类 */
+.tfsel{padding:4px 8px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:12px}
+.op-row{display:flex;gap:10px;align-items:baseline;padding:4px 6px;border-bottom:1px solid #242424}
+.op-row:hover{background:#202020}
+.op-time{color:#666;flex-shrink:0;width:132px}
+.op-act{flex-shrink:0;width:130px;padding:1px 6px;border-radius:10px;font-size:11px;text-align:center;background:#333;color:#bbb}
+.op-act.danger{background:#5a1f26;color:#ffb3bd}
+.op-act.ok{background:#1f4d2e;color:#a7e8bd}
+.op-tgt{flex-shrink:0;width:110px;color:#8ab4f8}
+.op-sum{color:#ccc;word-break:break-all}
+.op-detail{margin:2px 0 6px 142px;padding:8px;background:#111;border-radius:4px;color:#9cdcfe;white-space:pre-wrap;word-break:break-all;max-height:280px;overflow:auto}
 </style>
 </head>
 <body>
@@ -201,6 +212,7 @@ body.nav-off .brand-name{display:inline}
 <li data-p="presets" onclick="sp('presets')"><span class="mi-k">[P]</span><span class="mi-t">预设素材</span></li>
 <li data-p="versions" onclick="sp('versions')"><span class="mi-k">[V]</span><span class="mi-t">版本管理</span></li>
 <li data-p="logs" onclick="sp('logs')"><span class="mi-k">[L]</span><span class="mi-t">设备日志</span></li>
+<li data-p="operations" onclick="sp('operations')"><span class="mi-k">[O]</span><span class="mi-t">操作记录</span></li>
 </ul>
 </aside>
 <main class="main">
@@ -254,6 +266,58 @@ body.nav-off .brand-name{display:inline}
   </div>
 </div>
 <div id="logList" style="font-family:monospace;font-size:12px;background:#1a1a1a;border-radius:8px;padding:12px;max-height:75vh;overflow-y:auto;line-height:1.6"></div>
+</div>
+</div>
+
+<!-- 操作记录：读 operation_logs（logAction 一直在写，此前只有 journalctl 能看） -->
+<div id="po" style="display:none">
+<div style="padding:20px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+  <h3>操作记录</h3>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <select id="opTargetFilter" class="tfsel" onchange="loadOpLogs()">
+      <option value="all">全部对象</option>
+      <option value="room">房间 room</option>
+      <option value="device">设备 device</option>
+      <option value="material">素材 material</option>
+      <option value="preset_material">预设素材</option>
+      <option value="store">客户 store</option>
+      <option value="folder">文件夹 folder</option>
+      <option value="folder_note">文件夹备注</option>
+      <option value="apk_version">APK 版本</option>
+      <option value="api">接口错误 api</option>
+    </select>
+    <select id="opActionFilter" class="tfsel" onchange="loadOpLogs()">
+      <option value="all">全部动作</option>
+      <option value="create">create 新建</option>
+      <option value="update">update 修改</option>
+      <option value="delete">delete 删除</option>
+      <option value="rename">rename 改名</option>
+      <option value="upload">upload 上传</option>
+      <option value="room_sync">room_sync 同步</option>
+      <option value="sync">sync 下发</option>
+      <option value="update_windows">update_windows 窗口</option>
+      <option value="authorize">authorize 授权</option>
+      <option value="deauthorize">deauthorize 废止</option>
+      <option value="bind_room">bind_room 绑定</option>
+      <option value="block">block 屏蔽</option>
+      <option value="push_update">push_update 推版本</option>
+      <option value="error">error 报错</option>
+    </select>
+    <select id="opLimit" class="tfsel" onchange="loadOpLogs()">
+      <option value="50">最近 50 条</option>
+      <option value="200" selected>最近 200 条</option>
+      <option value="500">最近 500 条</option>
+    </select>
+    <input id="opSearch" class="tfsel" style="width:190px" placeholder="按房间/设备/素材 id 搜" onkeydown="if(event.key==='Enter')loadOpLogs()">
+    <button class="btn btn-secondary" onclick="loadOpLogs()">刷新</button>
+    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#888;cursor:pointer">
+      <input type="checkbox" id="opAutoRefresh" onchange="toggleOpAutoRefresh()"> 自动刷新
+    </label>
+  </div>
+</div>
+<div id="opNote" style="color:#666;font-size:11px;margin-bottom:8px">服务端保留 30 天，心跳类事件已不再写入本表。</div>
+<div id="opList" style="font-family:monospace;font-size:12px;background:#1a1a1a;border-radius:8px;padding:12px;max-height:75vh;overflow-y:auto;line-height:1.6"></div>
 </div>
 </div>
 
@@ -392,6 +456,15 @@ function lsJson(key, dflt) {
         var v = JSON.parse(localStorage.getItem(key) || '');
         return (v === null || v === undefined) ? dflt : v;
     } catch (e) { return dflt; }
+}
+
+/** 字节数 → 人话。拿不到大小时明确回"大小未知"，不显示 "0 B" 假装那是个空文件。 */
+function fmtBytes(n) {
+    if (typeof n !== 'number' || !(n > 0) || !isFinite(n)) return '大小未知';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? String(v) : v.toFixed(2)) + ' ' + units[i];
 }
 
 // 手工全量同步（唯一还走 POST /sync 的入口）：不判配置是否变化，强制让本房间设备重对账一遍
@@ -544,7 +617,18 @@ function createPlayer(url, type, container, poster) {
 // 【F-01】 全局状态对象 // var s = {...}
 // 页标识白名单：xp 存在 localStorage 里，手改/历史遗留的野值会让各 panel 的 display 全不匹配
 // = 一整页空白、标题还写着「版本管理」，看起来像页面坏了。定义在 s 之前，s.p 初始化时就要用。
-var _PAGES = ['materials', 'devices', 'unregistered', 'presets', 'versions', 'logs'];
+// 页面唯一登记表：标识 → 容器 id + 顶栏标题。_PAGES 由它派生，加一页只改这一处
+// （以前加页要动 4 个地方，漏一个就是"菜单点得动、容器永不显示"）。
+var _PAGE_MAP = {
+    materials:    { el: 'pm', title: '素材管理' },
+    devices:      { el: 'pd', title: '客户管理' },
+    unregistered: { el: 'pu', title: '未注册设备' },
+    presets:      { el: 'pp', title: '预设素材' },
+    versions:     { el: 'pv', title: '版本管理' },
+    logs:         { el: 'pl', title: '设备日志' },
+    operations:   { el: 'po', title: '操作记录' }
+};
+var _PAGES = Object.keys(_PAGE_MAP);
 var s = {
     folders: asObj(lsJson('xfolds', {})),
     p: (_PAGES.indexOf(localStorage.getItem('xp')) >= 0) ? localStorage.getItem('xp') : 'materials',
@@ -561,6 +645,8 @@ var s = {
     rooms: [],
     devicePollInterval: null,
     logAutoRefreshTimer: null,
+    opAutoRefreshTimer: null,
+    opLogs: [],
     loadingMaterials: false,
     lmCallId: 0,
     _lmCallCounter: 0,
@@ -590,13 +676,8 @@ function sp(p) {
     s.p = p;
     localStorage.setItem('xp', p);
     document.querySelectorAll('.menu li').forEach(function(x) { x.classList.toggle('active', x.dataset.p === p); });
-    document.getElementById('pm').style.display = p === 'materials' ? 'block' : 'none';
-    document.getElementById('pd').style.display = p === 'devices' ? 'block' : 'none';
-    document.getElementById('pu').style.display = p === 'unregistered' ? 'block' : 'none';
-    document.getElementById('pp').style.display = p === 'presets' ? 'block' : 'none';
-    document.getElementById('pv').style.display = p === 'versions' ? 'block' : 'none';
-    document.getElementById('pl').style.display = p === 'logs' ? 'block' : 'none';
-    document.getElementById('title').innerText = p === 'materials' ? '素材管理' : (p === 'devices' ? '客户管理' : (p === 'unregistered' ? '未注册设备' : (p === 'presets' ? '预设素材' : (p === 'logs' ? '设备日志' : '版本管理'))));
+    _PAGES.forEach(function(k) { document.getElementById(_PAGE_MAP[k].el).style.display = (k === p) ? 'block' : 'none'; });
+    document.getElementById('title').innerText = _PAGE_MAP[p].title;
     ub(p);
     // 切页统一停掉轮询定时器，避免后台重绘干扰其他页面
     if (s.devicePollInterval) { clearInterval(s.devicePollInterval); s.devicePollInterval = null; }
@@ -608,6 +689,12 @@ function sp(p) {
         s.logAutoRefreshTimer = null;
         var lcb = document.getElementById('logAutoRefresh');
         if (lcb) lcb.checked = false;   // 复选框跟着停，否则显示"在自动刷新"其实没有
+    }
+    if (s.opAutoRefreshTimer) {
+        clearInterval(s.opAutoRefreshTimer);
+        s.opAutoRefreshTimer = null;
+        var ocb = document.getElementById('opAutoRefresh');
+        if (ocb) ocb.checked = false;
     }
     if (p === 'materials') {
         // 切换到素材管理页时，清除设备相关的状态
@@ -630,6 +717,7 @@ function sp(p) {
     else if (p === 'presets') lp();
     else if (p === 'versions') { lv(); lvd(); }
     else if (p === 'logs') { loadDeviceLogs(); }
+    else if (p === 'operations') { loadOpLogs(); }
 }
 
 // 设备状态轻量轮询：只更新 s.ds 并重绘设备区，不触碰客户/房间 tab
@@ -861,16 +949,50 @@ function ul(files) {
     uploadOne(0);
 }
 
+// 删除素材。服务端的 DELETE 是一串级联：清所有房间映射 + 删同 URL 的预设行 + 删物理文件 +
+// 通知受影响房间的设备重新同步。所以删除前先 GET /usage 把影响面问清楚再让人确认；
+// 问不到影响面就**不删**（宁可不给删，也不能盲删一次现场）。
 async function dm(e, id) {
     e.stopPropagation();
-    if (!confirm('确定删除?')) return;
-    // 服务端级联：物理文件 + 同URL预设素材 + 房间映射清理 + 设备同步通知
-    var delRes = await fetch('/api/materials/' + id, {method: 'DELETE'});
-    if (!delRes.ok) { var err = await delRes.text(); alert('删除失败: ' + err); return; }
-    // 刷新显示
-    lm();
-    lp();
-    if (s.df) lr();
+    var u;
+    try {
+        u = await apiGet('/api/materials/' + encodeURIComponent(id) + '/usage');
+    } catch (err) {
+        alert('无法确认影响面，未删除：' + err.message);
+        return;
+    }
+    var m = asObj(u.material);
+    var rooms = asList(u.rooms);
+    var presets = asList(u.presets);
+    var twins = asList(u.twin_materials);
+    var lines = [];
+    lines.push('<div style="color:#fff;font-size:14px;margin-bottom:6px">' + esc(m.filename || m.name || id) + '</div>');
+    lines.push('<div style="color:#888">' + esc(m.type || '?') + ' · ' + esc(m.folder || '未归类') + ' 文件夹 · '
+        + esc(fmtBytes(u.bytes)) + '（含缩略图），将同时删除磁盘文件</div>');
+    if (rooms.length) {
+        var roomTxt = rooms.map(function(r) {
+            var slots = asList(r.slots).map(function(x) { return x.scene + x.folder + '×' + x.count; }).join(' ');
+            return '· ' + esc((r.store_name || '?') + ' / ' + (r.name || r.id)) + ' <span style="color:#888">' + esc(slots) + '</span>';
+        }).join('<br>');
+        lines.push('<div style="margin-top:12px;color:#ffb3bd">正在被 ' + rooms.length + ' 间房引用（' + esc(String(u.slot_count))
+            + ' 个映射槽位），删除后这些房间的设备会立即重新同步：<br>' + roomTxt + '</div>');
+    } else {
+        lines.push('<div style="margin-top:12px;color:#a7e8bd">没有任何房间在用它，删除不影响现场播放。</div>');
+    }
+    if (presets.length) lines.push('<div style="margin-top:6px">连带删除 ' + presets.length + ' 条预设素材记录（它们与库内素材共享同一物理文件）。</div>');
+    if (twins.length) lines.push('<div style="margin-top:6px;color:#ffb3bd">另有 ' + twins.length
+        + ' 条素材记录指向同一个文件，删完它们会变成"记录在、文件没了"的空壳。</div>');
+    confirmModal('确认删除素材？', lines.join(''), '删除', async function() {
+        try {
+            await apiCall('/api/materials/' + encodeURIComponent(id), { method: 'DELETE' });
+        } catch (err) {
+            alert('删除失败: ' + err.message);
+            return;
+        }
+        lm();
+        lp();
+        if (s.df) lr();
+    });
 }
 
 async function cp2p(id) {
@@ -1271,7 +1393,14 @@ function rmDevice() {
             h += '<span style="color:#ccc;font-size:13px" title="' + escA(d.id) + '">' + esc(shortId) + '</span>';
             h += '<span class="device-status ' + statusClass + '" style="font-size:11px;padding:1px 6px;border-radius:10px">' + statusText + '</span>';
             h += '</div>';
+            // 手动命令：服务端 POST /api/devices/:id/command 支持 8 个白名单 action，此前前端一个入口都没有，
+            // 现场想"立刻停掉这台的画面"只能去改配置间接触发。只放三枚真正用得上的。
+            h += '<div style="display:flex;gap:6px;align-items:center">';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" title="停止该设备全部窗口的播放（不改配置，下次同步会恢复）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'stop\',\'停止播放\',' + (isOnline ? 'true' : 'false') + ')">停止</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" title="不看 rev 强制整房重新同步（素材清单 + 窗口 + 映射全量下发，会重建播放器）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'sync\',\'强制同步\',' + (isOnline ? 'true' : 'false') + ')">强制同步</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" title="把版本管理里的最新版推给这台设备（OTA）" onclick="pushUpdate(\'' + escJsA(d.id) + '\')">推最新版</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="unbindRoom(\'' + escJsA(d.id) + '\')">解绑</button>';
+            h += '</div>';
             h += '</div>';
         });
         h += '</div>';
@@ -2999,6 +3128,26 @@ function inputModal(title, placeholder, defaultValue, cb) {
     inp.onkeydown = function(e) { if (e.key === 'Enter') ok(); };
 }
 
+/**
+ * 通用确认弹窗（替代原生 confirm，差别在于能带结构化明细）。
+ * bodyHtml 由调用方拼好，**里面每个变量都得调用方自己 esc()**：这里再转一次会把
+ * 已经转过的 &amp; 变成 &amp;amp;，页面上就露出裸转义串。
+ * Esc / 点取消都不会触发 cb，与 confirm 返回 false 同义。
+ */
+function confirmModal(title, bodyHtml, okText, cb) {
+    var h = '<div style="padding:24px;min-width:380px;max-width:600px"><h3 style="font-size:20px;margin-bottom:12px">' + esc(title) + '</h3>';
+    h += '<div style="font-size:13px;color:#ccc;line-height:1.75">' + bodyHtml + '</div>';
+    h += '<div style="margin-top:18px;text-align:right"><button class="btn" onclick="closeModal()">取消</button> <button class="btn btn-primary" id="cmOk">' + esc(okText || '确定') + '</button></div></div>';
+    openModal(h);
+    var done = false;
+    document.getElementById('cmOk').onclick = function() {
+        if (done) return;
+        done = true;
+        closeModal();
+        cb();
+    };
+}
+
 // 重命名店铺（右键）
 function rs(e, oldName) {
     e.preventDefault();
@@ -3047,7 +3196,7 @@ async function lv() {
         var badge = v.is_latest ? '<span style="background:#28a745;padding:2px 8px;border-radius:4px;font-size:12px;margin-left:10px">最新</span>' : '';
         // size 可能为 null（历史行/上传时没量到）：null/1024/1024 是 0，不是报错，但会显示成
         // "0.00 MB" 让人以为包是空文件，这里直接标"大小未知"
-        var sizeText = (typeof v.size === 'number' && v.size > 0) ? (v.size / 1024 / 1024).toFixed(2) + ' MB' : '大小未知';
+        var sizeText = fmtBytes(v.size);
         h += '<div style="background:#1a1a1a;padding:15px;border-radius:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">';
         h += '<div><div style="font-weight:bold;font-size:16px">v' + esc(v.version) + ' (Code: ' + esc(v.version_code) + ')' + badge + '</div>';
         h += '<div style="color:#888;font-size:12px;margin-top:5px">' + sizeText + ' | ' + esc(v.changelog || '无更新日志') + '</div>';
@@ -3130,6 +3279,22 @@ async function dv(id) {
         // 服务端现在会对"当前最新版"回 409（删了设备就无版本可升），必须显出来：
         // 以前只 `if (res.success) lv()`，失败时点删除毫无反应
         alert('删除失败: ' + e.message);
+    }
+}
+
+/**
+ * 手动给一台设备下发命令（POST /api/devices/:id/command，action 由服务端 DEVICE_ACTIONS 白名单把关）。
+ * 语义要说清楚：这里只代表 broker 收下了这条命令，不代表设备执行完了 ——
+ * 回报要去设备日志页看。命令不走 retain，设备此刻不在线就等于丢掉，所以离线先确认一次。
+ */
+async function sendDeviceCommand(id, action, label, online) {
+    if (!online && !confirm(label + '：设备当前离线，命令不会补发（只在此刻在线才收得到）。仍要发送？')) return;
+    try {
+        await apiPost('/api/devices/' + encodeURIComponent(id) + '/command', { command: { action: action } });
+        openModal('<div style="padding:30px;text-align:center;color:#4caf50">✅ ' + esc(label) + '：命令已下发，等设备回报（见设备日志页）</div>');
+        autoCloseModal(2000);
+    } catch (e) {
+        alert(label + ' 下发失败: ' + e.message);
     }
 }
 
@@ -3254,6 +3419,106 @@ function toggleLogAutoRefresh() {
         s.logAutoRefreshTimer = setInterval(function() { loadDeviceLogs(true); }, 5000);
     } else {
         if (s.logAutoRefreshTimer) { clearInterval(s.logAutoRefreshTimer); s.logAutoRefreshTimer = null; }
+    }
+}
+
+// ==================== 操作记录页（operation_logs / GET /api/logs） ====================
+// 表由服务端 logAction() 一直在写（谁在什么时候改了哪个房间、删了哪个素材、推了哪个版本），
+// 此前只有 SSH 上服务器看 journalctl。这一页只把它读出来，不动任何写入口径。
+
+// created_at 是 MySQL 的 "YYYY-MM-DD HH:MM:SS"（无时区后缀），部分引擎直接 new Date() 会得
+// Invalid Date，所以统一先把空格换成 T —— 与 timeAgo 内部同一套兜底。
+function _opDate(t) {
+    var d = t ? new Date(t) : null;
+    if (!d || isNaN(d.getTime())) d = new Date(String(t || '').replace(' ', 'T'));
+    return (d && !isNaN(d.getTime())) ? d : null;
+}
+
+// 徽标配色：破坏性动作用红、建设性动作用绿，其余中性。按 action 判而不是按 target，
+// 因为运维要一眼扫到的是"删了什么 / 废止了谁"。
+function _opTone(action) {
+    if (action === 'delete' || action === 'deauthorize' || action === 'block' || action === 'error'
+        || action === 'material_delete' || action === 'room_remove') return ' danger';
+    if (action === 'create' || action === 'authorize' || action === 'upload' || action === 'bind_room'
+        || action === 'room_sync' || action === 'push_update' || action === 'push_update_all') return ' ok';
+    return '';
+}
+
+// details 是自由 JSON，字段随 action 而异：挑"身份 + 关键计数"拼一行摘要，全量留在展开区。
+function _opSummary(d) {
+    var bits = [];
+    var who = d.room_id || d.store_name || d.store || d.device_id || d.folder || d.id || d.name;
+    if (who != null && who !== '') bits.push(String(who));
+    if (d.filename) bits.push(String(d.filename));
+    if (d.name && String(d.name) !== String(who)) bits.push(String(d.name));
+    if (d.newName) bits.push('→ ' + d.newName);
+    if (d.version) bits.push('v' + d.version);
+    if (d.command && d.command.action) bits.push('命令 ' + d.command.action);
+    if (d.rooms_notified != null) bits.push('通知 ' + d.rooms_notified + ' 间房');
+    if (d.rooms_updated != null) bits.push('连带 ' + d.rooms_updated + ' 间房');
+    if (d.devices_unbound != null) bits.push('解绑 ' + d.devices_unbound + ' 台');
+    if (d.removed_materials != null) bits.push('连带 ' + d.removed_materials + ' 个素材');
+    if (d.reason) bits.push(String(d.reason));
+    if (d._raw) bits.push(String(d._raw).slice(0, 120));
+    return bits.length ? bits.join(' · ') : '—';
+}
+
+async function loadOpLogs(keepScroll) {
+    var container = document.getElementById('opList');
+    if (!container) return;
+    var keepTop = container.scrollTop;
+    if (!keepScroll) container.innerHTML = '<div style="padding:30px;text-align:center;color:#666">加载中...</div>';
+    var v = function(id) { var el = document.getElementById(id); return el ? String(el.value) : ''; };
+    var q = v('opSearch').trim();
+    var url = '/api/logs?limit=' + encodeURIComponent(v('opLimit') || '50')
+        + '&target=' + encodeURIComponent(v('opTargetFilter') || 'all')
+        + '&action=' + encodeURIComponent(v('opActionFilter') || 'all')
+        + (q ? '&q=' + encodeURIComponent(q) : '');
+    var rows;
+    try {
+        rows = asList(await apiGet(url));
+    } catch (e) {
+        // 自动刷新失败时保留屏幕上的旧列表，只 console.error：否则每 8 秒把正在读的内容抹成一行红字
+        if (keepScroll) { console.error('操作记录刷新失败:', e.message); return; }
+        container.innerHTML = '<div style="padding:30px;text-align:center;color:#e94560">读取失败：' + esc(e.message) + '</div>';
+        return;
+    }
+    var note = document.getElementById('opNote');
+    if (note) note.innerText = '共 ' + rows.length + ' 条（服务端保留 30 天，心跳类事件不写入本表）';
+    if (!rows.length) { container.innerHTML = '<div class="empty">没有匹配的记录</div>'; return; }
+    s.opLogs = rows;
+    var h = '';
+    rows.forEach(function(r, i) {
+        var d = {};
+        try { d = r.details ? JSON.parse(r.details) : {}; } catch (e) { d = { _raw: String(r.details) }; }
+        var dt = _opDate(r.created_at);
+        h += '<div class="op-row">'
+            + '<span class="op-time"' + (dt ? ' title="' + escA(dt.toLocaleString()) + '"' : '') + '>' + esc(timeAgo(r.created_at)) + '</span>'
+            + '<span class="op-act' + _opTone(r.action) + '">' + esc(r.action || '-') + '</span>'
+            + '<span class="op-tgt">' + esc(r.target || '-') + '</span>'
+            + '<span class="op-sum">' + esc(_opSummary(d)) + '</span>'
+            + '<span style="color:#555;cursor:pointer;flex-shrink:0" onclick="toggleOpDetail(' + i + ')">详情</span>'
+            + '</div>';
+        // details 原文（美化后）单独一行；整段走 esc()，里面可能是设备上报的任意字符串
+        h += '<pre class="op-detail" id="opd' + i + '" style="display:none">' + esc(JSON.stringify(d, null, 2)) + '</pre>';
+    });
+    container.innerHTML = h;
+    if (keepScroll) container.scrollTop = keepTop;
+}
+
+function toggleOpDetail(i) {
+    var el = document.getElementById('opd' + i);
+    if (el) el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+}
+
+function toggleOpAutoRefresh() {
+    var cb = document.getElementById('opAutoRefresh');
+    if (!cb) return;
+    if (cb.checked) {
+        if (s.opAutoRefreshTimer) clearInterval(s.opAutoRefreshTimer);
+        s.opAutoRefreshTimer = setInterval(function() { loadOpLogs(true); }, 8000);
+    } else {
+        if (s.opAutoRefreshTimer) { clearInterval(s.opAutoRefreshTimer); s.opAutoRefreshTimer = null; }
     }
 }
 
