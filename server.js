@@ -48,6 +48,9 @@
  * 素材三层架构：
  *   素材库 [M] ──cp2p──→ 预设素材 [P] ──mapPreset──→ 房间 [D]
  *                       └──────────推送到房间──────────┘   // 旁路：素材库 id 直接进映射（线上有用到）
+ *   两层目录号都是 01-30（界面签写死的）；预设那边额外用 PRESET_FOLDER_RE 挡住区间外的值。
+ *   素材库 filename 在同目录内唯一（uniqueMaterialFilename 自动补 " (2)"）——
+ *   设备端不按 id 而按 <目录>/<filename> 认文件，同名会互相覆盖下载与缓存。
  *
  * ==========================================================
  * 场景系统（多窗口）
@@ -1530,9 +1533,12 @@ app.get('/api/preset/materials', (req, res) => {
 app.post('/api/preset/materials', (req, res) => {
   const { folder_id, filename, url, type, thumbnail, md5 } = req.body;
   if (!folder_id || !url) return res.status(400).json({ error: 'need folder_id and url' });
-  // folder_id 会被拼进房间映射键、也会随同步下发给设备当目录线索，口径与素材库文件夹名一致
-  //（同一把 isSafeFolderName 闸）；以前它是自由文本，手发一个 'a/../../b' 也能进库。
-  if (!isSafeFolderName(String(folder_id))) return res.status(400).json({ error: 'invalid folder_id' });
+  // folder_id 会被拼进房间映射键、也会随同步下发给设备当目录线索。以前它和素材库目录名共用
+  // 一把 isSafeFolderName 自由文本闸，于是 '98'、'abc' 这类值也能进库 —— 而预设页的目录签是
+  // 写死的 01-30，这种记录在界面上永远渲染不出来，成了看不见也删不掉的暗格。
+  // 所以这里比素材库更严（那边目录名真是用户起的），只收 01-30。
+  // 存量安全：线上 preset_materials.folder_id 全是 '01'（2026-09-20 核过），收紧不打到已有数据。
+  if (!PRESET_FOLDER_RE.test(String(folder_id))) return res.status(400).json({ error: 'folder_id 只能是 01-30' });
   // 这条 url 会被前端当播放地址、也会被删素材时当磁盘路径用，只允许指向 uploads 根内
   if (!resolveUploadPath(url)) return res.status(400).json({ error: 'invalid url' });
   if (thumbnail && !resolveUploadPath(thumbnail)) return res.status(400).json({ error: 'invalid thumbnail' });
@@ -1795,6 +1801,10 @@ function isSafeFolderName(name) {
   return typeof name === 'string' && /^[A-Za-z0-9_-]{1,10}$/.test(name);
 }
 
+// 预设素材的目录号：前端预设页固定渲染 01-30 三十个签（见 prf），落在区间外的记录
+// 无签可归、界面上不可见，等于删不掉的暗格数据。素材库那边目录名是自由文本，两边口径刻意不同。
+const PRESET_FOLDER_RE = /^(0[1-9]|[12]\d|30)$/;
+
 // 把 "/uploads/xx/yy.mp4" 解成磁盘路径，并强制结果仍落在 uploads 根内。
 // 用于 preset_materials 的增删（url 是客户端任意传入的）与 materials 的物理文件清理，
 // 不过这一道就等于按请求删盘。
@@ -1820,6 +1830,34 @@ function buildSafeUploadName(originalname) {
   const ext = extMatch ? extMatch[0].toLowerCase() : '';
   const base = originalname.replace(/\.[^.]*$/, '').replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
   return Date.now() + '_' + uuidv4().slice(0, 8) + '_' + (base || 'file') + ext;
+}
+
+// 同一素材目录内的 filename 查重：落盘名带时间戳+uuid 不会撞，撞的是 materials.filename
+// 这一列（用户起的原名）。而设备端不按 id 认文件、按 <目录>/<filename> 认，ETag/Last-Modified/md5
+// 三个缓存键还只有文件名 —— 同名两条就会互相覆盖下载结果、互相打脸缓存，现场看到的是
+// "播的是另一只片子"。所以 (folder, filename) 必须与 id 一一对应，撞了就自动补 " (2)"。
+// 只在同目录内比（设备的目录边界就在这里），且大小写不敏感（Android 文件系统与人的直觉都不区分）。
+// SELECT 失败时按原名放行：查重是正确性兜底，不该让一次查询失败把已上传完的大文件判死。
+function uniqueMaterialFilename(folder, name, cb) {
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  db.query('SELECT filename FROM materials WHERE folder = ? AND filename LIKE ?',
+    [folder, base.replace(/[\\%_]/g, ch => '\\' + ch) + '%'], (err, rows) => {
+      if (err) return cb(name, false);
+      const taken = {};
+      (rows || []).forEach(r => { taken[String(r.filename || '').toLowerCase()] = 1; });
+      if (!taken[name.toLowerCase()]) return cb(name, false);
+      let n = 2;
+      let cand = name;
+      do {
+        const tail = ' (' + n + ')' + ext;
+        // 先截 base 再拼后缀，保证结果一定在 255 列宽内（STRICT 下超宽是整条 INSERT 失败）
+        cand = clampStr(base, Math.max(0, 255 - tail.length)) + tail;
+        n++;
+      } while (taken[cand.toLowerCase()] && n < 1000);
+      cb(cand, true);
+    });
 }
 
 // 流式计算 MD5（避免大视频整体读入内存）
@@ -1900,29 +1938,34 @@ app.post("/api/upload", (req, res) => {
       return res.status(400).json({ error: "unsupported file type: " + ext });
     }
 
-    const displayName = originalName.replace(/\.[^.]+$/, '');
     const url = "/uploads/" + folder + "/" + req.file.filename;
     let thumbnail = null;
     let resolution = null;
 
     const finish = (md5) => {
-      const id = uuidv4();
-      // name/filename/resolution 都按列宽截断：STRICT_TRANS_TABLES 下超宽是整条 INSERT 失败，
-      // 而这里的失败分支会把刚上传完的大文件连同缩略图一起 unlink ——
-      // 用户看到的只有"上传失败"五个字，200MB 白传了。文件名是用户随便起的，拦不住，只能截。
-      db.query("INSERT INTO materials (id,name,filename,url,type,folder,thumbnail,resolution,md5) VALUES (?,?,?,?,?,?,?,?,?)",
-        [id, clampStr(displayName, 255), clampStr(originalName, 255), url, type, folder, thumbnail,
-         resolution ? clampStr(resolution, 20) : null, md5 || null],
-        (e) => {
-          if (e) {
-            try { require('fs').unlinkSync(req.file.path); } catch (e2) {}
-            if (thumbnail) { try { require('fs').unlinkSync(__dirname + thumbnail); } catch (e2) {} }
-            return res.status(500).json({ error: e.message });
+      const wanted = clampStr(originalName, 255);
+      uniqueMaterialFilename(folder, wanted, (storedName, renamed) => {
+        const displayName = storedName.replace(/\.[^.]+$/, '');
+        const id = uuidv4();
+        // name/filename/resolution 都按列宽截断：STRICT_TRANS_TABLES 下超宽是整条 INSERT 失败，
+        // 而这里的失败分支会把刚上传完的大文件连同缩略图一起 unlink ——
+        // 用户看到的只有"上传失败"五个字，200MB 白传了。文件名是用户随便起的，拦不住，只能截。
+        db.query("INSERT INTO materials (id,name,filename,url,type,folder,thumbnail,resolution,md5) VALUES (?,?,?,?,?,?,?,?,?)",
+          [id, clampStr(displayName, 255), storedName, url, type, folder, thumbnail,
+           resolution ? clampStr(resolution, 20) : null, md5 || null],
+          (e) => {
+            if (e) {
+              try { require('fs').unlinkSync(req.file.path); } catch (e2) {}
+              if (thumbnail) { try { require('fs').unlinkSync(__dirname + thumbnail); } catch (e2) {} }
+              return res.status(500).json({ error: e.message });
+            }
+            // 改名时把用户原本要的名字一起记账：排查"名字怎么被改了"时一眼看得懂
+            logAction('upload', 'material', { id, name: displayName, folder, type, md5,
+              ...(renamed ? { original_filename: wanted } : {}) });
+            res.json({ id, name: displayName, filename: storedName, url, type, folder, thumbnail, resolution, md5: md5 || null });
           }
-          logAction('upload', 'material', { id, name: displayName, folder, type, md5 });
-          res.json({ id, name: displayName, url, type, folder, thumbnail, resolution, md5: md5 || null });
-        }
-      );
+        );
+      });
     };
 
     if (type === "video") {
