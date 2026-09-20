@@ -47,6 +47,7 @@
  *
  * 素材三层架构：
  *   素材库 [M] ──cp2p──→ 预设素材 [P] ──mapPreset──→ 房间 [D]
+ *                       └──────────推送到房间──────────┘   // 旁路：素材库 id 直接进映射（线上有用到）
  *
  * ==========================================================
  * 场景系统（多窗口）
@@ -54,7 +55,7 @@
  * 场景数据结构（存储在 rooms.config.scenes，每幕一份）：
  *   {
  *     A: { name: '第一幕',
- *          folder_mappings: { "01": [presetMaterialId, ...], "02": [...] },   // 键是未加前缀的两位编号
+ *          folder_mappings: { "01": [materialId, ...], "02": [...] },   // 键是未加前缀的两位编号；值是素材库 id 或预设素材 id，两种都合法
  *          windows: [WinConfig, ...],
  *          master: { brightness: Number } },   // 场景总亮度 0..1，服务端在 PUT windows 时夹取
  *     B: { ... }
@@ -1541,18 +1542,65 @@ app.post('/api/preset/materials', (req, res) => {
   const safeName = clampStr(filename || url.split('/').pop() || '未知文件', 255);
   // type 只有 video/image 两种播放语义（设备端按它选解码器/ImageView），别的值一律按 video 收
   const fileType = (type === 'video' || type === 'image') ? type : (safeName.endsWith('.mp4') || safeName.endsWith('.avi') ? 'video' : 'image');
-  db.query(
-    'INSERT INTO preset_materials (id, folder_id, filename, url, type, thumbnail, md5) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, String(folder_id), safeName, url, fileType, thumbnail || null, clampStr(md5, 32) || null],
-    (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      logAction('create', 'preset_material', { id, folder_id, filename: safeName, url });
-      res.json({ id, folder_id, filename: safeName, url, type: fileType, thumbnail: thumbnail || null, md5: md5 || null });
-    }
-  );
+  // 同文件夹 + 同文件 = 同一条预设（幂等）。前端也判重，但它判的是自己那份 s.pm 快照：
+  // 两个标签页、或者列表没刷新时连点，服务端会真的插进两条 —— 两条 id 指向同一个物理文件，
+  // 映射进房间后设备清单里就是两个同名条目，白下一遍还互相打脸 md5 缓存。
+  db.query('SELECT id, folder_id, filename, url, type, thumbnail, md5 FROM preset_materials WHERE folder_id = ? AND url = ? LIMIT 1',
+    [String(folder_id), url], (errExist, existRows) => {
+      if (errExist) return res.status(500).json({ error: errExist.message });
+      if (existRows && existRows[0]) {
+        logAction('exists', 'preset_material', existRows[0]);
+        return res.json({ success: true, existed: true, ...existRows[0] });
+      }
+      db.query(
+        'INSERT INTO preset_materials (id, folder_id, filename, url, type, thumbnail, md5) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, String(folder_id), safeName, url, fileType, thumbnail || null, clampStr(md5, 32) || null],
+        (err) => {
+          if (err) return res.status(500).json({ error: err.message });
+          logAction('create', 'preset_material', { id, folder_id, filename: safeName, url });
+          // success: true —— 全仓写接口统一回 {success:true}，前端 apiCall/apiPost 就按这个判。
+          // 以前这条只回裸行，前端只能自己写 fetch + 判 res.ok（复制预设那条就是），
+          // 等于给"约定"开了个例外，下一个调用方很容易以为成功即已新建。
+          res.json({ success: true, id, folder_id, filename: safeName, url, type: fileType, thumbnail: thumbnail || null, md5: md5 || null });
+        }
+      );
+    });
 });
 
+// 【S-03g】 预设素材的删除影响面预告（只读，与【S-02b】同族）
+// killIds 口径必须和上面的 DELETE 一致：预设只摘自己这一个 id（不牵出素材库行、不删文件）。
+// 素材库那边反过来要并上同 URL 的预设行 —— 两边不对称是有意的，别"顺手统一"。
+// materials 那份是"会连带删什么"，这份多带的 src_materials 只是给运营看"文件还有人用，删了不影响画质/播放源"。
+app.get('/api/preset/materials/:id/usage', (req, res) => {
+  const mid = req.params.id;
+  if (!mid || mid.length > 36) return res.status(400).json({ error: 'invalid id' });
+  db.query('SELECT id, folder_id, filename, url, type, thumbnail, md5 FROM preset_materials WHERE id = ?',
+    [mid], (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!rows || !rows[0]) return res.status(404).json({ error: '预设素材不存在' });
+      const preset = rows[0];
+      // 共享同一物理文件的素材库行（只读展示，删除不会动它们）
+      db.query('SELECT id, name, filename, folder FROM materials WHERE url = ?', [preset.url],
+        (err2, mats) => {
+          if (err2) return res.status(500).json({ error: err2.message });
+          findMaterialUsageInRooms([mid], (rooms) => {
+            res.json({
+              success: true,
+              preset,
+              bytes: uploadSizeBytes(preset.url) + uploadSizeBytes(preset.thumbnail),
+              rooms,
+              slot_count: rooms.reduce((n, r) => n + r.slots.reduce((m, s) => m + s.count, 0), 0),
+              src_materials: mats || []
+            });
+          });
+        });
+    });
+});
+
+
 // 删除预设素材（级联清理所有房间的 scenes A/B 映射并通知设备同步）
+// ⚠️ 只摘引用，不碰磁盘：预设是素材库条目的一份"共享引用"，物理文件由 materials 那边管。
+// 所以这条 DELETE 的影响面只有"哪些房间的哪个槽位被摘掉"，与文件、素材库行都无关。
 app.delete('/api/preset/materials/:id', (req, res) => {
   const mid = req.params.id;
   db.query('SELECT * FROM preset_materials WHERE id = ?', [mid], (err, rows) => {
@@ -1610,7 +1658,8 @@ app.delete("/api/folders/:name", (req, res) => {
     const list = mats || [];
     const ids = list.map(m => m.id);
     const urls = list.map(m => m.url).filter(Boolean);
-    // 房间映射里存的是 pm_* 预设 id（素材库 id 从不进映射），所以清理列表必须并上同 URL 的预设 id。
+    // 映射里两类 id 都可能出现：「映射预设」写 pm_* 预设 id，素材页的「推送到房间」直接把素材库 id
+    // 写进去（线上确有这种房间，见 room aaa），所以清理列表必须并上同 URL 的预设 id。
     // 以前只传素材 id：凡经"素材推送到房间"建的映射一条都删不掉，这些房间也进不了 affected，
     // 于是既不通知设备也不清配置，现场能继续播被删素材最多 3 分钟（等心跳对账兜回来）。
     // 预设查失败同样停手，理由与上面materials 查询一致：少一份 id 就是一份悬空引用。

@@ -290,10 +290,13 @@ body.nav-off .brand-name{display:inline}
     <select id="opActionFilter" class="tfsel" onchange="loadOpLogs()">
       <option value="all">全部动作</option>
       <option value="create">create 新建</option>
+      <option value="exists">exists 重复跳过</option>
       <option value="update">update 修改</option>
       <option value="delete">delete 删除</option>
       <option value="rename">rename 改名</option>
       <option value="upload">upload 上传</option>
+      <option value="cp2p">cp2p 复制到预设</option>
+      <option value="preset_map">preset_map 映射到房间</option>
       <option value="room_sync">room_sync 同步</option>
       <option value="sync">sync 下发</option>
       <option value="update_windows">update_windows 窗口</option>
@@ -637,6 +640,7 @@ var s = {
     _cropMode: false,
     fs: [],
     ms: [],
+    pm: [],      // 预设素材列表：房间工作台的「已映射素材」按 id 在这里查名字，不能只在素材页加载
     ds: [],
     selected: [],
     stores: asList(lsJson('xstores', [])),
@@ -999,27 +1003,29 @@ async function cp2p(id) {
     var m = s.ms.find(function(x) { return x.id === id; });
     if (!m) { alert('素材未找到，请刷新页面后重试'); return; }
     var folder = s.f || '01';
-    // 检查是否已存在
+    // 本地这道判重只是省一次请求（拿的是本页的 s.pm 快照，另一标签页刚复制过就看不出来）；
+    // 真正的幂等在服务端【S-03f】：同 folder_id + 同 url 直接回原记录 + existed，
+    // 不再插第二条 —— 两条预设指向同一个物理文件，映射进房间后设备清单里就是两个同名条目。
     var existing = s.pm ? s.pm.filter(function(p) { return p.folder_id === folder && p.url === m.url; }) : [];
-    if (existing.length > 0) { alert('该素材已在预设中'); return; }
-    var preset = {
-        folder_id: folder,
-        filename: m.filename || m.name,
-        url: m.url,
-        type: m.type || 'video',
-        thumbnail: m.thumbnail || null,
-        md5: m.md5 || null
-    };
-    console.log('Preset data:', JSON.stringify(preset));
-    var res = await fetch('/api/preset/materials', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(preset)
-    });
-    var result = await res.json();
-    console.log('Server response:', result);
-    if (res.ok) { alert('已复制到预设素材 ' + folder + ' 文件夹'); lp(); lm(); logAction('cp2p', 'preset', { material_id: id, folder: folder, filename: m.filename || m.name }); }
-    else alert('复制失败: ' + result.error);
+    if (existing.length > 0) { alert('该素材已在预设 ' + folder + ' 文件夹'); return; }
+    var r;
+    try {
+        r = await apiPost('/api/preset/materials', {
+            folder_id: folder,
+            filename: m.filename || m.name,
+            url: m.url,
+            type: m.type || 'video',
+            thumbnail: m.thumbnail || null,
+            md5: m.md5 || null
+        });
+    } catch (e) {
+        alert('复制失败: ' + e.message);
+        return;
+    }
+    lp(); lm();
+    if (r.existed) { alert('该素材已在预设 ' + folder + ' 文件夹（服务端判重，未重复添加）'); return; }
+    alert('已复制到预设素材 ' + folder + ' 文件夹');
+    logAction('cp2p', 'preset', { material_id: id, preset_id: r.id, folder: folder, filename: m.filename || m.name });
 }
 
 // ==================== 设备管理 ====================
@@ -1030,6 +1036,13 @@ async function ld() {
         s.ds = asList(await apiGet('/api/devices'));
         s.ms = asList(await apiGet('/api/materials'));
     } catch (e) { console.error('ld() 读取失败:', e.message); }
+    // 房间工作台的「已映射素材」卡片要按 id 反查预设素材的名字/缩略图。
+    // 以前只有素材页会拉 s.pm，从客户管理进来的这一路它是空的（甚至没在 s 里登记，
+    // 直接 undefined）→ 映射明明存在（201 的 A/01 就挂着一条预设），界面却显示"无素材"，
+    // 运营看着就以为画面是设备自己缓存的。读不到就留空数组，但不能再当作"没有素材"。
+    try {
+        s.pm = asList(await apiGet('/api/preset/materials'));
+    } catch (e) { console.error('ld() 预设素材读取失败:', e.message); }
     // 客户列表以服务端为准（含房间/设备计数），不再合并 localStorage 历史数据
     await loadStores();
 }
@@ -1109,21 +1122,58 @@ function prm() {
     g.innerHTML = h;
 }
 
+// 删除预设素材。与素材库那边的 dm() 同一套规矩：先问影响面再让人确认，问不到就不删。
+// 这里的级联比 dm() 窄 —— 只摘自己这一个 id 在所有房间映射里的槽位，不删文件、不动素材库行，
+// 但那几间房会当场少一路画面（尤其 201 那种正在播预设的房间），所以照样不能盲删。
 async function dpm(e, id) {
     e.stopPropagation();
-    if (!confirm('确定删除?')) return;
+    var u;
     try {
-        await apiCall('/api/preset/materials/' + encodeURIComponent(id), { method: 'DELETE' });
-    } catch (e2) {
-        // 原来写的是 .then(function(){ lp(); lm(); })：失败既无提示，又会 lp() 把列表重刷回来
-        // （看着像"删了又自己长回来"）
-        alert('删除失败: ' + e2.message);
+        u = await apiGet('/api/preset/materials/' + encodeURIComponent(id) + '/usage');
+    } catch (err) {
+        alert('无法确认影响面，未删除：' + err.message);
         return;
     }
-    s.pm = asList(s.pm).filter(function(x) { return x.id !== id; });   // 先就地摘掉，重拉前的这一屏不该还有它
-    prm();
-    lp();
-    lm();
+    var p = asObj(u.preset);
+    var rooms = asList(u.rooms);
+    var src = asList(u.src_materials);
+    var lines = [];
+    lines.push('<div style="color:#fff;font-size:14px;margin-bottom:6px">' + esc(p.filename || id) + '</div>');
+    lines.push('<div style="color:#888">' + esc(p.folder_id || '?') + ' 文件夹 · ' + esc(fmtBytes(u.bytes))
+        + '。只摘预设记录，磁盘文件和素材库那条都在，可随时重新「复制到预设」。</div>');
+    if (rooms.length) {
+        var roomTxt = rooms.map(function(r) {
+            var slots = asList(r.slots).map(function(x) { return x.scene + x.folder + '×' + x.count; }).join(' ');
+            return '· ' + esc((r.store_name || '?') + ' / ' + (r.name || r.id)) + ' <span style="color:#888">' + esc(slots) + '</span>';
+        }).join('<br>');
+        lines.push('<div style="margin-top:12px;color:#ffb3bd">正在被 ' + rooms.length + ' 间房引用（' + esc(String(u.slot_count))
+            + ' 个映射槽位），删除后这些房间的设备会立即重新同步、该槽位少一路画面：<br>' + roomTxt + '</div>');
+    } else {
+        lines.push('<div style="margin-top:12px;color:#a7e8bd">没有任何房间在用它，删除不影响现场播放。</div>');
+    }
+    if (src.length) {
+        lines.push('<div style="margin-top:6px;color:#888">同一物理文件在素材库里还有 ' + src.length + ' 条记录（'
+            + esc(src.slice(0, 3).map(function(x) { return x.filename || x.name || x.id; }).join('、'))
+            + (src.length > 3 ? ' 等' : '') + '），不受影响。</div>');
+    } else {
+        lines.push('<div style="margin-top:6px;color:#ffb3bd">注意：素材库里已经没有记录指向这个文件了，'
+            + '这条预设是它唯一的引用；删完文件还在磁盘上，但界面上再也找不到入口。</div>');
+    }
+    confirmModal('确认删除预设素材？', lines.join(''), '删除', async function() {
+        try {
+            await apiCall('/api/preset/materials/' + encodeURIComponent(id), { method: 'DELETE' });
+        } catch (e2) {
+            // 原来写的是 .then(function(){ lp(); lm(); })：失败既无提示，又会 lp() 把列表重刷回来
+            // （看着像"删了又自己长回来"）
+            alert('删除失败: ' + e2.message);
+            return;
+        }
+        s.pm = asList(s.pm).filter(function(x) { return x.id !== id; });   // 先就地摘掉，重拉前的这一屏不该还有它
+        prm();
+        lp();
+        lm();
+        if (s.df) lr();
+    });
 }
 
 
@@ -1455,24 +1505,35 @@ function rmDevice() {
     var ms = sceneFM[s.f] || [];
     // 只显示已映射的素材
     var all = [];
+    var unresolved = [];
     if (ms && ms.length > 0) {
         ms.forEach(function(mid) {
             // 先从预设素材查找
             var m = s.pm ? s.pm.find(function(x) { return x.id === mid }) : null;
-            // 再从素材库查找
+            // 再从素材库查找（「推送到房间」写的就是素材库 id，两条路都可能进映射）
             if (!m) m = s.ms.find(function(x) { return x.id === mid });
             if (m) all.push({id: m.id, filename: m.filename || m.name, url: m.url, type: m.type, thumbnail: m.thumbnail});
+            else unresolved.push(mid);
         });
     }
     var h2 = '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><span style="font-weight:bold">已映射素材</span><button class="btn btn-primary" style="padding:5px 15px;font-size:12px" onclick="mapPreset()">映射预设</button></div>';
     h2 += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px">';
-    if (all.length === 0) { h2 += '<div class="empty">无素材，点击"映射预设"从预设库添加</div>'; }
+    if (all.length === 0) {
+        // 分清楚"真没映射"和"映射了但查不到记录"：前者提示去映射，后者是悬空引用
+        // （素材/预设被删而映射还在，或服务端读列表失败），显示成"无素材"会把人引去重复映射。
+        h2 += unresolved.length
+            ? '<div class="empty">映射里有 ' + unresolved.length + ' 条记录在素材库和预设库里都查不到（悬空引用）：'
+              + esc(unresolved.slice(0, 5).join('、')) + (unresolved.length > 5 ? ' 等' : '')
+              + '。设备侧清单会跳过这些 id，点「🔄 同步当前房间」让它们对齐。</div>'
+            : '<div class="empty">无素材，点击"映射预设"从预设库添加</div>';
+    }
     else {
         all.forEach(function(m) {
-            var type = m.type || (m.filename.match(/\.(mp4|webm|avi|mov)$/i) ? 'video' : 'image');
+            var name = String(m.filename || m.url || m.id);   // filename 老数据可能为 null，直接 .match 会抛停半屏
+            var type = m.type || (name.match(/\.(mp4|webm|avi|mov)$/i) ? 'video' : 'image');
             var thumbUrl = m.thumbnail ? (m.thumbnail.startsWith('/') ? m.thumbnail : m.thumbnail) : null;
             var t = type === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '">' : '<div class="card-thumb">▶</div>') : (m.url ? '<img src="' + escA(m.url) + '">' : '<div class="card-thumb">?</div>');
-            h2 += '<div class="card"><button class="card-del" onclick="rmRoomMat(event,\'' + escJsA(m.id) + '\')">x</button><div>' + t + '</div><div class="card-name">' + esc(m.filename) + '</div></div>';
+            h2 += '<div class="card"><button class="card-del" onclick="rmRoomMat(event,\'' + escJsA(m.id) + '\')">x</button><div>' + t + '</div><div class="card-name">' + esc(name) + '</div></div>';
         });
     }
     h2 += '</div>';
@@ -2708,8 +2769,11 @@ async function mapPreset() {
         pm = asList(await apiGet('/api/preset/materials'));
         ms = asList(await apiGet('/api/materials'));
     } catch (e) { alert('读取素材列表失败: ' + e.message); return; }
-    var presetInFolder = pm;
-    if (presetInFolder.length === 0) { alert('预设素材库为空，请先在预设素材页面添加'); return; }
+    // ⚠️ 这是"整个预设库 → 当前这一幕"的全量灌入，不是只灌当前文件夹（老变量名叫 presetInFolder，
+    // 是从前按文件夹映射的年代留下来的，容易让人以为它会跟着上面选中的 01-30 标签走）。
+    // 只增不减：已映射的按 id/url 去重保留，本幕里多余的历史映射不会被这次操作清掉。
+    var allPresets = pm;
+    if (allPresets.length === 0) { alert('预设素材库为空，请先在预设素材页面添加'); return; }
     // 基底必须现拉，不能用 s.rooms 里那份快照：那可能是几分钟前甚至上次切店前的数据，
     // 而这里是整份 config PUT 回去 —— 期间别人/别的标签页改的窗口和另一幕会被静默回退。
     var r;
@@ -2727,7 +2791,7 @@ async function mapPreset() {
     var folderMs = cfg.scenes[curS].folder_mappings || {};
     // 添加所有预设素材到对应文件夹（按ID或URL去重）
     var count = 0, skipped = 0;
-    presetInFolder.forEach(function(m) {
+    allPresets.forEach(function(m) {
         var fid = m.folder_id;
         // 文件夹名要和库里的目录名同形状（服务端 normalizeFolderMappings 会丢弃非法键）：
         // 这里不先挡，写进去也会被服务端剪掉，而弹窗仍然报"已映射 N 个"
@@ -2755,7 +2819,8 @@ async function mapPreset() {
             body: JSON.stringify({config: JSON.stringify(cfg)})
         });
     } catch (e) { alert('映射保存失败: ' + e.message); return; }
-    alert('已映射全部 ' + count + ' 个预设素材' + (skipped > 0 ? '（另有 ' + skipped + ' 个文件夹名非法，已跳过）' : ''));
+    alert('已把预设库里 ' + count + ' 条新素材映射进' + (curS === 'A' ? '第一幕' : '第二幕')
+        + '（同文件夹里已有同文件的会跳过' + (skipped > 0 ? '；另有 ' + skipped + ' 个文件夹名非法，已跳过' : '') + '）');
     lr();
     // PUT /api/rooms/:id 落库后服务端收敛点已比较映射指纹并通知设备，这里不再补 doSyncRoom
     logAction('preset_map', 'room', { room_id: s.rf, room_name: r.name, store_name: r.store_name || r.store, count: count });
@@ -3440,7 +3505,8 @@ function _opTone(action) {
     if (action === 'delete' || action === 'deauthorize' || action === 'block' || action === 'error'
         || action === 'material_delete' || action === 'room_remove') return ' danger';
     if (action === 'create' || action === 'authorize' || action === 'upload' || action === 'bind_room'
-        || action === 'room_sync' || action === 'push_update' || action === 'push_update_all') return ' ok';
+        || action === 'room_sync' || action === 'push_update' || action === 'push_update_all'
+        || action === 'cp2p' || action === 'preset_map') return ' ok';
     return '';
 }
 
