@@ -13,7 +13,9 @@
  * 【S-04】房间 CRUD API（/api/rooms*，含 PUT /api/rooms/:id/windows）
  * 【S-05】授权 & 设备管理 API（/api/devices*）
  * 【S-06】MQTT 消息处理 & 发送（mqttClient / publishToDeviceCommand / 载荷组装与变更收敛：
- *         roomSceneDigest / roomSyncFields / syncCommandPayload / notifyRoomConfigChanged / reconcileDeviceRev）
+ *         roomSceneDigest / roomSyncFields / syncCommandPayload / notifyRoomConfigChanged /
+ *         reconcileDeviceRev / resolveDeviceId（自报 id → 规范 devices.id，写 device_versions、
+ *         device_logs 前先过它））
  * 【S-07】素材同步 & 删除（POST /api/rooms/:id/sync、DELETE /api/rooms/:roomId/materials/:materialId）
  * 【S-08】日志 & 操作记录（logAction、/api/logs、/api/device_logs）
  * 【S-09】静态文件 & 前端页面
@@ -644,7 +646,8 @@ function handleMqttMessage(topic, message) {
       if (data.action === 'deauthorize') {
         console.log('📩 收到设备主动 deauthorize: ' + data.device_id);
         // blocked（屏蔽）设备不被降级，防止 block 接口自己的 MQTT 通知回环覆盖屏蔽状态
-        db.query('UPDATE devices SET authorized=0, status="deauthorized" WHERE id=? AND status<>"blocked"', [data.device_id]);
+        // 回退到 fingerprint：装机漂移后设备自报的是指纹，只按 id 匹配会静默改成"没人掉线"
+        db.query('UPDATE devices SET authorized=0, status="deauthorized" WHERE (id=? OR fingerprint=?) AND status<>"blocked"', [data.device_id, data.device_id]);
       }
     } catch(e) {}
     return;
@@ -727,11 +730,7 @@ function handleMqttMessage(topic, message) {
             if (data.version || data.version_code) {
               const vCode = parseInt(data.version_code, 10) || 0;
               const vName = clampStr(data.version, 50);   // device_versions.version 是 VARCHAR(50)
-              db.query(
-                'INSERT INTO device_versions (device_id, version, version_code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE version = ?, version_code = ?',
-                [deviceId, vName, vCode, vName, vCode],
-                (verr) => { if (verr) console.error('同步设备版本失败:', verr.message); }
-              );
+              reportDeviceVersion(deviceId, vName, vCode);
             }
             // 配置对账：心跳带回 rev 且不在下载中时，比一比房间真值，落后了就补发同步
             if (isOnline && data.rev && data.syncing !== true) {
@@ -743,7 +742,8 @@ function handleMqttMessage(topic, message) {
       }
       case 'request':
         console.log('🔐 设备请求授权状态: ' + deviceId);
-        db.query('SELECT authorized, room_id FROM devices WHERE id = ?', [deviceId], (err, rows) => {
+        // 与心跳同一道回退：装机漂移后自报的是指纹，只按 id 查会答成"设备未注册"
+        db.query('SELECT authorized, room_id FROM devices WHERE id = ? OR fingerprint = ?', [deviceId, deviceId], (err, rows) => {
           if (err || !rows || rows.length === 0) {
             sendAuthResponse(deviceId, false, '设备未注册', '');
           } else {
@@ -769,17 +769,21 @@ function handleMqttMessage(topic, message) {
         // 少了这道闸，一条 topic 就能往 device_logs 塞 64KB 的 TEXT 行，把保留 2000 条的清理撑爆
         if (logMsg.length > 4000) logMsg = logMsg.substring(0, 4000) + '…(截断)';
         console.log('📝 写日志: deviceId=' + deviceId + ' time=' + logTime + ' level=' + level + ' msg=' + logMsg.substring(0, 60));
-        db.query(
-          'INSERT INTO device_logs (device_id, log_time, level, message) VALUES (?, ?, ?, ?)',
-          [deviceId, logTime, level, logMsg],
-          (err) => {
-            if (err) return console.error('写device_logs失败:', err.message);
-            // 防膨胀：约2%概率触发，按设备分区各保留最新 2000 条（全局上限会被多台设备分摊掉排障窗口）
-            if (Math.random() < 0.02) {
-              db.query('DELETE FROM device_logs WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY id DESC) rn FROM device_logs) t WHERE rn > 2000)');
+        // 归属按规范 devices.id 落：日志页的下拉框给的是 devices.id，装机漂移后设备自报的是指纹，
+        // 不解析的话这台机器的日志在界面上永远查不到（见 resolveDeviceId）
+        resolveDeviceId(deviceId, (id) => {
+          db.query(
+            'INSERT INTO device_logs (device_id, log_time, level, message) VALUES (?, ?, ?, ?)',
+            [id, logTime, level, logMsg],
+            (err) => {
+              if (err) return console.error('写device_logs失败:', err.message);
+              // 防膨胀：约2%概率触发，按设备分区各保留最新 2000 条（全局上限会被多台设备分摊掉排障窗口）
+              if (Math.random() < 0.02) {
+                db.query('DELETE FROM device_logs WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY id DESC) rn FROM device_logs) t WHERE rn > 2000)');
+              }
             }
-          }
-        );
+          );
+        });
         break;
       }
       case 'command':
@@ -1048,6 +1052,62 @@ function reconcileDeviceRev(mqttId, reportedRev) {
   );
 }
 
+/**
+ * 【S-06g】设备自报 ID → 规范 devices.id（写入归属解析，全库共用见 resolveDeviceId）。
+ * @param {string} vName - 版本名（已 clampStr 到 50）
+ * @param {number} vCode - 版本号
+ */
+function reportDeviceVersion(deviceId, vName, vCode) {
+  resolveDeviceId(deviceId, (id) => {
+    db.query(
+      'INSERT INTO device_versions (device_id, version, version_code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE version = ?, version_code = ?',
+      [id, vName, vCode, vName, vCode],
+      (verr) => { if (verr) console.error('同步设备版本失败:', id, verr.message); }
+    );
+  });
+}
+
+/**
+ * 【S-06h】把设备自报的 ID 解析成库里的规范 devices.id。
+ * 背景：装 APK（OTA 或手动）会清掉应用数据 → prefs.device_id 丢失 → 首启拿指纹当身份
+ * （MainActivity 的 `deviceId = prefs.device_id ?: deviceFingerprint`；168 装机实测漂移），
+ * 此后自报值与 devices.id 分叉。devices 表自己的读写靠 `id = ? OR fingerprint = ?` 回退，
+ * 认得住；出问题的是"按自报 id 存、按 devices.id 读"的旁表 ——
+ *   device_versions：键对不上 → 版本页永远显示旧版 → 运营以为没装上再推一次 OTA（现场大屏白重启）；
+ *   device_logs：键对不上 → 日志页选这台筛不出任何一行（远程排障瞎掉），删设备时孤儿行也清不掉。
+ * WHERE 与心跳的 UPDATE 同形状（含 32 位截断搜索），UPDATE 认得到的这里必然也认得到；
+ * 精确命中优先于 LIKE 命中，避免多行时挑到别人的设备。
+ * 映射由服务端建行决定、基本不变，故缓存 10 分钟（删档重建最多错 10 分钟，且只影响日志归属），
+ * 删设备时按 id 清一次缓存（见 DELETE /api/devices/:id）。
+ * @param {string} reportedId - MQTT topic / payload 里解出的自报 ID（已过 isSafeDeviceId 闸）
+ * @param {(id: string) => void} cb - 拿到规范 id；解析失败或查不到（全新设备，行还在异步 INSERT 中）
+ *                                    时回落到自报值 —— 那条路 devices.id 本来就等于它，不会更错
+ */
+const DEVICE_ID_CACHE_TTL = 600000;
+const deviceIdCache = new Map();   // 自报 id -> { id, at }
+
+function resolveDeviceId(reportedId, cb) {
+  const hit = deviceIdCache.get(reportedId);
+  const now = Date.now();
+  if (hit && now - hit.at < DEVICE_ID_CACHE_TTL) return cb(hit.id);
+  const searchId = reportedId.substring(0, 32);
+  db.query(
+    `SELECT id FROM devices
+     WHERE id = ? OR fingerprint = ? OR id LIKE ? OR id LIKE ?
+     ORDER BY (id = ?) DESC LIMIT 1`,
+    [reportedId, reportedId, reportedId + '%', searchId + '%', reportedId],
+    (err, rows) => {
+      const id = (!err && rows && rows.length > 0 && rows[0].id) || reportedId;
+      // 只写不删的 Map 会随设备数无界增长，超阈值时顺带清过期项（同一手法见 revReconcileAt）
+      if (deviceIdCache.size > 500) {
+        deviceIdCache.forEach((v, k) => { if (now - v.at > DEVICE_ID_CACHE_TTL) deviceIdCache.delete(k); });
+      }
+      deviceIdCache.set(reportedId, { id, at: now });
+      cb(id);
+    }
+  );
+}
+
 // ==================== API 接口 ====================
 
 // 【S-05a】 获取设备列表（支持按 room_id 筛选）
@@ -1084,6 +1144,8 @@ app.delete('/api/devices/:id', (req, res) => {
     if (!rows || rows.length === 0) return res.status(404).json({ error: '设备不存在' });
     if (rows[0].authorized === 1) return res.status(409).json({ error: '设备已授权，请先解绑或废止后再删除' });
     publishAuthRevoked(did, '设备记录已被删除');
+    // 清身份映射缓存：行都删了还留着"自报 id → 已删 id"，会把后续日志挂到不存在的设备上
+    deviceIdCache.forEach((v, k) => { if (v.id === did) deviceIdCache.delete(k); });
     db.query('DELETE FROM device_versions WHERE device_id = ?', [did], () => {
       db.query('DELETE FROM device_logs WHERE device_id = ?', [did], () => {
         db.query('DELETE FROM devices WHERE id = ?', [did], (err2) => {
