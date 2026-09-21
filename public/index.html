@@ -196,6 +196,7 @@ body.nav-off .brand-name{display:inline}
 .op-act{flex-shrink:0;width:130px;padding:1px 6px;border-radius:10px;font-size:11px;text-align:center;background:#333;color:#bbb}
 .op-act.danger{background:#5a1f26;color:#ffb3bd}
 .op-act.ok{background:#1f4d2e;color:#a7e8bd}
+.op-act.info{background:#1d3a4d;color:#a5d8f0}
 .op-tgt{flex-shrink:0;width:110px;color:#8ab4f8}
 .op-sum{color:#ccc;word-break:break-all}
 .op-detail{margin:2px 0 6px 142px;padding:8px;background:#111;border-radius:4px;color:#9cdcfe;white-space:pre-wrap;word-break:break-all;max-height:280px;overflow:auto}
@@ -300,6 +301,8 @@ body.nav-off .brand-name{display:inline}
       <option value="room_sync">room_sync 同步</option>
       <option value="sync">sync 下发</option>
       <option value="update_windows">update_windows 窗口</option>
+      <option value="preview">preview 大屏试播</option>
+      <option value="preview_stop">preview_stop 结束试播</option>
       <option value="authorize">authorize 授权</option>
       <option value="deauthorize">deauthorize 废止</option>
       <option value="bind_room">bind_room 绑定</option>
@@ -648,6 +651,7 @@ var s = {
     rf: null,
     rooms: [],
     devicePollInterval: null,
+    _preview: null,   // 进行中的大屏试播 {roomId,scene,folder,material_id,filename,win_name}（见 pvMat）
     logAutoRefreshTimer: null,
     opAutoRefreshTimer: null,
     opLogs: [],
@@ -1443,8 +1447,9 @@ function rmDevice() {
             h += '<span style="color:#ccc;font-size:13px" title="' + escA(d.id) + '">' + esc(shortId) + '</span>';
             h += '<span class="device-status ' + statusClass + '" style="font-size:11px;padding:1px 6px;border-radius:10px">' + statusText + '</span>';
             h += '</div>';
-            // 手动命令：服务端 POST /api/devices/:id/command 支持 8 个白名单 action，此前前端一个入口都没有，
-            // 现场想"立刻停掉这台的画面"只能去改配置间接触发。只放三枚真正用得上的。
+            // 手动命令：服务端 POST /api/devices/:id/command 只认 DEVICE_ACTIONS 白名单，且 update_windows /
+            // delete_material / preview_* 已被拦在专用接口后面（载荷必须由服务端按房间配置生成），这里能裸发的就是剩下的几条。
+            // 此前前端一个入口都没有，现场想"立刻停掉这台的画面"只能去改配置间接触发。只放三枚真正用得上的。
             h += '<div style="display:flex;gap:6px;align-items:center">';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" title="停止该设备全部窗口的播放（不改配置，下次同步会恢复）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'stop\',\'停止播放\',' + (isOnline ? 'true' : 'false') + ')">停止</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" title="不看 rev 强制整房重新同步（素材清单 + 窗口 + 映射全量下发，会重建播放器）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'sync\',\'强制同步\',' + (isOnline ? 'true' : 'false') + ')">强制同步</button>';
@@ -1518,7 +1523,16 @@ function rmDevice() {
     }
     // 两个入口分开，别再让"点一下"和"整库灌入"是同一件事：
     // 前者跟着上方选中的 01-30 标签走（停在 03 就只灌 03），后者是显式的批量动作、要二次确认。
+    // 中间的试播状态条是"上一次命令发给了哪扇窗"的记录（见 pvMat），不代表此刻屏上真在播 ——
+    // 下发是单向 MQTT，设备端的实情只在大屏左下角的 debug 状态文字和「日志」页上看得到。
+    var pvBar = '';
+    if (s._preview && s._preview.roomId === s.rf) {
+        pvBar = '<span style="font-size:11px;color:#e94560;margin-right:8px" title="记的是刚才那条命令的目标窗口；播完一遍设备会自动回到原画面">▶ '
+            + esc(s._preview.filename || '') + ' → ' + esc(s._preview.win_name || '窗口') + '</span>'
+            + '<button class="btn btn-secondary" style="padding:3px 10px;font-size:11px;margin-right:8px" title="不等播完，立刻把画面还给原来的播放" onclick="stopPv()">提前结束</button>';
+    }
     var h2 = '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><span style="font-weight:bold">已映射素材</span><span>'
+        + pvBar
         + '<button class="btn btn-primary" style="padding:5px 15px;font-size:12px" title="只映射上方当前选中的 ' + esc(s.f || '') + ' 文件夹" onclick="mapPreset()">映射本文件夹预设</button>'
         + '<button class="btn" style="padding:5px 10px;font-size:12px;margin-left:6px;background:#6c757d;color:#fff" title="把预设库 01-30 全部映射进当前这一幕（设备会照着清单整个下一遍）" onclick="mapPreset(\'ALL\')">整库</button>'
         + '</span></div>';
@@ -1533,12 +1547,20 @@ function rmDevice() {
             : '<div class="empty">无素材，点击"映射本文件夹预设"从预设库 ' + esc(s.f || '') + ' 添加</div>';
     }
     else {
+        // 试播按钮只在调试模式下出现（云端【S-05p】同口径拦 409）：这是给现场/运维用的评估工具，
+        // 不该留在营业中的房间里随手可点。图片素材不进这个按钮 —— 设备端播放链压根不认它。
+        var canPv = _roomDebugOn();
         all.forEach(function(m) {
             var name = String(m.filename || m.url || m.id);   // filename 老数据可能为 null，直接 .match 会抛停半屏
             var type = m.type || (name.match(/\.(mp4|webm|avi|mov)$/i) ? 'video' : 'image');
             var thumbUrl = m.thumbnail ? (m.thumbnail.startsWith('/') ? m.thumbnail : m.thumbnail) : null;
             var t = type === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '">' : '<div class="card-thumb">▶</div>') : (m.url ? '<img src="' + escA(m.url) + '">' : '<div class="card-thumb">?</div>');
-            h2 += '<div class="card"><button class="card-del" onclick="rmRoomMat(event,\'' + escJsA(m.id) + '\')">x</button><div>' + t + '</div><div class="card-name">' + esc(name) + '</div></div>';
+            var pvBtn = (canPv && _pvOnDevice(name))
+                ? '<div style="text-align:center;margin-top:4px"><button class="btn btn-secondary" style="padding:2px 10px;font-size:11px"'
+                  + ' title="在这扇窗对应的设备画面上播一遍这只素材，播完自动回到原画面（只播设备本机已有的素材，不改任何配置）"'
+                  + ' onclick="pvMat(\'' + escJsA(m.id) + '\')">▶ 试播</button></div>'
+                : '';
+            h2 += '<div class="card"><button class="card-del" onclick="rmRoomMat(event,\'' + escJsA(m.id) + '\')">x</button><div>' + t + '</div><div class="card-name">' + esc(name) + '</div>' + pvBtn + '</div>';
         });
     }
     h2 += '</div>';
@@ -2855,32 +2877,33 @@ async function mapPreset(scope) {
     updateRoomDebugToggle();
 }
 
-// 【F-08b】 房间调试开关（updateRoomDebugToggle 显示态 / toggleRoomDebug 写入）
+// 【F-08b】 房间调试开关（_roomDebugOn 读 / updateRoomDebugToggle 显示态 / toggleRoomDebug 写入）
 // 注意开关态优先读 sessionStorage('debug_'+房间id)：它是本标签页最后一次点击的结果，
 // 会盖过服务器 config.debug。换标签页/清会话前，按钮显示的不一定是云端真值。
+/**
+ * 这个房间的调试模式到底算不算开着 —— 读取口径只有这一处。
+ * 试播按钮要按它决定开不开（云端【S-05p】同样按 config.debug 拦一道），显示态和写入
+ * 也都在下面两个函数里复用它；再写一遍"sessionStorage 优先"就是第二个口径的开始。
+ */
+function _roomDebugOn() {
+    var stored = sessionStorage.getItem('debug_' + s.rf);
+    if (stored !== null) return stored === '1';
+    var r = s.rooms.find(function(x) { return x.id === s.rf; });
+    if (!r) return false;
+    var cfg = {};
+    if (r.config) {
+        try { cfg = typeof r.config === 'string' ? JSON.parse(r.config) : r.config; }
+        catch (e) { cfg = {}; }
+    }
+    return cfg.debug === true;
+}
+
 async function updateRoomDebugToggle() {
     var el = document.getElementById('roomDebugToggle');
     var slider = document.getElementById('roomDebugSlider');
     var knob = document.getElementById('roomDebugKnob');
     if (!el || !slider || !knob) return;
-    // 优先读 sessionStorage（反映用户最后一次操作）
-    var stored = sessionStorage.getItem('debug_' + s.rf);
-    if (stored !== null) {
-        var on = stored === '1';
-        el.checked = on;
-        slider.style.background = on ? '#4caf50' : '#444';
-        knob.style.left = on ? '23px' : '3px';
-        return;
-    }
-    // 没有本地标记，从服务器数据读
-    var r = s.rooms.find(function(x) { return x.id === s.rf; });
-    if (!r) return;
-    var cfg = {};
-    if (r.config) {
-        try { cfg = typeof r.config === 'string' ? JSON.parse(r.config) : r.config; }
-        catch(e) { cfg = {}; }
-    }
-    var on = cfg.debug === true;
+    var on = _roomDebugOn();
     el.checked = on;
     slider.style.background = on ? '#4caf50' : '#444';
     knob.style.left = on ? '23px' : '3px';
@@ -2973,6 +2996,77 @@ async function rmRoomMat(e, mid) {
         room_id: s.rf, room_name: r.name, store_name: r.store_name || r.store,
         folder: s.f, material_id: mid, material_name: mat ? (mat.filename || mat.name) : mid
     });
+}
+
+// 【F-08d】 大屏试播（房间工作台「已映射素材」卡片上的 ▶ 试播）
+// 为什么值得单独一条链路：网页里双击预览只能看片子本身，而现场要判断的是"这只片子放进这扇窗
+// 好不好看"—— 位置/尺寸/裁剪/亮度全叠上之后的画面只有大屏能给（设备端就在同一个窗口播放器上换片，
+// 所以那些属性自动继承，所见即所得）。
+// 三条口径与云端【S-05p】对齐，改任何一边都要想到另一边：
+//   - 前端只报 (scene, folder, material_id)：目标窗口、带幕前缀的物理目录、落盘文件名一律服务端按
+//     房间配置算。这里刻意不再镜像一遍选窗规则 —— 设备/服务端已各有一份，第三份必然漂；
+//     要显示"占的是哪扇窗"，读接口响应里的 target 就行。
+//   - 只播设备本机已有的素材；服务端会拒（那只素材还没同步下去），拒因弹窗说清楚，不做两秒红字。
+//   - 下发是单向 MQTT：接口成功只代表"命令发出去了"。设备那边到底播没播、几点回去，
+//     看大屏左下角的 debug 状态文字与「日志」页 —— 所以按钮和提示里都不写"播放成功"这种话。
+// 闸门：只有房间开了调试模式才给这个按钮（云端同口径拦 409，两边都不是摆设）。
+var _pvDevExtRe = /\.(mp4|mkv|avi|mov|webm)$/i;   // 设备端播放链认的扩展名（APK playFolderInWindow / 云端 PREVIEW_VIDEO_RE 同一份表）
+
+/** 这只素材能不能在大屏上试播（图片素材压根不在设备播放链上，服务端也会拒） */
+function _pvOnDevice(name) { return _pvDevExtRe.test(String(name || '')); }
+
+/** 映射里的素材 id → 显示名：预设和素材库两条来源都要查（映射值两种 id 都合法） */
+function _roomMatName(mid) {
+    var m = s.pm ? s.pm.find(function(x) { return x.id === mid; }) : null;
+    if (!m) m = s.ms ? s.ms.find(function(x) { return x.id === mid; }) : null;
+    return m ? String(m.filename || m.name || mid) : String(mid);
+}
+
+async function pvMat(mid) {
+    if (!s.rf) return;
+    var scene = s._curScene || 'A';
+    var folder = s.f || '01';
+    try {
+        var d = await apiPost('/api/rooms/' + encodeURIComponent(s.rf) + '/preview',
+            { scene: scene, folder: folder, material_id: mid });
+        s._preview = {
+            roomId: s.rf, scene: scene, folder: folder, material_id: mid,
+            filename: d.filename || _roomMatName(mid),
+            win_name: (d.target && d.target.winName) || ''
+        };
+        openModal('<div style="padding:22px;text-align:center;line-height:1.9">▶ 试播命令已下发<br>'
+            + '<span style="color:#aaa;font-size:12px">' + esc(s._preview.filename)
+            + ' → ' + esc(s._preview.win_name || '窗口') + '（' + (d.devices || 0) + ' 台设备）</span><br>'
+            + '<span style="color:#666;font-size:11px">播完一遍会自动回到原画面。若大屏没动静，'
+            + '多半是这只素材还没同步到设备，看大屏左下角提示或「日志」页。</span></div>');
+        autoCloseModal(2800);
+    } catch (err) {
+        // 失败不静默、也不两秒消失：这条链路的教训就是"红字闪一下 + 不进操作记录"能把坏接口藏半年
+        openModal('<div style="padding:22px;text-align:center;color:#f44336;line-height:1.9">试播没发出去<br>'
+            + '<span style="color:#ccc;font-size:12px">' + esc(err.message) + '</span></div>');
+        return;
+    }
+    rmDevice();
+}
+
+async function stopPv() {
+    if (!s.rf || !s._preview) return;
+    var p = s._preview;
+    var url = '/api/rooms/' + encodeURIComponent(s.rf) + '/preview/stop';
+    try {
+        await apiPost(url, { scene: p.scene, folder: p.folder });
+    } catch (err) {
+        // 最常见的是 409"这一格已解析不到窗口"（配置刚改过）—— 那就直接用兜底键全停；
+        // 第二条也失败才把错报出来（取第二次的消息，那才是真正拦住请求的原因）
+        try { await apiPost(url, {}); }
+        catch (err2) {
+            openModal('<div style="padding:22px;text-align:center;color:#f44336;line-height:1.9">停止试播失败<br>'
+                + '<span style="color:#ccc;font-size:12px">' + esc(err2.message) + '</span></div>');
+            return;
+        }
+    }
+    s._preview = null;
+    rmDevice();
 }
 
 // 【F-11】 客户/店铺 & 房间两级 Tab // function rd()
@@ -3535,6 +3629,8 @@ function _opTone(action) {
     if (action === 'create' || action === 'authorize' || action === 'upload' || action === 'bind_room'
         || action === 'room_sync' || action === 'push_update' || action === 'push_update_all'
         || action === 'cp2p' || action === 'preset_map') return ' ok';
+    // 试播既不是改配置也不是删除：单独一档青色，免得在绿色"已完成动作"里被当成一次配置下发
+    if (action === 'preview' || action === 'preview_stop') return ' info';
     return '';
 }
 
@@ -3547,6 +3643,10 @@ function _opSummary(d) {
     if (d.name && String(d.name) !== String(who)) bits.push(String(d.name));
     if (d.newName) bits.push('→ ' + d.newName);
     if (d.version) bits.push('v' + d.version);
+    // 试播一条要看全"哪一幕哪一格 → 进哪扇窗、几台收到"：现场问"刚才大屏上那只谁点的、放到哪去了"，就靠这一行
+    if (d.scene && d.folder) bits.push('格 ' + d.scene + d.folder);
+    if (d.win_name || d.win_id) bits.push('窗 ' + (d.win_name || d.win_id));
+    if (d.devices != null) bits.push(d.devices + ' 台');
     if (d.command && d.command.action) bits.push('命令 ' + d.command.action);
     if (d.rooms_notified != null) bits.push('通知 ' + d.rooms_notified + ' 间房');
     if (d.rooms_updated != null) bits.push('连带 ' + d.rooms_updated + ' 间房');

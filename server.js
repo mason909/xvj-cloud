@@ -12,6 +12,7 @@
  * 【S-03】预设素材 API（/api/preset/materials*）
  * 【S-04】房间 CRUD API（/api/rooms*，含 PUT /api/rooms/:id/windows）
  * 【S-05】授权 & 设备管理 API（/api/devices*）
+ * 【S-05p】大屏试播（POST /api/rooms/:id/preview、/preview/stop + resolvePreviewTarget）
  * 【S-06】MQTT 消息处理 & 发送（mqttClient / publishToDeviceCommand / 载荷组装与变更收敛：
  *         roomSceneDigest / roomSyncFields / syncCommandPayload / notifyRoomConfigChanged /
  *         reconcileDeviceRev / resolveDeviceId（自报 id → 规范 devices.id，写 device_versions、
@@ -104,6 +105,7 @@
  *   1. APP 启动 → loadConfig() 读 SharedPreferences 的 scenes_json 缓存 → applySceneConfigs 恢复窗口
  *   2. MQTT 连上 → 发 register → 服务端回 xvj/auth/response（带 scenes）→ 缓存并再次 applySceneConfigs
  *   3. 收到 sync_room_materials / update_windows 等 command → 同步素材或只重排窗口
+ *      （preview_material / preview_stop 也在这一条主题上，但它是"过路命令"：见下面【试播】约定）
  *   4. 拿不到 scenes（未授权或离线）→ 停在欢迎视频 / 用 scenes_json 缓存
  *
  * 重要约定：
@@ -119,6 +121,10 @@
  *     没变→一条不发。前端不再自己补 POST /sync（手工点「同步当前房间」按钮除外）。
  *     兜底是 rev 对账：命令里带 rev=roomSceneDigest(config)，设备心跳回传已应用的 rev，
  *     服务端发现落后就补发一次（3 分钟/台节流），所以设备离线期间的变更会在上线后收敛。
+ *   - 【试播 preview_material】唯一一条"不进 config"的命令：不落库、不带 rev、不触发对账，
+ *     播完由设备自己回到原画面（见 S-05p 与 MainActivity.kt 的 startWindowPreview）。
+ *     正因为它不改配置，rev 对账永远不会替它兜底 —— 命令丢了就是没播，所以只在房间 debug
+ *     开启时开放，且失败原因一律回给前端，不做静默下发。
  */
 
 
@@ -228,6 +234,17 @@ function normalizeMaterialIds(v) {
 /** 场景键白名单：本模型只有 A/B 两幕。scenes[target] 的 target 来自请求体，
  *  `scenes['__proto__']` 是真值且赋值会写穿 Object.prototype（全进程共享），必须挡。 */
 function isSceneKey(k) { return k === 'A' || k === 'B'; }
+
+/**
+ * 素材行 → 设备本机那个文件名（唯一口径）。
+ * 设备不按 id 认文件、按 <目录>/<filename> 认，所以下发清单（room-materials-v2）、删本地文件、
+ * 试播定位必须用同一个回退链：filename 是老数据里可能为 NULL 的列，真值在 name（素材库）或
+ * 只有 filename（预设库没这列，查它时补 `NULL AS name`）。任何一处自己另写一条链，
+ * 就会算出另一个文件名，设备端的表现为"素材明明在，却说没有"。
+ */
+function manifestFilename(row) {
+  return row.filename || row.name || row.fullFilename || row.fname || row.id;
+}
 
 /** 是不是"普通对象"（排掉 null / 数组 / 字符串数字这些 typeof 也骗人的形状） */
 function isPlainObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
@@ -1180,7 +1197,8 @@ app.post('/api/devices/:id/block', (req, res) => {
 // 未知 action 一律 400，不透传 —— command 主题上的指令设备是照单执行的，不能靠前端自觉。
 // 老 APK(167) 里那条 preset_sync 分支只是留着没人调用，服务端先收掉入口即可，不需要设备升级。
 const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
-                        'update_windows', 'delete_material', 'update', 'set_debug'];
+                        'update_windows', 'delete_material', 'update', 'set_debug',
+                        'preview_material', 'preview_stop'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
@@ -1191,14 +1209,18 @@ app.post('/api/devices/:id/command', (req, res) => {
   if (DEVICE_ACTIONS.indexOf(command.action) === -1) {
     return res.status(400).json({ error: '不支持的 action: ' + command.action });
   }
-  // 这两条的载荷必须由服务端按房间当前配置生成：裸发 update_windows 会让 APK 收到一份没有 scenes
-  // 的窗口更新；裸发 delete_material 会照调用方随口给的 folder 前缀去删设备磁盘目录。
+  // 这几条的载荷必须由服务端按房间当前配置生成：裸发 update_windows 会让 APK 收到一份没有 scenes
+  // 的窗口更新；裸发 delete_material 会照调用方随口给的 folder 前缀去删设备磁盘目录；
+  // 裸发 preview_* 则等于让任何人指定"占掉现场哪扇窗、播哪个文件"。
   // 正确入口是 PUT /api/rooms/:id/windows 与 DELETE /api/rooms/:roomId/materials/:materialId，
   // 它们落库后自己会走通知漏斗（notifyRoomConfigChanged），不需要从这里补一发。
-  if (command.action === 'update_windows' || command.action === 'delete_material') {
+  // 【S-05p】试播同理：目标窗口和物理目录都要按房间当前配置算，裸发等于让调用方指定"占哪扇窗"
+  if (command.action === 'update_windows' || command.action === 'delete_material'
+      || command.action === 'preview_material' || command.action === 'preview_stop') {
     return res.status(400).json({
       error: command.action + ' 的载荷需由服务端按房间配置生成，请走对应的房间接口'
-        + '（窗口：PUT /api/rooms/:id/windows；删素材：DELETE /api/rooms/:roomId/materials/:materialId）'
+        + '（窗口：PUT /api/rooms/:id/windows；删素材：DELETE /api/rooms/:roomId/materials/:materialId；'
+        + '试播：POST /api/rooms/:roomId/preview）'
     });
   }
 
@@ -1240,6 +1262,185 @@ app.post('/api/devices/:id/command', (req, res) => {
     publishToDeviceCommand(rows[0], cmd);
     logAction('sync', 'device', { device_id: deviceId, command: cmd });
     res.json({ success: true, command: cmd });
+  });
+});
+
+// 【S-05p】 大屏试播：把房间里某一格素材，在"它本该出现的那扇窗"里放一遍，播完自动回到原来的画面。
+// 目的很具体：现场要判断某只片子放进这间包厢好不好看，而"好看"只在大屏上成立 ——
+// 网页里双击预览给的是片子本身，给不了窗口位置/尺寸/裁剪/亮度叠出来的最终画面。
+// 三条硬约束，缺一条这条链路就不该存在：
+//   1. 纯运行时命令：不写 rooms.config、不动 folder_mappings ⇒ roomSceneDigest / rev 不变，
+//      心跳对账（reconcileDeviceRev）就不会把试播误判成"设备没跟上配置"而补发同步把它踢掉。
+//   2. 载荷由服务端按房间当前配置算：目标窗口、带幕前缀的物理目录、落盘文件名都不让调用方给。
+//   3. 只播设备本机已有的文件：试播不下载、不改清单，素材没到位就直接回错，让人先去点同步。
+// 闸门挂在房间 debug 上（与设备侧进度条/状态文字同一口径）：这是运维工具，既不该在营业中的
+// 客人面前被误点，也不该给"任何拿到页面、又能从前端提出 x-api-key 的人"留一个随时占屏的入口。
+const PREVIEW_MAX_MS = 5 * 60 * 1000;
+// 设备端播放链只认这几个扩展名（与 APK playFolderInWindow 的过滤表同源）；图片素材不在链上
+const PREVIEW_VIDEO_RE = /\.(mp4|mkv|avi|mov|webm)$/i;
+
+/**
+ * 房间 config → "这一格的素材该落在哪扇窗"（与 APK applySceneConfigs 的选窗规则同口径）：
+ *   候选 = 这一幕里 enabled 不为 false、content.type 是 SCENE_<本幕>、且绑的就是这一格；
+ *          content.folderId 为空时按 APK 的"自动取本幕第一个有素材的文件夹"回退
+ *   多个命中取 zIndex 最大 —— APK 按 zIndex 升序 addView，最后加的那个盖在最上层，
+ *   在它上面试播才是现场真看得见的画面。
+ * 数据一律取 buildPrefixedScenes 的结果：键已带幕前缀且已排序，正是 APK 遍历的那一份，
+ * 自己再拼前缀/再排一次序就是第四处口径漂移的开始。
+ * @returns {{winId:string, winName:string, physicalFolder:string}|null}
+ */
+function resolvePreviewTarget(cfg, scene, folder) {
+  const scenes = buildPrefixedScenes((cfg && cfg.scenes) || {});
+  const sceneData = scenes[scene];
+  if (!sceneData) return null;
+  const mappings = sceneData.folder_mappings;
+  const wanted = prefixedFolderKey(scene, folder);
+  const windows = ['A', 'B'].reduce((n, k) => n + (((scenes[k] || {}).windows) || []).length, 0);
+  // 两幕一个窗口都没配 → APK 会自建那个默认全屏窗口（win_1，播 A 幕第一个有素材的文件夹）。
+  // 新房间第一次试片恰好就是这个状态，漏掉它等于"没配窗口的房间不能试播"。
+  if (windows === 0) {
+    if (scene !== 'A') return null;
+    const auto = Object.keys(mappings).find(k => (mappings[k] || []).length > 0);
+    return auto === wanted ? { winId: 'win_1', winName: '窗口1（默认）', physicalFolder: wanted } : null;
+  }
+  // 未指定文件夹的窗口播哪一个：APK 取映射里第一个非空文件夹，排序在 buildPrefixedScenes 里已做完
+  const autoFolder = Object.keys(mappings).find(k => (mappings[k] || []).length > 0);
+  const matched = (sceneData.windows || []).filter(w => {
+    if (!isPlainObject(w) || w.enabled === false) return false;
+    const c = isPlainObject(w.content) ? w.content : {};
+    if (String(c.type || '').toUpperCase() !== 'SCENE_' + scene) return false;
+    const req = String(c.folderId || '').trim();
+    return req ? prefixedFolderKey(scene, req) === wanted : autoFolder === wanted;
+  });
+  if (matched.length === 0) return null;
+  const top = matched.reduce((a, b) => (Number(b.zIndex) || 0) > (Number(a.zIndex) || 0) ? b : a);
+  return { winId: String(top.id), winName: String(top.name || top.id), physicalFolder: wanted };
+}
+
+/**
+ * 试播的下发前公共校验：房间 → debug 闸门 → 目标窗口 → 映射 → 素材记录 → 房间内授权设备，
+ * 任一环不成立就把原因回给前端（这一步的失败必须看得见，见下面路由里的注释）。
+ * @param {string} roomId
+ * @param {{scene?:string, folder?:string, material_id?:string}} body
+ * @param {(code:number, msg:string)=>void} fail
+ * @param {(ctx:object)=>void} ok
+ */
+function preparePreview(roomId, body, fail, ok) {
+  const scene = String((body && body.scene) || 'A').toUpperCase();
+  const folder = String((body && body.folder) || '').trim();
+  const materialId = String((body && body.material_id) || '').trim();
+  if (!isSceneKey(scene)) return fail(400, 'scene 只能是 A 或 B');
+  if (!isSafeFolderName(folder)) return fail(400, '文件夹编号不合法: ' + folder);
+  if (!materialId) return fail(400, '缺少 material_id');
+
+  db.query('SELECT name, config FROM rooms WHERE id = ?', [roomId], (err, rows) => {
+    if (err) return fail(500, '房间查询失败: ' + err.message);
+    if (!rows || rows.length === 0) return fail(404, '房间不存在');
+    const cfg = parseRoomConfig(rows[0].config);
+    if (!roomDebugFlag(cfg)) {
+      return fail(409, '试播只在房间调试模式开启时可用：先在窗口配置里打开「应用调试模式」');
+    }
+    const target = resolvePreviewTarget(cfg, scene, folder);
+    if (!target) {
+      return fail(409, '这一幕 ' + folder + ' 没有可试播的视频窗口：'
+        + '需要有一个启用的窗口，内容类型是本幕素材且绑定了这一格文件夹');
+    }
+    const mappings = normalizeFolderMappings(((cfg.scenes || {})[scene] || {}).folder_mappings);
+    const ids = normalizeMaterialIds(mappings[folder] || mappings[target.physicalFolder]);
+    if (ids.indexOf(materialId) === -1) {
+      return fail(400, '该素材不在本房间 ' + scene + ' 幕 ' + folder + ' 的映射里，请先映射再试播');
+    }
+
+    // 素材记录：映射里的 id 可能是素材库的也可能是预设的（两条写入者，见记忆里的"三层不是纯三层"），
+    // 所以两张表都要查。列名不同（预设没有 name），各自 SELECT 自己有的列，不做跨表 UNION
+    // —— 那条路走过一次，代价是整个删除接口静默 500。id 也取：manifestFilename 的最后一级兜底靠它。
+    db.query('SELECT id, filename, name, type FROM materials WHERE id = ?', [materialId], (errM, rowsM) => {
+      if (errM) return fail(500, '素材查询失败: ' + errM.message);
+      const done = (row) => {
+        if (!row) return fail(410, '素材记录已不存在（映射里的悬空引用），请先同步让两边对齐');
+        const filename = manifestFilename(row);
+        if (!PREVIEW_VIDEO_RE.test(filename)) {
+          return fail(400, '试播只支持视频（设备端播放链不认 ' + String(filename).replace(/^.*\./, '.') + '）');
+        }
+        db.query('SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
+          [roomId], (errD, devs) => {
+            if (errD) return fail(500, '设备查询失败: ' + errD.message);
+            if (!devs || devs.length === 0) return fail(409, '房间内没有已授权设备，无从试播');
+            ok({ cfg, scene, folder, materialId, target, filename, devs,
+                 roomName: rows[0].name, type: row.type || 'video' });
+          });
+      };
+      if (rowsM && rowsM.length > 0) return done(rowsM[0]);
+      db.query('SELECT id, filename, NULL AS name, type FROM preset_materials WHERE id = ?',
+        [materialId], (errP, rowsP) => {
+          if (errP) return fail(500, '素材查询失败: ' + errP.message);
+          done(rowsP && rowsP[0] ? rowsP[0] : null);
+        });
+    });
+  });
+}
+
+// POST /api/rooms/:id/preview  body: { scene:'A'|'B', folder:'01', material_id }
+//   成功只说明"命令已按房间配置发出去了"。设备那边还有一层判定（本机到底有没有这只文件、
+//   窗口在不在），那一层的成败走设备日志与大屏 debug 浮层回来看 —— 这是 MQTT 单向通道的既有形状，
+//   本接口不假装自己知道结果。
+app.post('/api/rooms/:id/preview', (req, res) => {
+  const roomId = req.params.id;
+  preparePreview(roomId, req.body, (code, msg) => res.status(code).json({ error: msg }), (ctx) => {
+    const payload = {
+      action: 'preview_material',
+      room_id: roomId,
+      win_id: ctx.target.winId,
+      win_name: ctx.target.winName,
+      folder_id: ctx.target.physicalFolder,   // 已带幕前缀，APK 直接过 materialDirOf
+      filename: ctx.filename,                 // 与同步落盘名同源（manifestFilename）
+      max_ms: PREVIEW_MAX_MS,
+      timestamp: Date.now()
+    };
+    ctx.devs.forEach(d => publishToDeviceCommand(d, payload));
+    logAction('preview', 'room', {
+      // room_id 而非 id：与其它房间类审计（room_sync）同一个键，操作记录页的摘要取的就是 room_id
+      room_id: roomId, room: ctx.roomName, scene: ctx.scene, folder: ctx.folder,
+      material_id: ctx.materialId, filename: ctx.filename,
+      win_id: ctx.target.winId, win_name: ctx.target.winName, devices: ctx.devs.length
+    });
+    res.json({ success: true, target: ctx.target, filename: ctx.filename, devices: ctx.devs.length });
+  });
+});
+
+// POST /api/rooms/:id/preview/stop  body: { scene?, folder? } —— 带了就把那一格的试播停掉，不带则全停
+//   （"全停"是给人按的兜底键：页面刷新丢了目标、或配置改动后那一扇窗已经解析不出来时用它清场）
+app.post('/api/rooms/:id/preview/stop', (req, res) => {
+  const roomId = req.params.id;
+  const b = req.body || {};
+  const scene = b.scene ? String(b.scene).toUpperCase() : '';
+  const folder = b.folder ? String(b.folder).trim() : '';
+  if ((scene || folder) && (!isSceneKey(scene) || !isSafeFolderName(folder))) {
+    return res.status(400).json({ error: 'scene/folder 不合法' });
+  }
+  db.query('SELECT config FROM rooms WHERE id = ?', [roomId], (err, rows) => {
+    if (err) return res.status(500).json({ error: '房间查询失败: ' + err.message });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: '房间不存在' });
+    const cfg = parseRoomConfig(rows[0].config);
+    if (!roomDebugFlag(cfg)) {
+      return res.status(409).json({ error: '试播只在房间调试模式开启时可用' });
+    }
+    const payload = { action: 'preview_stop', room_id: roomId, timestamp: Date.now() };
+    if (scene && folder) {
+      const target = resolvePreviewTarget(cfg, scene, folder);
+      if (!target) return res.status(409).json({ error: '这一幕 ' + folder + ' 已解析不到窗口，请用「全部停止」' });
+      payload.win_id = target.winId;
+      payload.win_name = target.winName;
+    }
+    db.query('SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
+      [roomId], (errD, devs) => {
+        if (errD) return res.status(500).json({ error: '设备查询失败: ' + errD.message });
+        if (!devs || devs.length === 0) return res.status(409).json({ error: '房间内没有已授权设备' });
+        devs.forEach(d => publishToDeviceCommand(d, payload));
+        logAction('preview_stop', 'room',
+          { room_id: roomId, win_id: payload.win_id || 'ALL', win_name: payload.win_name || '全部窗口', devices: devs.length });
+        res.json({ success: true, win_id: payload.win_id || 'ALL', devices: devs.length });
+      });
   });
 });
 
@@ -2197,7 +2398,7 @@ app.get('/api/room-materials-v2/:roomId', (req, res) => {
               if (!merged[row.id]) {
                 merged[row.id] = {
                   id: row.id,
-                  filename: row.filename || row.name || row.fullFilename || row.fname || row.id,
+                  filename: manifestFilename(row),
                   url: row.url,
                   md5: row.md5 || '',
                   folder: row.folder || row.folder_id || '',   // 预设素材的文件夹列叫 folder_id，不能漏成空串
