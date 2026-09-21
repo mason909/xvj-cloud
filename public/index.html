@@ -1516,7 +1516,12 @@ function rmDevice() {
             else unresolved.push(mid);
         });
     }
-    var h2 = '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><span style="font-weight:bold">已映射素材</span><button class="btn btn-primary" style="padding:5px 15px;font-size:12px" onclick="mapPreset()">映射预设</button></div>';
+    // 两个入口分开，别再让"点一下"和"整库灌入"是同一件事：
+    // 前者跟着上方选中的 01-30 标签走（停在 03 就只灌 03），后者是显式的批量动作、要二次确认。
+    var h2 = '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><span style="font-weight:bold">已映射素材</span><span>'
+        + '<button class="btn btn-primary" style="padding:5px 15px;font-size:12px" title="只映射上方当前选中的 ' + esc(s.f || '') + ' 文件夹" onclick="mapPreset()">映射本文件夹预设</button>'
+        + '<button class="btn" style="padding:5px 10px;font-size:12px;margin-left:6px;background:#6c757d;color:#fff" title="把预设库 01-30 全部映射进当前这一幕（设备会照着清单整个下一遍）" onclick="mapPreset(\'ALL\')">整库</button>'
+        + '</span></div>';
     h2 += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px">';
     if (all.length === 0) {
         // 分清楚"真没映射"和"映射了但查不到记录"：前者提示去映射，后者是悬空引用
@@ -1525,7 +1530,7 @@ function rmDevice() {
             ? '<div class="empty">映射里有 ' + unresolved.length + ' 条记录在素材库和预设库里都查不到（悬空引用）：'
               + esc(unresolved.slice(0, 5).join('、')) + (unresolved.length > 5 ? ' 等' : '')
               + '。设备侧清单会跳过这些 id，点「🔄 同步当前房间」让它们对齐。</div>'
-            : '<div class="empty">无素材，点击"映射预设"从预设库添加</div>';
+            : '<div class="empty">无素材，点击"映射本文件夹预设"从预设库 ' + esc(s.f || '') + ' 添加</div>';
     }
     else {
         all.forEach(function(m) {
@@ -2760,20 +2765,39 @@ async function saveWindows(silent) {
     } catch(e) { alert('保存失败: ' + e.message); if (btn) { btn.textContent='💾 保存并推送'; btn.classList.remove('saving'); } }
 }
 
-async function mapPreset() {
-    console.log('mapPreset called, s.rf:', s.rf, 's.f:', s.f);
+// 把预设库映射进"当前这一幕"。scope 省略 = 只映射房间视图上方选中的那个文件夹标签（s.f）；
+// scope === 'ALL' = 整个预设库（按钮组里的「整库」，把预设库当模板一次性铺满一幕时才用）。
+// 为什么默认要收窄到当前文件夹：以前这里无条件灌整库（那段代码里的 allPresets 从前叫
+// presetInFolder，是按文件夹映射年代留下的名字），停在 03 标签点一下按钮，
+// 设备就照着新清单把 01-30 整个下一遍，而界面下方"已映射素材"只渲染 s.f 那一格，
+// 看不出另外 29 档被塞了什么。整库那档保留成显式入口 + 二次确认，不再藏在默认行为里。
+async function mapPreset(scope) {
+    var whole = (scope === 'ALL');
     if (!s.rf) { alert('请先选择房间'); return; }
+    var fid = s.f;
+    // 与服务端 PRESET_FOLDER_RE 同形（01-30）。fid 会直接当 folder_mappings 的键写进 config，
+    // 非法键服务端 normalizeFolderMappings 会静默剪掉，而弹窗照样报"已映射 N 个" —— 那是假成功。
+    if (!whole && (typeof fid !== 'string' || !/^(0[1-9]|[12]\d|30)$/.test(fid))) {
+        alert('请先在上方选择一个素材文件夹标签（01-30）'); return;
+    }
     // 加载预设素材 + 素材库（去重要拿两边的 url 比）
     var pm, ms;
     try {
         pm = asList(await apiGet('/api/preset/materials'));
         ms = asList(await apiGet('/api/materials'));
     } catch (e) { alert('读取素材列表失败: ' + e.message); return; }
-    // ⚠️ 这是"整个预设库 → 当前这一幕"的全量灌入，不是只灌当前文件夹（老变量名叫 presetInFolder，
-    // 是从前按文件夹映射的年代留下来的，容易让人以为它会跟着上面选中的 01-30 标签走）。
-    // 只增不减：已映射的按 id/url 去重保留，本幕里多余的历史映射不会被这次操作清掉。
-    var allPresets = pm;
-    if (allPresets.length === 0) { alert('预设素材库为空，请先在预设素材页面添加'); return; }
+    // 只增不减：已映射的按 id/url 去重保留，本幕里多余的历史映射不会被这次操作清掉
+    //（"覆盖本幕"是删除语义 —— 摘掉映射设备就会删文件，且 folder_mappings 还有
+    //  doPushToRoom 这个写入者，两条链路互相覆盖会踩掉对方的成果，要做得先定归属规则）
+    var allPresets = whole ? pm : pm.filter(function(m) { return m.folder_id === fid; });
+    if (whole) {
+        if (pm.length === 0) { alert('预设素材库为空，先在素材页点素材上的「预设」复制'); return; }
+        if (!confirm('把预设库全部 ' + pm.length + ' 条素材映射进' + (s._curScene === 'B' ? '第二幕' : '第一幕')
+            + '的 01-30 各文件夹？\n设备会按新清单把缺的素材全部下载到本机。')) return;
+    } else if (allPresets.length === 0) {
+        alert('预设库 ' + fid + ' 文件夹是空的：先在素材页选中该文件夹，再点素材上的「预设」按钮复制');
+        return;
+    }
     // 基底必须现拉，不能用 s.rooms 里那份快照：那可能是几分钟前甚至上次切店前的数据，
     // 而这里是整份 config PUT 回去 —— 期间别人/别的标签页改的窗口和另一幕会被静默回退。
     var r;
@@ -2819,11 +2843,15 @@ async function mapPreset() {
             body: JSON.stringify({config: JSON.stringify(cfg)})
         });
     } catch (e) { alert('映射保存失败: ' + e.message); return; }
-    alert('已把预设库里 ' + count + ' 条新素材映射进' + (curS === 'A' ? '第一幕' : '第二幕')
-        + '（同文件夹里已有同文件的会跳过' + (skipped > 0 ? '；另有 ' + skipped + ' 个文件夹名非法，已跳过' : '') + '）');
+    alert((whole ? '已把预设库全部素材中的 ' : '已把预设库 ' + fid + ' 里的 ') + count + ' 条新素材映射进'
+        + (curS === 'A' ? '第一幕' : '第二幕') + (whole ? '' : '的 ' + fid + ' 文件夹')
+        + '（同文件夹里已有同文件的会跳过' + (skipped > 0 ? '；另有 ' + skipped + ' 条文件夹名非法，已跳过' : '') + '）');
     lr();
     // PUT /api/rooms/:id 落库后服务端收敛点已比较映射指纹并通知设备，这里不再补 doSyncRoom
-    logAction('preset_map', 'room', { room_id: s.rf, room_name: r.name, store_name: r.store_name || r.store, count: count });
+    logAction('preset_map', 'room', {
+        room_id: s.rf, room_name: r.name, store_name: r.store_name || r.store,
+        scope: whole ? 'ALL' : fid, count: count
+    });
     updateRoomDebugToggle();
 }
 
