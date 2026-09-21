@@ -1,0 +1,195 @@
+// One-shot probe for the 大屏试播 (preview) feature. ASCII-only payloads; comments may be Chinese.
+// Run from /var/www/xvj:  node probe-preview.js
+// Creates throwaway rooms/devices/material rows (all ids prefixed zzpv), drives the HTTP routes on
+// localhost, captures what actually lands on MQTT, then deletes every row it created.
+const http = require('http');
+const mqtt = require('mqtt');
+const config = require('./config');
+const mysql = require('mysql2');
+
+const conn = mysql.createConnection({
+  host: config.database.host, user: config.database.user,
+  password: config.database.password, database: config.database.name, charset: 'utf8mb4'
+});
+const q = (sql, args) => new Promise((res, rej) => conn.query(sql, args, (e, r) => e ? rej(e) : res(r)));
+
+const KEY = config.apiKey;
+function req(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : null;
+    const r = http.request({
+      host: '127.0.0.1', port: config.port || 3000, path, method,
+      headers: Object.assign({ 'x-api-key': KEY },
+        data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {})
+    }, res => {
+      let buf = '';
+      res.on('data', d => buf += d);
+      res.on('end', () => { let j = null; try { j = JSON.parse(buf); } catch (e) { } resolve({ code: res.statusCode, j, buf }); });
+    });
+    r.on('error', reject);
+    if (data) r.write(data);
+    r.end();
+  });
+}
+
+let pass = 0, fail = 0;
+const check = (name, ok, detail) => { if (ok) { pass++; console.log('PASS ' + name); } else { fail++; console.log('FAIL ' + name + ' << ' + detail); } };
+const isErr = (name, r, code, needle) => {
+  const msg = (r.j && r.j.error) || r.buf || '';
+  check(name + ' -> ' + code, r.code === code && msg.indexOf(needle) >= 0, 'got ' + r.code + ' ' + JSON.stringify(r.j));
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const VID = 'zzpvvid0000000000000000000001';
+const IMG = 'zzpvidx0000000000000000000001';
+const OTHER = 'zzpvoth0000000000000000000001';
+const RM = 'zzpvroom_main';       // windowed + device  -> success path, top window wins
+const RD = 'zzpvroom_default';    // no windows + device -> default win_1
+const RN = 'zzpvroom_nodev';      // no windows, no device
+const RX = 'zzpvroom_nodebug';    // debug off
+const RW = 'zzpvroom_wrongwin';   // every window binds 02, mapping is 01
+const DEV1 = 'zzpvdev1', FP1 = 'zzpvfp1';
+const DEV2 = 'zzpvdev2', FP2 = 'zzpvfp2';
+
+// 三种窗口形态：不配窗口 / 一层绑 01、一层自动、一层禁用但 z 最高 / 只绑 02
+function cfgOf(kind, debug) {
+  const windows = kind === 'none' ? [] : kind === 'wrong'
+    ? [{ id: 'win_9', name: 'Only02', enabled: true, zIndex: 5, content: { type: 'SCENE_A', folderId: '02' } }]
+    : [
+      { id: 'win_1', name: 'Bottom', enabled: true, zIndex: 1, content: { type: 'SCENE_A', folderId: '01' } },
+      { id: 'win_2', name: 'TopLayer', enabled: true, zIndex: 9, content: { type: 'SCENE_A', folderId: '' } },
+      { id: 'win_3', name: 'DisabledTop', enabled: false, zIndex: 99, content: { type: 'SCENE_A', folderId: '01' } }
+    ];
+  return { debug: debug !== false, scenes: {
+    A: { name: 'A', folder_mappings: { '01': [VID, IMG] }, windows: windows, master: { brightness: 1 } },
+    B: { name: 'B', folder_mappings: {}, windows: [], master: {} }
+  } };
+}
+
+const captured = [];
+
+async function main() {
+  await q("DELETE FROM rooms WHERE id LIKE 'zzpvroom%'");
+  await q("DELETE FROM devices WHERE id LIKE 'zzpvdev%'");
+  await q("DELETE FROM materials WHERE id LIKE 'zzpv%'");
+  const mat = (id, fn, type) => q("INSERT INTO materials (id,name,filename,url,type,folder) VALUES (?,?,?,?,?,?)",
+    [id, 'Probe ' + fn, fn, '/uploads/01/' + fn, type, '01']);
+  await mat(VID, 'probe-video.mp4', 'video');
+  await mat(IMG, 'probe-img.png', 'image');
+  await mat(OTHER, 'probe-other.mp4', 'video');
+
+  const mkRoom = (id, cfg) => q("INSERT INTO rooms (id,store_name,name,folder_mappings,config) VALUES (?,?,?,?,?)",
+    [id, 'zzpvstore', id.replace('zzpvroom_', 'zzpv '), '{}', JSON.stringify(cfg)]);
+  await mkRoom(RM, cfgOf('mixed'));
+  await mkRoom(RD, cfgOf('none'));
+  await mkRoom(RN, cfgOf('none'));
+  await mkRoom(RX, cfgOf('none', false));
+  await mkRoom(RW, cfgOf('wrong'));
+
+  const mkDev = (id, fp, room) => q("INSERT INTO devices (id,name,fingerprint,mqtt_id,model,authorized,room_id,store,status) VALUES (?,?,?,?,?,?,?,?,?)",
+    [id, 'zzpv dev', fp, id, 'probe', 1, room, 'zzpvstore', 'offline']);
+  await mkDev(DEV1, FP1, RM);
+  await mkDev(DEV2, FP2, RD);
+
+  const client = mqtt.connect('mqtt://' + config.mqtt.host + ':' + config.mqtt.port,
+    { username: config.mqtt.username || undefined, password: config.mqtt.password || undefined });
+  await new Promise((res, rej) => { client.on('connect', res); client.on('error', rej); setTimeout(() => rej(new Error('mqtt timeout')), 8000); });
+  client.subscribe([DEV1, FP1, DEV2, FP2].map(t => 'xvj/device/' + t + '/command'));
+  client.on('message', (t, m) => captured.push({ topic: t, text: m.toString() }));
+  console.log('SETUP OK');
+  // 其余房间（含现场那间 201）的配置必须一字不动 —— 试播不该在任何地方留下配置痕迹
+  const roomsBefore = (await q("SELECT id, MD5(config) m FROM rooms WHERE id NOT LIKE 'zzpv%' ORDER BY id"))
+    .map(r => r.id + '=' + r.m).join('|');
+
+  const P = (room, body) => req('POST', '/api/rooms/' + room + '/preview', body);
+  const beforeCfg = (await q("SELECT config FROM rooms WHERE id=?", [RM]))[0].config;
+
+  // 入参校验
+  isErr('scene invalid', await P(RM, { scene: 'C', folder: '01', material_id: VID }), 400, 'scene');
+  isErr('folder unsafe', await P(RM, { scene: 'A', folder: '../x', material_id: VID }), 400, '不合法');
+  isErr('no material_id', await P(RM, { scene: 'A', folder: '01' }), 400, 'material_id');
+  isErr('room missing', await P('zzpvroom_none', { scene: 'A', folder: '01', material_id: VID }), 404, '房间不存在');
+
+  // 闸门
+  isErr('debug off', await P(RX, { scene: 'A', folder: '01', material_id: VID }), 409, '调试模式');
+  isErr('windows bind another folder', await P(RW, { scene: 'A', folder: '01', material_id: VID }), 409, '没有可试播的视频窗口');
+  isErr('scene B has nothing', await P(RM, { scene: 'B', folder: '01', material_id: VID }), 409, '没有可试播的视频窗口');
+  isErr('image rejected', await P(RM, { scene: 'A', folder: '01', material_id: IMG }), 400, '只支持视频');
+  isErr('material not in mapping', await P(RM, { scene: 'A', folder: '01', material_id: OTHER }), 400, '不在本房间');
+  isErr('no authorized device', await P(RN, { scene: 'A', folder: '01', material_id: VID }), 409, '已授权设备');
+
+  // 成功：配了窗口的房间，取 zIndex 最高的启用窗（禁用的 win_3 不算）
+  captured.length = 0;
+  let r = await P(RM, { scene: 'A', folder: '01', material_id: VID });
+  check('windowed 200', r.code === 200 && r.j && r.j.success === true, JSON.stringify(r.j));
+  check('picks win_2 (TopLayer) by zIndex', r.j && r.j.target && r.j.target.winId === 'win_2' && r.j.target.winName === 'TopLayer', JSON.stringify(r.j && r.j.target));
+  check('physical folder prefixed A01', r.j && r.j.target && r.j.target.physicalFolder === 'A01', JSON.stringify(r.j && r.j.target));
+  check('filename = manifest name', r.j && r.j.filename === 'probe-video.mp4', JSON.stringify(r.j));
+  check('devices counted', r.j && r.j.devices === 1, JSON.stringify(r.j));
+  await sleep(600);
+  let msgs = captured.map(c => { try { return JSON.parse(c.text); } catch (e) { return {}; } }).filter(p => p.action === 'preview_material');
+  check('MQTT carried preview_material x2 topics', msgs.length === 2, 'captured=' + captured.length);
+  if (msgs.length) {
+    const m = msgs[0];
+    check('payload shape', m.win_id === 'win_2' && m.folder_id === 'A01' && m.filename === 'probe-video.mp4'
+      && m.max_ms === 300000 && m.room_id === RM && typeof m.timestamp === 'number', JSON.stringify(m));
+  }
+
+  // 成功：一窗未配的房间走 APK 自建默认窗 win_1
+  captured.length = 0;
+  r = await P(RD, { scene: 'A', folder: '01', material_id: VID });
+  check('default-window room 200 win_1', r.code === 200 && r.j && r.j.target && r.j.target.winId === 'win_1', JSON.stringify(r.j));
+  await sleep(500);
+  check('published to id + fingerprint topics', captured.length === 2 && captured.every(c => c.text.indexOf('preview_material') >= 0),
+    JSON.stringify(captured.map(c => c.topic)));
+
+  // 停止：定向 + 兜底全停
+  captured.length = 0;
+  r = await req('POST', '/api/rooms/' + RM + '/preview/stop', { scene: 'A', folder: '01' });
+  check('stop targeted 200 win_2', r.code === 200 && r.j && r.j.win_id === 'win_2', JSON.stringify(r.j));
+  r = await req('POST', '/api/rooms/' + RD + '/preview/stop', {});
+  check('stop all 200 ALL', r.code === 200 && r.j && r.j.win_id === 'ALL', JSON.stringify(r.j));
+  r = await req('POST', '/api/rooms/' + RW + '/preview/stop', { scene: 'A', folder: '01' });
+  isErr('stop unparsable window -> ALL fallback refused', r, 409, '全部停止');
+  await sleep(500);
+  const stops = captured.map(c => { try { return JSON.parse(c.text); } catch (e) { return {}; } }).filter(p => p.action === 'preview_stop');
+  check('stop payload: win_id present / absent', stops.length >= 4
+    && stops.some(p => p.win_id === 'win_2') && stops.some(p => p.win_id === undefined), JSON.stringify(stops));
+
+  // 裸发命令通道必须拒掉这几条（路由体形状是 { command: {...} }）
+  for (const a of ['preview_material', 'preview_stop', 'update_windows', 'delete_material']) {
+    isErr('command route blocks ' + a, await req('POST', '/api/devices/' + DEV1 + '/command', { command: { action: a } }), 400, '需由服务端');
+  }
+  check('stop action still allowed on command route',
+    (await req('POST', '/api/devices/' + DEV1 + '/command', { command: { action: 'stop' } })).code === 200, 'blocked too?');
+
+  // 不留痕：配置与 rev 都不该被动过
+  const afterCfg = (await q("SELECT config FROM rooms WHERE id=?", [RM]))[0].config;
+  check('rooms.config untouched', beforeCfg === afterCfg, 'config changed');
+  const roomsAfter = (await q("SELECT id, MD5(config) m FROM rooms WHERE id NOT LIKE 'zzpv%' ORDER BY id"))
+    .map(r => r.id + '=' + r.m).join('|');
+  check('other rooms untouched (incl. live 201)', roomsBefore === roomsAfter, 'config digest differs');
+  const logs = await q("SELECT action,details FROM operation_logs WHERE action LIKE 'preview%' ORDER BY id DESC LIMIT 10");
+  check('audit rows written', logs.length >= 3, 'rows=' + logs.length);
+  const pv = logs.map(l => ({ a: l.action, d: JSON.parse(l.details) }))
+    .find(x => x.a === 'preview' && x.d.room_id === RM);   // 取本次那间房的，不是"最新一条"（那可能是默认窗那间）
+  if (pv) {
+    const d = pv.d;
+    check('audit details useful', d.room_id === RM && d.win_name === 'TopLayer' && d.devices === 1 && d.filename === 'probe-video.mp4', pv.details);
+  } else { check('audit details useful', false, 'no preview row for ' + RM); }
+  client.end(true);
+}
+
+main().then(() => { }).catch(e => console.log('THROWN ' + e.stack)).then(async () => {
+  await q("DELETE FROM rooms WHERE id LIKE 'zzpvroom%'");
+  await q("DELETE FROM devices WHERE id LIKE 'zzpvdev%'");
+  await q("DELETE FROM materials WHERE id LIKE 'zzpv%'");
+  const left = await q("SELECT (SELECT COUNT(*) FROM rooms WHERE id LIKE 'zzpv%') r," +
+    "(SELECT COUNT(*) FROM devices WHERE id LIKE 'zzpv%') d," +
+    "(SELECT COUNT(*) FROM materials WHERE id LIKE 'zzpv%') m," +
+    "(SELECT COUNT(*) FROM preset_materials WHERE id LIKE 'zzpv%') p," +
+    "(SELECT COUNT(*) FROM preset_folders WHERE id LIKE 'zzpv%') f");
+  console.log('TEARDOWN leftovers ' + JSON.stringify(left[0]));
+  console.log('== pass=' + pass + ' fail=' + fail);
+  process.exit(fail ? 1 : 0);
+});
