@@ -26,7 +26,7 @@
  * ─────────────────────────────────────────────
  *
  * 核心表：
- *   materials          - 素材库（原始视频文件，上传时重封装为 faststart，md5 存的是重封装后的字节）
+ *   materials          - 素材库（视频上传时重封装为 faststart；md5 存的是落盘后字节的摘要，视频在重封装之后才算）
  *   preset_materials   - 预设素材（从素材库复制，可跨房间复用）
  *   rooms              - 房间配置中心。真相在 config 这个 JSON 列
  *                        （config.scenes.A/B.folder_mappings 才是设备同步依据）；
@@ -1291,8 +1291,13 @@ app.delete('/api/rooms/:roomId/materials/:materialId', (req, res) => {
   if (!isSceneKey(curScene)) return res.status(400).json({ error: 'scene 只能是 A 或 B' });
 
   // 1. 查出文件名（查 materials 和 preset_materials 两个表）
+  // ⚠️ 两张表的列不一样：materials 有 name（用户起的显示名）+ filename，预设只有 filename。
+  // 以前第二条也写 `SELECT filename, name`，UNION 是整条语句一起失败的 —— 于是不管摘的是素材库
+  // 还是预设，这个删除接口都稳定回 500 "Unknown column 'name'"，房间视图里的「×」从来就没生效过
+  // （前端只弹两秒红字，很容易被当成"网络抖了一下"）。预设那侧用 NULL 占位，
+  // 下面 `filename || name` 的回退链照旧成立。
   db.query(
-    'SELECT filename, name FROM materials WHERE id = ? UNION SELECT filename, name FROM preset_materials WHERE id = ?',
+    'SELECT filename, name FROM materials WHERE id = ? UNION SELECT filename, NULL AS name FROM preset_materials WHERE id = ?',
     [materialId, materialId],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
@@ -1600,7 +1605,8 @@ app.post('/api/preset/materials', (req, res) => {
   // 写死的 01-30，这种记录在界面上永远渲染不出来，成了看不见也删不掉的暗格。
   // 所以这里比素材库更严（那边目录名真是用户起的），只收 01-30。
   // 存量安全：线上 preset_materials.folder_id 全是 '01'（2026-09-20 核过），收紧不打到已有数据。
-  if (!PRESET_FOLDER_RE.test(String(folder_id))) return res.status(400).json({ error: 'folder_id 只能是 01-30' });
+  const fid = String(folder_id);
+  if (!PRESET_FOLDER_RE.test(fid)) return res.status(400).json({ error: 'folder_id 只能是 01-30' });
   // 这条 url 会被前端当播放地址、也会被删素材时当磁盘路径用，只允许指向 uploads 根内
   if (!resolveUploadPath(url)) return res.status(400).json({ error: 'invalid url' });
   if (thumbnail && !resolveUploadPath(thumbnail)) return res.status(400).json({ error: 'invalid thumbnail' });
@@ -1610,26 +1616,41 @@ app.post('/api/preset/materials', (req, res) => {
   const safeName = clampStr(filename || url.split('/').pop() || '未知文件', 255);
   // type 只有 video/image 两种播放语义（设备端按它选解码器/ImageView），别的值一律按 video 收
   const fileType = (type === 'video' || type === 'image') ? type : (safeName.endsWith('.mp4') || safeName.endsWith('.avi') ? 'video' : 'image');
+  // 指纹按列宽收口（VARCHAR(32)）：来路是前端从素材库行带的 md5，STRICT_TRANS_TABLES 下超宽是整条写失败
+  const incomingMd5 = clampStr(md5, 32) || null;
   // 同文件夹 + 同文件 = 同一条预设（幂等）。前端也判重，但它判的是自己那份 s.pm 快照：
   // 两个标签页、或者列表没刷新时连点，服务端会真的插进两条 —— 两条 id 指向同一个物理文件，
   // 映射进房间后设备清单里就是两个同名条目，白下一遍还互相打脸 md5 缓存。
   db.query('SELECT id, folder_id, filename, url, type, thumbnail, md5 FROM preset_materials WHERE folder_id = ? AND url = ? LIMIT 1',
-    [String(folder_id), url], (errExist, existRows) => {
+    [fid, url], (errExist, existRows) => {
       if (errExist) return res.status(500).json({ error: errExist.message });
       if (existRows && existRows[0]) {
-        logAction('exists', 'preset_material', existRows[0]);
-        return res.json({ success: true, existed: true, ...existRows[0] });
+        const ex = existRows[0];
+        // 库里这条没有指纹、而调用方手里有（素材库那行算出来的）→ 当场补一次。
+        // 不补的话这条预设会在房间清单里永远下发空串，设备没有可比对的凭据只能整只重下。
+        // 只补空、不改写：已有 md5 与来值不一致，意味着文件被就地换过或调用方拿着旧快照，
+        // 那种分歧该由上传侧的指纹负责，不是"复制到预设"这个动作有资格覆盖的。
+        if (!ex.md5 && incomingMd5) {
+          return db.query('UPDATE preset_materials SET md5 = ? WHERE id = ? AND (md5 IS NULL OR md5 = "")',
+            [incomingMd5, ex.id], (errM) => {
+              if (!errM) ex.md5 = incomingMd5;
+              logAction('exists', 'preset_material', ex);
+              res.json({ success: true, existed: true, ...ex });
+            });
+        }
+        logAction('exists', 'preset_material', ex);
+        return res.json({ success: true, existed: true, ...ex });
       }
       db.query(
         'INSERT INTO preset_materials (id, folder_id, filename, url, type, thumbnail, md5) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [id, String(folder_id), safeName, url, fileType, thumbnail || null, clampStr(md5, 32) || null],
+        [id, fid, safeName, url, fileType, thumbnail || null, incomingMd5],
         (err) => {
           if (err) return res.status(500).json({ error: err.message });
-          logAction('create', 'preset_material', { id, folder_id, filename: safeName, url });
+          logAction('create', 'preset_material', { id, folder_id: fid, filename: safeName, url });
           // success: true —— 全仓写接口统一回 {success:true}，前端 apiCall/apiPost 就按这个判。
           // 以前这条只回裸行，前端只能自己写 fetch + 判 res.ok（复制预设那条就是），
           // 等于给"约定"开了个例外，下一个调用方很容易以为成功即已新建。
-          res.json({ success: true, id, folder_id, filename: safeName, url, type: fileType, thumbnail: thumbnail || null, md5: md5 || null });
+          res.json({ success: true, id, folder_id: fid, filename: safeName, url, type: fileType, thumbnail: thumbnail || null, md5: incomingMd5 });
         }
       );
     });
@@ -2046,7 +2067,13 @@ app.post("/api/upload", (req, res) => {
         md5FileStream(req.file.path).then(finish).catch(() => finish(null));
       })();
     } else {
-      finish(null);
+      // 图片以前直接 finish(null) —— 等于每只图片素材永远没有内容指纹。
+      // 设备端 syncFolderWithIds 的判定顺序是「md5 一致 → 跳过」，md5 为空就只能退到
+      // ETag/Last-Modified 复核；而装 APK 与 OTA 都会清掉 prefs（168 实测），那时连 ETag 缓存都没有，
+      // 清单里的 md5 又是空串 → 只能无条件 GET 把整只文件重下一遍。
+      // 摘要算的是落盘后的字节，与 room-materials-v2 下发的 md5、设备下载到的文件同源。
+      // 失败仍按"无指纹"放行：不能因为一次哈希出错就把用户的上传报成失败。
+      md5FileStream(req.file.path).then(finish).catch(() => finish(null));
     }
   });
 });
@@ -2731,11 +2758,14 @@ function initDatabase() {
   `);
 
   // 预设素材表（前端"复制到预设"的目标，folder_id 为 01-30 数字编号）
+  // 这里的列形状就是【S-03f】写入侧只收 01-30 的依据：UI 的预设目录签是写死的 01-30，
+  // 存进来的 folder_id 必须是同一套键，否则那条记录在界面上永远渲染不出来（看不见也删不掉）。
+  // 曾经还有一列 folder_name VARCHAR(100)：三端零写零读，新建库里已去掉；
+  // 生产那列还在（NULL 到底），DROP 属于不可逆 DDL，留到预设层这轮稳定后单独点头再动。
   db.query(`
     CREATE TABLE IF NOT EXISTS preset_materials (
       id VARCHAR(36) PRIMARY KEY,
       folder_id VARCHAR(50) NOT NULL,
-      folder_name VARCHAR(100),
       filename VARCHAR(255) NOT NULL,
       url VARCHAR(512) NOT NULL,
       type VARCHAR(20) DEFAULT 'video',
