@@ -364,9 +364,14 @@ body.nav-off .brand-name{display:inline}
         try {
             var url = typeof input === 'string' ? input : (input && input.url) || '';
             if (url.indexOf('/api/') === 0) {
-                init = init || {};
-                init.headers = init.headers || {};
-                init.headers['x-api-key'] = K;
+                // 必须另建 init 并把 header 塞进新的 Headers：原地改 init 只在"这一层就是最外层"时成立。
+                // 实测（自动化/监控脚本会先浅拷贝 init 再往下传）不带 headers 的写请求会丢 key ——
+                // `apiCall(url,{method:'DELETE'})` 稳定 401，而 {...,headers:{}} 就 200。删房间正是前者。
+                var src = (init && init.headers)
+                    || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : null);
+                var h = new Headers(src);
+                h.set('x-api-key', K);
+                init = Object.assign({}, init || {}, { headers: h });
             }
         } catch (e) {}
         return _fetch.call(window, input, init);
