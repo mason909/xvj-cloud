@@ -1557,7 +1557,9 @@ function rmDevice() {
         var canPv = _roomDebugOn();
         all.forEach(function(m) {
             var name = String(m.filename || m.url || m.id);   // filename 老数据可能为 null，直接 .match 会抛停半屏
-            var type = m.type || (name.match(/\.(mp4|webm|avi|mov)$/i) ? 'video' : 'image');
+            // 视频判定复用设备播放链那张表（_pvDevExtRe）：原来这里另写了一份、漏了 mkv，
+            // 于是 .mkv 素材被当图片渲染成 <img src="….mkv">（裂图标）却仍然给试播按钮 —— 两处口径必须一份。
+            var type = m.type || (_pvDevExtRe.test(name) ? 'video' : 'image');
             var thumbUrl = m.thumbnail ? (m.thumbnail.startsWith('/') ? m.thumbnail : m.thumbnail) : null;
             var t = type === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '">' : '<div class="card-thumb">▶</div>') : (m.url ? '<img src="' + escA(m.url) + '">' : '<div class="card-thumb">?</div>');
             var pvBtn = (canPv && _pvOnDevice(name))

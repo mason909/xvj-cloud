@@ -246,6 +246,19 @@ function manifestFilename(row) {
   return row.filename || row.name || row.fullFilename || row.fname || row.id;
 }
 
+/**
+ * 设备播放链认的视频扩展名 —— 三端唯一一份表的云端侧那份
+ * （APK 侧是 listOf("mp4","mkv","avi","mov","webm")，出现在同步扫描/播放/试播三处）。
+ * 上传通道、预设 type 兜底、试播闸门都从这里派生，别再各写一份正则：
+ * 【S-03f】那份只列了 mp4/avi，一只 .webm 传上去不带 type 就被记成 image，
+ * 而房间卡片按另一份表判类型 —— 同一个文件在三处得到两种身份，排查时谁都说不清。
+ */
+const VIDEO_EXT = ['mp4', 'webm', 'mov', 'avi', 'mkv'];
+function hasVideoExt(name) {
+  const s = String(name == null ? '' : name).toLowerCase();
+  return VIDEO_EXT.some(e => s.endsWith('.' + e));
+}
+
 /** 是不是"普通对象"（排掉 null / 数组 / 字符串数字这些 typeof 也骗人的形状） */
 function isPlainObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
 
@@ -1276,8 +1289,8 @@ app.post('/api/devices/:id/command', (req, res) => {
 // 闸门挂在房间 debug 上（与设备侧进度条/状态文字同一口径）：这是运维工具，既不该在营业中的
 // 客人面前被误点，也不该给"任何拿到页面、又能从前端提出 x-api-key 的人"留一个随时占屏的入口。
 const PREVIEW_MAX_MS = 5 * 60 * 1000;
-// 设备端播放链只认这几个扩展名（与 APK playFolderInWindow 的过滤表同源）；图片素材不在链上
-const PREVIEW_VIDEO_RE = /\.(mp4|mkv|avi|mov|webm)$/i;
+// 设备端播放链只认这几个扩展名（表在 VIDEO_EXT，图片素材不在链上）
+const PREVIEW_VIDEO_RE = new RegExp('\\.(' + VIDEO_EXT.join('|') + ')$', 'i');
 
 /**
  * 房间 config → "这一格的素材该落在哪扇窗"（与 APK applySceneConfigs 的选窗规则同口径）：
@@ -1815,8 +1828,11 @@ app.post('/api/preset/materials', (req, res) => {
   // 撞了只是"这一条没进去"，用户完全看不出来 —— 补 4 位随机后缀（历史 id 仍是 pm_ 前缀，不解析格式）
   const id = 'pm_' + Date.now() + '_' + crypto.randomBytes(2).toString('hex');
   const safeName = clampStr(filename || url.split('/').pop() || '未知文件', 255);
-  // type 只有 video/image 两种播放语义（设备端按它选解码器/ImageView），别的值一律按 video 收
-  const fileType = (type === 'video' || type === 'image') ? type : (safeName.endsWith('.mp4') || safeName.endsWith('.avi') ? 'video' : 'image');
+  // type 只有 video/image 两种播放语义（设备端按它选解码器/ImageView）。调用方没给合法值时按扩展名判，
+  // 表就是 VIDEO_EXT —— 以前这里另写了一份、只列 mp4/avi，一只 .webm 不带 type 进来就被记成 image，
+  // 而房间卡片与试播闸门按另一份表判，同一条素材在三处两种身份。（原注释写的是"别的值一律按 video 收"，
+  // 与代码不符，一并改齐。）
+  const fileType = (type === 'video' || type === 'image') ? type : (hasVideoExt(safeName) ? 'video' : 'image');
   // 指纹按列宽收口（VARCHAR(32)）：来路是前端从素材库行带的 md5，STRICT_TRANS_TABLES 下超宽是整条写失败
   const incomingMd5 = clampStr(md5, 32) || null;
   // 同文件夹 + 同文件 = 同一条预设（幂等）。前端也判重，但它判的是自己那份 s.pm 快照：
@@ -2067,7 +2083,7 @@ const multer = require('multer');
 
 // 【S-02b】 上传素材文件（POST /api/upload）
 // 安全约定：磁盘文件名服务端生成（时间戳+uuid+清洗后的 ASCII 基名），原始文件名只存 DB
-const UPLOAD_VIDEO_EXT = ['.mp4', '.webm', '.mov', '.avi', '.mkv'];
+const UPLOAD_VIDEO_EXT = VIDEO_EXT.map(e => '.' + e);   // 表在文件顶部的 VIDEO_EXT（设备播放链同源）
 const UPLOAD_IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
 const UPLOAD_MAX_SIZE = 500 * 1024 * 1024;
 
