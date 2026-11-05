@@ -1431,7 +1431,7 @@ app.post('/api/rooms/:id/preview/stop', (req, res) => {
   if ((scene || folder) && (!isSceneKey(scene) || !isSafeFolderName(folder))) {
     return res.status(400).json({ error: 'scene/folder 不合法' });
   }
-  db.query('SELECT config FROM rooms WHERE id = ?', [roomId], (err, rows) => {
+  db.query('SELECT config, name FROM rooms WHERE id = ?', [roomId], (err, rows) => {
     if (err) return res.status(500).json({ error: '房间查询失败: ' + err.message });
     if (!rows || rows.length === 0) return res.status(404).json({ error: '房间不存在' });
     const cfg = parseRoomConfig(rows[0].config);
@@ -1450,8 +1450,9 @@ app.post('/api/rooms/:id/preview/stop', (req, res) => {
         if (errD) return res.status(500).json({ error: '设备查询失败: ' + errD.message });
         if (!devs || devs.length === 0) return res.status(409).json({ error: '房间内没有已授权设备' });
         devs.forEach(d => publishToDeviceCommand(d, payload));
+        // room 与 preview 那条同键：操作记录页摘要取人话房间名，只留 room_id 的话这行显示成机器 id
         logAction('preview_stop', 'room',
-          { room_id: roomId, win_id: payload.win_id || 'ALL', win_name: payload.win_name || '全部窗口', devices: devs.length });
+          { room_id: roomId, room: rows[0].name, win_id: payload.win_id || 'ALL', win_name: payload.win_name || '全部窗口', devices: devs.length });
         res.json({ success: true, win_id: payload.win_id || 'ALL', devices: devs.length });
       });
   });

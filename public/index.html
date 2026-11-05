@@ -3644,7 +3644,9 @@ function _opTone(action) {
 // details 是自由 JSON，字段随 action 而异：挑"身份 + 关键计数"拼一行摘要，全量留在展开区。
 function _opSummary(d) {
     var bits = [];
-    var who = d.room_id || d.store_name || d.store || d.device_id || d.folder || d.id || d.name;
+    // 人话名打头：试播两条带 room + room_id，其余房间/店铺/设备类审计带 name + id。
+    // 机器 id 排在人话名之后只作兜底 —— 让它抢先，列表里就会满屏 room_1773… / 40 位指纹，现场分不清点的是哪间包厢。
+    var who = d.room || d.name || d.store_name || d.store || d.folder || d.device_id || d.room_id || d.id;
     if (who != null && who !== '') bits.push(String(who));
     if (d.filename) bits.push(String(d.filename));
     if (d.name && String(d.name) !== String(who)) bits.push(String(d.name));
@@ -3660,6 +3662,9 @@ function _opSummary(d) {
     if (d.devices_unbound != null) bits.push('解绑 ' + d.devices_unbound + ' 台');
     if (d.removed_materials != null) bits.push('连带 ' + d.removed_materials + ' 个素材');
     if (d.reason) bits.push(String(d.reason));
+    // error/api 那类审计带的是 {method, path, error}：不拼出来的话整行只有「—」，得点开才看得见
+    if (d.method && d.path) bits.push(d.method + ' ' + d.path);
+    if (d.error) bits.push(String(d.error));
     if (d._raw) bits.push(String(d._raw).slice(0, 120));
     return bits.length ? bits.join(' · ') : '—';
 }

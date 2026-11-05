@@ -171,12 +171,15 @@ async function main() {
   check('other rooms untouched (incl. live 201)', roomsBefore === roomsAfter, 'config digest differs');
   const logs = await q("SELECT action,details FROM operation_logs WHERE action LIKE 'preview%' ORDER BY id DESC LIMIT 10");
   check('audit rows written', logs.length >= 3, 'rows=' + logs.length);
-  const pv = logs.map(l => ({ a: l.action, d: JSON.parse(l.details) }))
-    .find(x => x.a === 'preview' && x.d.room_id === RM);   // 取本次那间房的，不是"最新一条"（那可能是默认窗那间）
+  const parsed = logs.map(l => ({ a: l.action, d: JSON.parse(l.details) }));
+  const pv = parsed.find(x => x.a === 'preview' && x.d.room_id === RM);   // 取本次那间房的，不是"最新一条"（那可能是默认窗那间）
   if (pv) {
     const d = pv.d;
-    check('audit details useful', d.room_id === RM && d.win_name === 'TopLayer' && d.devices === 1 && d.filename === 'probe-video.mp4', pv.details);
+    check('audit details useful', d.room_id === RM && d.room === 'zzpv main' && d.win_name === 'TopLayer' && d.devices === 1 && d.filename === 'probe-video.mp4', JSON.stringify(d));
   } else { check('audit details useful', false, 'no preview row for ' + RM); }
+  // 停止那条也要带人话房间名：只留 room_id 的话，操作记录里这一行显示成一串机器 id，现场对不上是哪间包厢
+  const stp = parsed.find(x => x.a === 'preview_stop' && x.d.room_id === RM);
+  check('stop audit has room name', !!stp && stp.d.room === 'zzpv main', stp ? JSON.stringify(stp.d) : 'no preview_stop row for ' + RM);
   client.end(true);
 }
 
