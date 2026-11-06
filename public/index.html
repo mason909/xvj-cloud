@@ -153,6 +153,12 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
 .win-prop-row .lock-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:3px 8px;font-size:11px;cursor:pointer}
 .win-prop-row .lock-btn.active{background:rgba(233,69,96,0.2);border-color:#e94560;color:#e94560}
 .win-canvas-info{position:absolute;bottom:8px;left:10px;background:rgba(0,0,0,0.7);color:#888;font-size:10px;padding:3px 8px;border-radius:4px;pointer-events:none;z-index:10}
+/* 吸附：画布右上角的独立开关 + 命中时贴在目标线上的 1px 辅助线（只在拖动期间存在） */
+.win-snap-tools{position:absolute;top:8px;right:10px;z-index:11;display:flex;align-items:center;gap:6px}
+.win-snap-tools .lock-btn{font-size:10px;padding:2px 7px;background:rgba(0,0,0,.55)}
+.win-guide{position:absolute;background:#f5a623;pointer-events:none;z-index:20;box-shadow:0 0 3px rgba(245,166,35,.6)}
+.win-guide.vg{width:1px}
+.win-guide.hg{height:1px}
 .win-ratio-presets{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
 .win-ratio-btn{padding:2px 8px;background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;font-size:11px;cursor:pointer}
 .win-ratio-btn.active,.win-ratio-btn:hover{background:rgba(233,69,96,0.18);border-color:#e94560;color:#e94560}
@@ -646,6 +652,7 @@ var s = {
     f: localStorage.getItem('xf') || '01',
     _windowEditorActive: false,
     _cropMode: false,
+    _snap: localStorage.getItem('xsnap') !== '0',   // 窗口画布吸附开关（纯编辑辅助，本地偏好，默认开）
     fs: [],
     ms: [],
     pm: [],      // 预设素材列表：房间工作台的「已映射素材」按 id 在这里查名字，不能只在素材页加载
@@ -1851,7 +1858,8 @@ function _winGeomRowsHtml(w, asCrop) {
     h += '<div class="win-ratio-presets">';
     ratioPresets.forEach(function(p) { h += '<button class="win-ratio-btn" onclick="' + (asCrop ? 'setCropRatio' : 'setWinRatio') + '(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>'; });
     h += '</div>';
-    h += '<div style="color:#666;font-size:10px;padding:2px 0 6px">点一下框体即聚焦，之后按 ← ↑ → ↓ 微调位置 1px，Shift + 方向键 10px</div>';
+    h += '<div style="color:#666;font-size:10px;padding:2px 0 6px">点一下框体即聚焦，之后按 ← ↑ → ↓ 微调位置 1px，Shift + 方向键 10px'
+        + (asCrop ? '' : '；拖动与拖角默认吸附画布/其它窗口的边和中心，按住 Shift 临时不吸（开关在画布右上角）') + '</div>';
     return h;
 }
 
@@ -1903,6 +1911,9 @@ function renderWinEditorFull() {
     h += '<div class="win-canvas-area" id="winCanvasArea">';
     h += '<div class="win-canvas" id="winCanvas"></div>';
     h += '<div class="win-device-frame" id="winDeviceFrame"></div>';
+    h += '<div class="win-snap-tools"><button class="lock-btn' + (s._snap ? ' active' : '') + '" id="snapToggle" '
+        + 'onclick="toggleSnap()" title="拖动/缩放时贴齐画布与其它窗口的边和中心线；拖动中按住 Shift 临时不吸附">🧲 吸附 '
+        + (s._snap ? '开' : '关') + '</button></div>';
     h += '<div class="win-canvas-info" id="winCanvasInfo">' + deviceW + ' × ' + deviceH + '</div></div>';
     h += '<div class="win-sidebar">';
     h += '<div class="win-list"><div class="win-list-header"><span>窗口</span><button class="btn btn-primary" style="padding:2px 8px;font-size:11px" onclick="addWin()">+ 添加</button></div><div class="win-list-body" id="winListBody">';
@@ -2026,22 +2037,141 @@ function renderWinCanvas(wins) {
     if (info) info.textContent = deviceW + ' × ' + deviceH + ' (×' + _canvasScale.toFixed(2) + ')';
 }
 
+// ============================================================================
+// 窗口画布吸附（纯编辑辅助：只改拖动落点，不进 windows 数据模型、不下发设备）
+//   目标线 = 画布四条边 + 横竖中心线，加上其它每个窗口的左/右边、上/下边和横竖中心线；
+//   被拖的框用「左边 · 水平中心 · 右边」去贴竖线，「上边 · 垂直中心 · 下边」去贴横线。
+//   容差按屏幕像素给，再按 _canvasScale 折算回设计像素 —— 收起侧栏/浏览器缩放下手感一致。
+//   开关在画布右上角（本地偏好 xsnap，与房间配置无关）；拖动中按住 Shift = 这一帧不吸附。
+// ============================================================================
+var SNAP_SCREEN_PX = 7;
+var _snapGuides = { v: [], h: [] };
+
+/** 画布自身的线排在窗口线之前时，等距离要优先吸它（比"贴住某扇窗的边"更正） */
+function _isCanvasSnapLine(line) {
+    return line === 0 || line === 1920 || line === 960 || line === 1080 || line === 540;
+}
+
+/** 吸附候选竖线/横线：画布边与中心 + 其余窗口的边与中心（排除自己，否则一动就贴着自己） */
+function _snapLines(excludeId) {
+    var v = [0, 960, 1920], h = [0, 540, 1080];
+    (s._winCache || []).forEach(function(o) {
+        if (o.id === excludeId) return;
+        var x = o.x || 0, y = o.y || 0, ww = o.width || 0, hh = o.height || 0;
+        v.push(x, x + ww / 2, x + ww);
+        h.push(y, y + hh / 2, y + hh);
+    });
+    return { v: v, h: h };
+}
+
+/**
+ * 一组待吸点对一组线，取容差内最近的一条。
+ * @returns {?{d:number,line:number}} d = 把整组点平移多少能吸上；line = 命中的目标线（画布像素）
+ */
+function _snapShift(points, lines, tol) {
+    var best = null;
+    lines.forEach(function(line) {
+        points.forEach(function(p) {
+            var d = line - p, ad = Math.abs(d);
+            if (ad > tol) return;
+            var canvas = _isCanvasSnapLine(line) ? 0 : 1;
+            if (!best || ad < Math.abs(best.d) - 0.5 ||
+                (Math.abs(ad - Math.abs(best.d)) <= 0.5 && canvas < best.canvas)) {
+                best = { d: d, line: line, canvas: canvas };
+            }
+        });
+    });
+    return best;
+}
+
+/** 命中结果记账：同一目标线只画一条 */
+function _snapTake(axis, hit) {
+    if (!hit) return;
+    if (_snapGuides[axis].indexOf(hit.line) < 0) _snapGuides[axis].push(hit.line);
+}
+
+/** 把本帧命中的目标线画成 1px 辅助线（挂在 winCanvas 上，重绘画布时随 innerHTML 一起清掉） */
+function _paintSnapGuides() {
+    var canvas = document.getElementById('winCanvas');
+    if (!canvas) return;
+    canvas.querySelectorAll('.win-guide').forEach(function(el) { el.parentNode.removeChild(el); });
+    // 落点算法与窗口框、winDeviceFrame 完全一致（偏移 + 设计坐标×缩放）：画布盒子只有设备尺寸那么大、
+    // 却停在 area 的原点上，只按 x*scale 画线会整体偏掉一个 _canvasOffset
+    var dw = Math.round(1920 * _canvasScale), dh = Math.round(1080 * _canvasScale);
+    _snapGuides.v.forEach(function(x) {
+        var el = document.createElement('div');
+        el.className = 'win-guide vg';
+        el.style.left = Math.round(_canvasOffsetX + x * _canvasScale) + 'px';
+        el.style.top = Math.round(_canvasOffsetY) + 'px';
+        el.style.height = dh + 'px';
+        canvas.appendChild(el);
+    });
+    _snapGuides.h.forEach(function(y) {
+        var el = document.createElement('div');
+        el.className = 'win-guide hg';
+        el.style.top = Math.round(_canvasOffsetY + y * _canvasScale) + 'px';
+        el.style.left = Math.round(_canvasOffsetX) + 'px';
+        el.style.width = dw + 'px';
+        canvas.appendChild(el);
+    });
+}
+
+function _clearSnapGuides() {
+    _snapGuides = { v: [], h: [] };
+    _paintSnapGuides();
+}
+
+/** 画布右上角的吸附开关：只改编辑手感，不动房间配置，所以不触发自动同步 */
+function toggleSnap() {
+    s._snap = !s._snap;
+    localStorage.setItem('xsnap', s._snap ? '1' : '0');
+    var b = document.getElementById('snapToggle');
+    if (b) {
+        b.className = 'lock-btn' + (s._snap ? ' active' : '');
+        b.textContent = '🧲 吸附 ' + (s._snap ? '开' : '关');
+    }
+    if (_dragging) { _dragging = null; _clearSnapGuides(); }   // 正拖着就当场收手，别让旧辅助线留在屏上
+}
+
 function winCanvasMouseMove(e) {
     if (!_dragging) return;
     var dx = e.clientX - _dragging.startX, dy = e.clientY - _dragging.startY;
     var sW = _dragging.startWin, id = _dragging.winId;
     var wins = s._winCache || [], w = wins.find(function(x) { return x.id === id; });
     if (!w) return;
+    _snapGuides = { v: [], h: [] };
+    // Shift 按住 = 这一帧不吸附（要摆 1px 的错位时不用先去关开关）
+    var snapOn = s._snap && !e.shiftKey;
+    var tol = snapOn ? SNAP_SCREEN_PX / _canvasScale : 0;
+    var lines = snapOn ? _snapLines(id) : null;
     if (_dragging.mode === 'move') {
         var newX = Math.max(0, Math.round(sW.x + dx / _canvasScale));
         var newY = Math.max(0, Math.round(sW.y + dy / _canvasScale));
+        if (tol) {
+            // 整框平移，所以左/中/右三个点吸到同一条线时位移量一起作用在 x 上
+            var hitV = _snapShift([newX, newX + w.width / 2, newX + w.width], lines.v, tol);
+            var hitH = _snapShift([newY, newY + w.height / 2, newY + w.height], lines.h, tol);
+            if (hitV) { newX += hitV.d; _snapTake('v', hitV); }
+            if (hitH) { newY += hitH.d; _snapTake('h', hitH); }
+            newX = Math.max(0, Math.round(newX));
+            newY = Math.max(0, Math.round(newY));
+        }
         w.x = newX; w.y = newY;
     } else {
         var newW = Math.max(64, Math.round(sW.width + dx / _canvasScale));
         var newH = Math.max(64, Math.round(sW.height + dy / _canvasScale));
+        if (tol) {
+            // 拖角时对边钉住不动，能吸的只有"正在被拖的这两条边"；吸上后反算宽高
+            var r = sW.x + newW, b = sW.y + newH;
+            var hitR = _snapShift([r], lines.v, tol);
+            var hitB = _snapShift([b], lines.h, tol);
+            if (hitR) { newW = Math.max(64, Math.round(r + hitR.d - sW.x)); _snapTake('v', hitR); }
+            if (hitB) { newH = Math.max(64, Math.round(b + hitB.d - sW.y)); _snapTake('h', hitB); }
+        }
         if (s._winRatioLock && s._winRatioLock[id]) { newH = Math.round(newW * sW.height / sW.width); }
         w.width = newW; w.height = newH;
     }
+    _paintSnapGuides();
     // 实时同步到 s._selWin（mousemove 触发时 s._selWin 可能已是旧快照）
     if (s._selWin && s._selWin.id === id) { s._selWin.x = w.x; s._selWin.y = w.y; s._selWin.width = w.width; s._selWin.height = w.height; }
     ['wpX','wpY','wpW','wpH'].forEach(function(id2, i) { var el = document.getElementById(id2); if (el) el.value = [w.x,w.y,w.width,w.height][i]; });
@@ -2051,14 +2181,10 @@ function winCanvasMouseMove(e) {
 
 function winCanvasMouseUp() {
     if (_dragging) {
-        // 同步拖动后的位置到 s._selWin（避免下次点击时用旧位置覆盖）
-        var wins = s._winCache || [];
-        var w = wins.find(function(x) { return x.id === _dragging.id; });
-        if (w && s._selWin) {
-            s._selWin.x = w.x;
-            s._selWin.y = w.y;
-        }
+        // 位置/尺寸在 mousemove 里已同步进 s._winCache 与 s._selWin，这里只收尾（原来那段"再抄一次 x/y"
+        // 取的是 _dragging.id，而对象里存的键叫 winId，永远查不到窗口 —— 死代码，删）
         _dragging = null;
+        _clearSnapGuides();
         autoSyncWinConfig();
     }
 }

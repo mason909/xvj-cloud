@@ -2611,11 +2611,21 @@ app.get('/api/rooms/:id', (req, res) => {
 app.post('/api/rooms', (req, res) => {
   const { store_name, name, config } = req.body;
   if (!store_name || !name) return res.status(400).json({error:'store_name and name required'});
+  // config 与 PUT /rooms/:id 同口径：字符串或对象都收，但一定要落成合法 JSON 文本。
+  // 直接把对象塞进字符串列得到的是 "[object Object]"，房间一出生就带着一份解析不了的配置。
+  var cfgStr = '{}';
+  if (config !== undefined) {
+    var cfg;
+    try { cfg = typeof config === 'string' ? JSON.parse(config) : config; }
+    catch (e) { return res.status(400).json({error:'config 不是合法 JSON 字符串'}); }
+    if (!isPlainObject(cfg)) return res.status(400).json({error:'config 必须是对象'});
+    cfgStr = JSON.stringify(cfg);
+  }
   const id = 'room_' + Date.now();
   db.query('INSERT INTO stores (name) VALUES (?) ON DUPLICATE KEY UPDATE name=name', [store_name], (errStore) => {
     if (errStore) return res.status(500).json({error:errStore.message});
     db.query('INSERT INTO rooms (id, store_name, name, folder_mappings, config) VALUES (?, ?, ?, ?, ?)',
-      [id, store_name, name, '{}', config || '{}'], (err, result) => {
+      [id, store_name, name, '{}', cfgStr], (err, result) => {
       if (err) {
         if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({error:'该客户下已存在同名房间'});
         return res.status(500).json({error:err.message});
