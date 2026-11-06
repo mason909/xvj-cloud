@@ -1583,7 +1583,7 @@ function rmDevice() {
     h2 += '</div>';
     h += h2;
     g.innerHTML = h;
-    // 应用调试模式的显示状态（sessionStorage 优先，否则读服务器数据）
+    // 应用调试模式的显示状态（一律取云端 config.debug，见 _roomDebugOn）
     // 窗口模式分支在上面 return 前也各自调了一次，两条路径都不会漏。
     updateRoomDebugToggle();
 }
@@ -3014,16 +3014,16 @@ async function mapPreset(scope) {
 }
 
 // 【F-08b】 房间调试开关（_roomDebugOn 读 / updateRoomDebugToggle 显示态 / toggleRoomDebug 写入）
-// 注意开关态优先读 sessionStorage('debug_'+房间id)：它是本标签页最后一次点击的结果，
-// 会盖过服务器 config.debug。换标签页/清会话前，按钮显示的不一定是云端真值。
 /**
- * 这个房间的调试模式到底算不算开着 —— 读取口径只有这一处。
+ * 这个房间的调试模式到底算不算开着 —— 读取口径只有这一处，且只认云端 config.debug。
+ * 试过在这里加一层 sessionStorage 缓存"本标签页最后一次点击的结果"，代价是显示态和真值分家：
+ * 别人（另一标签页、脚本、运维）改了这间房，本页整个会话都还显示旧态，而试播按钮的开与关
+ * 读的也是它 —— 按钮在但一点就 409，或者功能明明开着却看不见按钮。写入成功后已经把新 config
+ * 同步回 s.rooms，失败会回滚，所以缓存层没有任何必要。
  * 试播按钮要按它决定开不开（云端【S-05p】同样按 config.debug 拦一道），显示态和写入
- * 也都在下面两个函数里复用它；再写一遍"sessionStorage 优先"就是第二个口径的开始。
+ * 也都在下面两个函数里复用它；再写一遍判定就是第二个口径的开始。
  */
 function _roomDebugOn() {
-    var stored = sessionStorage.getItem('debug_' + s.rf);
-    if (stored !== null) return stored === '1';
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return false;
     var cfg = {};
@@ -3034,61 +3034,60 @@ function _roomDebugOn() {
     return cfg.debug === true;
 }
 
-async function updateRoomDebugToggle() {
+/**
+ * 调试开关的三个 DOM（checkbox/slider/knob）只由这一处上色。
+ * 原来 updateRoomDebugToggle 和 toggleRoomDebug 的成功/失败分支各写一遍样式，
+ * 一个状态三个写入口 —— 加乐观更新时漏改一处就是"点了没反应"。
+ */
+function _paintDebugToggle(on) {
     var el = document.getElementById('roomDebugToggle');
     var slider = document.getElementById('roomDebugSlider');
     var knob = document.getElementById('roomDebugKnob');
     if (!el || !slider || !knob) return;
-    var on = _roomDebugOn();
     el.checked = on;
     slider.style.background = on ? '#4caf50' : '#444';
     knob.style.left = on ? '23px' : '3px';
+}
+
+function updateRoomDebugToggle() {
+    _paintDebugToggle(_roomDebugOn());
 }
 
 // 切换房间调试模式
 async function toggleRoomDebug() {
     if (!s.rf) return;
     var cb = document.getElementById('roomDebugToggle');
-    var r = s.rooms.find(function(x) { return x.id === s.rf; });
-    if (!r) return;
-    var cfg = {};
-    if (r.config) {
-        try { cfg = typeof r.config === 'string' ? JSON.parse(r.config) : r.config; }
-        catch(e) { cfg = {}; }
-    }
     var newVal = cb.checked;
-    cfg.debug = newVal;
-    // 立即更新 UI
-    var slider = document.getElementById('roomDebugSlider');
-    var knob = document.getElementById('roomDebugKnob');
-    cb.checked = newVal;
-    if (slider) slider.style.background = newVal ? '#4caf50' : '#444';
-    if (knob) knob.style.left = newVal ? '23px' : '3px';
-    // 用 sessionStorage 标记，页面加载时优先读这个
-    sessionStorage.setItem('debug_' + s.rf, newVal ? '1' : '0');
-    // 保存失败必须把开关拨回去：这个开关决定设备端上不上屏运维信息，
-    // 显示"已开"而云端是"关"，现场就会一直以为日志在传（以前只 console.error）
+    _paintDebugToggle(newVal);   // 乐观显示，落库失败再按真值拨回去
+    // 先读云端最新 config，只改 debug 这一个键再写回：s.rooms 是列表缓存，可能已经是几分钟前的快照，
+    // 拿它整份 PUT 会把期间别人改的映射/窗口一起抹掉（与「推送到房间」同口径）。
+    var cfg;
     try {
+        var res = await fetch('/api/rooms/' + encodeURIComponent(s.rf));
+        var roomObj = await res.json().catch(function() { return {}; });
+        if (!res.ok) throw new Error(roomObj.error || ('HTTP ' + res.status));
+        cfg = _loadRoomCfg(roomObj);
+        cfg.debug = newVal;
         await apiCall('/api/rooms/' + encodeURIComponent(s.rf), {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({config: JSON.stringify(cfg)})
         });
     } catch (e) {
-        sessionStorage.setItem('debug_' + s.rf, newVal ? '0' : '1');
-        cb.checked = !newVal;
-        if (slider) slider.style.background = newVal ? '#444' : '#4caf50';
-        if (knob) knob.style.left = newVal ? '3px' : '23px';
+        // 保存失败必须把开关拨回去：这个开关决定设备端上不上屏运维信息，
+        // 显示"已开"而云端是"关"，现场就会一直以为日志在传（以前只 console.error）
+        _paintDebugToggle(_roomDebugOn());
         alert('调试开关保存失败: ' + e.message);
         return;
     }
-    // 同步 s.rooms
+    // 显示态与试播按钮都认 s.rooms 里的云端真值，成功后把新 config 抄回去，省一次 lr() 全量刷新
     var idx = s.rooms.findIndex(function(x) { return x.id === s.rf; });
     if (idx > -1) {
         var newRoom = JSON.parse(JSON.stringify(s.rooms[idx]));
         newRoom.config = JSON.stringify(cfg);
         s.rooms[idx] = newRoom;
     }
+    _paintDebugToggle(newVal);
 }
 
 // 操作日志

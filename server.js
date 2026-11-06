@@ -121,6 +121,10 @@
  *     没变→一条不发。前端不再自己补 POST /sync（手工点「同步当前房间」按钮除外）。
  *     兜底是 rev 对账：命令里带 rev=roomSceneDigest(config)，设备心跳回传已应用的 rev，
  *     服务端发现落后就补发一次（3 分钟/台节流），所以设备离线期间的变更会在上线后收敛。
+ *     ⚠️ set_debug 是唯一的例外：debug 故意不进指纹（开个开关不该惊动素材同步，见 roomSceneDigest），
+ *     所以它对不上账、永远不会被补发。命令是 QoS1 非 retain，设备在线但正好掉线那一跳就会丢，
+ *     靠它下次重连时 auth_result 里的 debug 字段自愈。现场口径：「云端开了调试但大屏没状态字」
+ *     先让设备重连一次（或点一次手工同步，sync 载荷同样带 debug），别急着怀疑开关本身。
  *   - 【试播 preview_material】唯一一条"不进 config"的命令：不落库、不带 rev、不触发对账，
  *     播完由设备自己回到原画面（见 S-05p 与 MainActivity.kt 的 startWindowPreview）。
  *     正因为它不改配置，rev 对账永远不会替它兜底 —— 命令丢了就是没播，所以只在房间 debug
@@ -2672,6 +2676,20 @@ app.put('/api/rooms/:id', (req, res) => {
         // 下次按 scenes[key] 取值时就把内容挂到了 Object.prototype 上（全进程、跨房间泄漏）
         Object.keys(cfg.scenes).forEach(function(k) { if (!isSceneKey(k)) delete cfg.scenes[k]; });
       }
+
+      // 顶层键同样"incoming 覆盖、其余继承"。scenes 早就按这套走，debug 却没进名单：
+      // 少带一个键不只是丢个标志位，收敛点会把它判成"调试模式变了"，给整间房的在线设备
+      // 发 set_debug false —— 现场正在排障，大屏的运维 UI 和日志上报会自己关掉。
+      // __proto__/constructor/prototype 一律不接：JSON.parse 出来的脏键是 own 属性，
+      // 直接 obj[k]=v 走的是原型 setter，会把内容挂到 Object.prototype 上（全进程、跨房间）。
+      var merged = {};
+      [existingConfig, cfg].forEach(function (src) {
+        Object.keys(src).forEach(function (k) {
+          if (k === '__proto__' || k === 'constructor' || k === 'prototype') return;
+          merged[k] = src[k];
+        });
+      });
+      cfg = merged;
 
       // 逐幕合并：incoming 没带的那一幕、以及 windows/master 这些不归本接口管的字段，
       // 一律从 DB 继承 —— 前端有多处会 PUT 整份 config，任何一处少填都不该抹掉房间配置
