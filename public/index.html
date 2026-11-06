@@ -155,7 +155,10 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
 .win-canvas-info{position:absolute;bottom:8px;left:10px;background:rgba(0,0,0,0.7);color:#888;font-size:10px;padding:3px 8px;border-radius:4px;pointer-events:none;z-index:10}
 /* 吸附：画布右上角的独立开关 + 命中时贴在目标线上的 1px 辅助线（只在拖动期间存在） */
 .win-snap-tools{position:absolute;top:8px;right:10px;z-index:11;display:flex;align-items:center;gap:6px}
-.win-snap-tools .lock-btn{font-size:10px;padding:2px 7px;background:rgba(0,0,0,.55)}
+/* 自成一套：属性面板那两条 .lock-btn 规则挂在 .win-prop-row 下，画布上的按钮够不着，
+   只写 background 会连文字颜色一起退回浏览器默认按钮样式（深字压黑底=看不清） */
+.win-snap-tools .lock-btn{font-size:10px;padding:2px 7px;cursor:pointer;border-radius:4px;border:1px solid #4a4a4a;background:rgba(0,0,0,.55);color:#bbb}
+.win-snap-tools .lock-btn.active{border-color:#e94560;background:rgba(233,69,96,.22);color:#ff8fa3}
 .win-guide{position:absolute;background:#f5a623;pointer-events:none;z-index:20;box-shadow:0 0 3px rgba(245,166,35,.6)}
 .win-guide.vg{width:1px}
 .win-guide.hg{height:1px}
