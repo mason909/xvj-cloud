@@ -38,8 +38,8 @@
  *
  * MQTT 主题（服务端 subscribe('xvj/device/#') + subscribe('xvj/auth/response')）：
  *   入站  xvj/device/register       - 注册（deviceId 在 payload，无第二段，走 lastSlash===-1 分支）
- *   入站  xvj/device/{id}/status    - 心跳/状态，顺带上报 version、model、mac；
- *                                    带 rev（已应用配置指纹）时服务端做对账补发，见 reconcileDeviceRev
+ *   入站  xvj/device/{id}/status    - 心跳/状态，顺带上报 version、model、mac、panel_no（当前墙板编号，
+ *                                    见【S-06i】）；带 rev（已应用配置指纹）时服务端做对账补发，见 reconcileDeviceRev
  *   入站  xvj/device/{id}/request   - 设备主动请求配置
  *   入站  xvj/device/{id}/log       - 设备日志上报（远程 DEBUG 通道）
  *   入站  xvj/auth/response         - 设备回复 deauthorize
@@ -62,13 +62,24 @@
  *   {
  *     A: { name: '第一幕',
  *          folder_mappings: { "01": [materialId, ...], "02": [...] },   // 键是未加前缀的两位编号；值是素材库 id 或预设素材 id，两种都合法
+ *          panel_no: { "01": 3, "02": 7 },    // 墙板编号：文件夹 → 485 墙板「编号切换」帧的 NN(1~32)；没列出的键=该格不响应。同幕内 NN 不得重复（PUT /rooms 落库前校验，冲突 400）
+ *          play_settings: { "01": { dissolve: true, dissolve_ms: 400, order: 'shuffle' } },
+ *                         // 文件夹级播放设置：dissolve=同格素材轮播交接时叠化（切墙板/切幕/试播一律硬切），
+ *                         // dissolve_ms=100~3000 整数毫秒（仅叠化开着时落键），order='seq' 顺序循环 | 'shuffle' 随机循环。
+ *                         // 没列出的键 = 全默认（关叠化 + 顺序循环）；全默认的格子不落键，空表整个键都不下发，
+ *                         // 所以存量房间的 rev 不会因为新增这个字段而漂移。非法 order/时长写库前 400。
  *          windows: [WinConfig, ...],
  *          master: { brightness: Number } },   // 场景总亮度 0..1，服务端在 PUT windows 时夹取
  *     B: { ... }
  *   }
  *   ⚠️ 出口一致性：DB 里存未加前缀的 "01"，凡经 buildPrefixedScenes 下发给设备的
- *   folder_mappings 键一律变成 "A01"/"B01"（避免 A/B 共用物理目录名）。
+ *   folder_mappings / panel_no / play_settings 键一律变成 "A01"/"B01"（避免 A/B 共用物理目录名）。
  *   但 windows 是原样透传的（content.folderId 仍是 "01"），由 APK 端按 A01/01 双键回退查表。
+ *
+ * 墙板（485 串口）房间级字段（与 debug 同级的 config 顶层键）：
+ *   wallpanel_enabled: Boolean     // 串口监听总闸，严格 true 才算开
+ *   wallpanel_default_no: 1~32     // 开机/无信号默认编号，非法值一律下发 null
+ *   两者都不进 rev（同 debug），单独变更走轻量 set_wallpanel；载荷在 roomWallpanelFields 一处收口。
  *
  * WinConfig（窗口配置）：服务端整体透传，不解析下列渲染字段，新增字段无需改代码
  *   {
@@ -98,6 +109,11 @@
  *       color?: String,             // 背景色，如 "#000000"
  *       // type=SCENE_A|SCENE_B 时：
  *       folderId?: String           // 对应素材文件夹 ID，如 "01"（未加场景前缀）
+ *       follow?: Boolean            // 墙板跟随：true = 这一幕里播哪个文件夹由墙板编号决定
+ *                         // （设备端按 scenes[幕].panel_no 反查，见 handleWallPanelNumber；
+ *                         //  没信号时退 wallpanel_default_no → folderId → 首个有素材文件夹）。
+ *                         // 只有 SCENE_* 有意义：HDMI/color 的内容不是文件夹，跟着切没东西可切。
+ *                         // 与 folderId 不打架 —— folderId 是"没按过墙板时的默认那格"
  *     }
  *   }
  *
@@ -117,18 +133,24 @@
  *     落盘路径才用 path.join(__dirname,'public',filepath)
  *   - 第二幕（场景B）默认窗口为空，由用户手动配置
  *   - 【同步触发口径】房间 config 落库后一律只经 notifyRoomConfigChanged 决定是否打扰设备：
- *     映射变了→sync_room_materials，仅窗口/总亮度变了→update_windows，仅 debug 变了→set_debug，
- *     没变→一条不发。前端不再自己补 POST /sync（手工点「同步当前房间」按钮除外）。
+ *     映射变了→sync_room_materials，窗口/总亮度/编号绑定/播放设置变了→update_windows，debug 变了→set_debug，
+ *     墙板字段变了→set_wallpanel，没变→一条不发。四类是**并列判定**（同一次 PUT 既改编号又开总闸就两条都发，
+ *     命中全量同步时轻枪省掉——它的载荷已带这些字段）。前端不再自己补 POST /sync（手工点「同步当前房间」按钮除外）。
  *     兜底是 rev 对账：命令里带 rev=roomSceneDigest(config)，设备心跳回传已应用的 rev，
  *     服务端发现落后就补发一次（3 分钟/台节流），所以设备离线期间的变更会在上线后收敛。
- *     ⚠️ set_debug 是唯一的例外：debug 故意不进指纹（开个开关不该惊动素材同步，见 roomSceneDigest），
- *     所以它对不上账、永远不会被补发。命令是 QoS1 非 retain，设备在线但正好掉线那一跳就会丢，
- *     靠它下次重连时 auth_result 里的 debug 字段自愈。现场口径：「云端开了调试但大屏没状态字」
- *     先让设备重连一次（或点一次手工同步，sync 载荷同样带 debug），别急着怀疑开关本身。
+ *     ⚠️ set_debug / set_wallpanel 是指纹之外的两个例外：debug 和墙板字段都故意不进指纹
+ *     （开个开关不该惊动素材同步，见 roomSceneDigest），所以它们对不上账、不会被对账补发。
+ *     命令是 QoS1 非 retain，设备在线但正好掉线那一跳就会丢，靠下次重连时 auth_result
+ *     （以及手工同步的 sync 载荷）里的同名字段自愈。现场口径：「云端开了开关但大屏没反应」
+ *     先让设备重连一次（或点一次手工同步），别急着怀疑开关本身。
+ *   - 【config 写库口径】POST /rooms 与 PUT /rooms/:id 共用一个净化入口 prepareRoomConfig：
+ *     JSON 合法性 → scenes 脏键过滤 → 顶层键"incoming 覆盖、其余继承 DB" → 墙板字段按下发口径归一 →
+ *     播放设置校验 → 逐幕合并 → 编号校验（同幕一键一文件夹 + 同格不两个编号）。任一步不过就 400，绝不带病入库：
+ *     脏值一旦落库，后续不带 panel_no 的 PUT 会继承它再撞上同一道校验，这间房就再也存不进配置了。
  *   - 【试播 preview_material】唯一一条"不进 config"的命令：不落库、不带 rev、不触发对账，
  *     播完由设备自己回到原画面（见 S-05p 与 MainActivity.kt 的 startWindowPreview）。
- *     正因为它不改配置，rev 对账永远不会替它兜底 —— 命令丢了就是没播，所以只在房间 debug
- *     开启时开放，且失败原因一律回给前端，不做静默下发。
+ *     正因为它不改配置，rev 对账永远不会替它兜底 —— 命令丢了就是没播，所以失败原因一律回给前端
+ *     （前端常驻在素材区标题行的状态条里），不做静默下发。它不挂房间 debug：单击即播是内容操作。
  */
 
 
@@ -219,6 +241,16 @@ function prefixedFolderKey(sceneKey, folderId) {
 }
 
 /**
+ * prefixedFolderKey 的逆运算：把幕内文件夹键折回不带前缀的格名（"A01" → "01"，"01" 原样）。
+ * 一幕之内 "01" 和 "A01" 指的是同一格，必须先归一再判重 —— 否则两个键各自都合法，
+ * 过得了「一键一文件夹」校验，却在 buildPrefixedScenes 撞成同一个 "A01"，后写静默覆盖。
+ * sceneKey 为空时原样返回（无幕上下文的调用不受影响）。
+ */
+function panelCellKey(sceneKey, folderId) {
+  return (folderId.length === 3 && folderId[0] === sceneKey) ? folderId.slice(1) : folderId;
+}
+
+/**
  * folder_mappings 的单个值 → 素材 id 字符串数组（唯一入口，读写两侧都过它）。
  * 只认数组：数字/对象是脏数据，直接当空；字符串按"单个 id"收下（历史上真出现过
  * `{"01":"pm_xxx"}`，被下游的 [...v] 炸成字符数组，日志里成过 {"A01":["m","a",…]}）。
@@ -281,21 +313,206 @@ function normalizeFolderMappings(fm) {
   return out;
 }
 
+/** 墙板编号区间：阳光视翰 QB 总线「编号切换」帧 NN=0x01~0x20（见记忆 xvj-wallpanel-protocol） */
+const PANEL_NO_MIN = 1, PANEL_NO_MAX = 32;
+
+/**
+ * 墙板硬件字段的取值口径（三端共用一份，改这里要同步 APK 的 WallPanelLink 与前端配置表下拉）：
+ * - 波特率只收 485 模块常见档，其它值视为"没配"→ 设备端保留驱动默认（不假装设置成功）
+ * - 默认节点与 APK 的 WallPanelLink.DEFAULT_PATH 对齐；不同板子可能是 ttyS0、ttyHSL0 之类，所以做成可配
+ */
+const WALLPANEL_BAUDS = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+const WALLPANEL_DEFAULT_PATH = '/dev/ttyUSB0';
+
+/** 串口节点形状：/dev/ 下的单层设备名，只允许字母数字与 - _（挡住 '..'、空格、换行这些形状） */
+function isSafeSerialPath(s) { return typeof s === 'string' && /^\/dev\/[A-Za-z0-9_-]{1,64}$/.test(s); }
+
+/**
+ * panel_no 的单个值 → 合法墙板编号（1~32 整数），不合法返回 null。
+ * 只认数字与数字字符串：[3]、true、null 这些 Number() 也能算出个整数，但不是配置该有的形状。
+ * 规范化（normalizePanelNos）与写入校验（findPanelCellConflict）共用这一把闸，两边口径不会漂。
+ */
+function panelNoValue(raw) {
+  if (typeof raw !== 'number' && typeof raw !== 'string') return null;
+  var n = Number(raw);
+  return (Number.isInteger(n) && n >= PANEL_NO_MIN && n <= PANEL_NO_MAX) ? n : null;
+}
+
+/**
+ * 单幕的 panel_no 表（文件夹编号 → 墙板编号）规范化：
+ * 键过 isSafeFolderName（和 folder_mappings 同一把闸）并折成幕内格名（见 panelCellKey），
+ * 值过 panelNoValue。其余（越界、小数、脏类型、非法文件夹键）一律丢弃 ——
+ * 与 normalizeFolderMappings 同一种静默口径：这一份是「下发前的整形」，
+ * 报错是写入接口的事（见 findPanelNoConflict / findPanelCellConflict），别在这里判生死。
+ * 空表返回 {}，与"这一幕没绑过墙板"等价（buildPrefixedScenes 不会为它落键）。
+ */
+function normalizePanelNos(pn, sceneKey) {
+  const kept = {};
+  if (!isPlainObject(pn)) return kept;
+  Object.keys(pn).sort().forEach(fid => {
+    if (!isSafeFolderName(fid)) return;
+    var n = panelNoValue(pn[fid]);
+    if (n === null) return;
+    var cell = panelCellKey(sceneKey, fid);
+    // 同格先到先得；键先排序再遍历，所以结果与 incoming 里的键顺序无关。
+    // 真正的歧义（同一格两个不同编号）在写入侧就被 findPanelCellConflict 拦掉了，走不到这里。
+    if (kept[cell] === undefined) kept[cell] = n;
+  });
+  // 按格名排序输出：同一组绑定不管从哪个键顺序写进来，落库的那份 JSON 都长同一个样
+  const out = {};
+  Object.keys(kept).sort().forEach(cell => { out[cell] = kept[cell]; });
+  return out;
+}
+
+/**
+ * 同幕内墙板编号重复校验（一键一文件夹）：重复就不猜该绑哪个，把冲突的两个文件夹报回前端。
+ * 入参是 normalizePanelNos 之后的表；无冲突返回 null。
+ * 设计口径见记忆 xvj-wallpanel-protocol：清空某个编号=不响应，是删键而不是写 0。
+ */
+function findPanelNoConflict(sceneKey, panelNos) {
+  const owner = {};
+  const fids = Object.keys(panelNos || {}).sort();
+  for (let i = 0; i < fids.length; i++) {
+    const fid = fids[i], n = panelNos[fid];
+    if (owner[n]) return `场景${sceneKey}的墙板编号 ${n} 同时绑在文件夹 ${owner[n]} 和 ${fid} 上，一键只能对一个文件夹`;
+    owner[n] = fid;
+  }
+  return null;
+}
+
+/**
+ * 同一格写了两个编号（"01":3 与 "A01":4）的校验：必须在 normalizePanelNos 归并之前查，
+ * 归并之后只剩一个键，歧义就消失了 —— 而"落库的编号跟点上那个不一样"在现场无从排查。
+ * 编号相同只是同一件事写了两遍（归并时并掉），不算歧义；脏键/越界值 normalizePanelNos 本来就会丢，也不报。
+ * 入参是请求体里那一幕的原始 panel_no；无歧义返回 null。
+ */
+function findPanelCellConflict(sceneKey, panelNos) {
+  if (!isPlainObject(panelNos)) return null;
+  const owner = {};
+  const fids = Object.keys(panelNos).sort();
+  for (let i = 0; i < fids.length; i++) {
+    const fid = fids[i];
+    if (!isSafeFolderName(fid)) continue;
+    const n = panelNoValue(panelNos[fid]);
+    if (n === null) continue;
+    const cell = panelCellKey(sceneKey, fid);
+    if (owner[cell] === undefined) { owner[cell] = { fid: fid, no: n }; continue; }
+    if (owner[cell].no !== n) {
+      return `场景${sceneKey}的 ${owner[cell].fid} 和 ${fid} 是同一个文件夹，却分别绑了 ${owner[cell].no} 号和 ${n} 号，只留一个`;
+    }
+  }
+  return null;
+}
+
+/**
+ * 文件夹级播放设置（scenes[X].play_settings）的取值口径 —— 三端共用一份，改这里要同步
+ * 前端 _psCell/psSet* 与 APK 的 playSettingsOf：
+ *   dissolve    Boolean        同一文件夹内素材轮播交接时叠化（切墙板/切幕/试播接管一律硬切）
+ *   dissolve_ms Number         叠化时长 100~3000ms；设备端另需暖机提前量，片长不够时自动退化硬切
+ *   order       'seq'|'shuffle' 顺序循环（按文件名）/ 随机循环
+ * A、B 是两套独立物理目录（scenea/01 与 sceneb/01 装的不是同一批片子），所以设置按幕各存一份。
+ * 全默认的格子一律不落键：给每幕挂一张 30 格默认表会让 roomSceneDigest 当场全库漂移一次，
+ * 部署后每台在线设备都被对账判成"rev 落后"补发一发同步、视频从头播（与 panel_no 空表不落键同理）。
+ */
+const PLAY_ORDERS = ['seq', 'shuffle'];
+const PLAY_DISSOLVE_MS_MIN = 100, PLAY_DISSOLVE_MS_MAX = 3000, PLAY_DISSOLVE_MS_DEFAULT = 400;
+
+/** 叠化时长：档内整数原样收下，其余回落默认（下发侧必须是总函数，非法值由 findPlaySettingsError 在写库前拦） */
+function dissolveMsValue(raw) {
+  const n = (typeof raw === 'number' || typeof raw === 'string') ? Number(raw) : NaN;
+  return (Number.isInteger(n) && n >= PLAY_DISSOLVE_MS_MIN && n <= PLAY_DISSOLVE_MS_MAX) ? n : PLAY_DISSOLVE_MS_DEFAULT;
+}
+
+/**
+ * 单格播放设置 → 确定形状；等于全默认返回 null（= 这一格不落键）。
+ * dissolve_ms 只在叠化开着时才有意义：关着还留个时长会让这一格永远算"非默认"，
+ * 用户把叠化关回去 rev 也回不到原值，白白多一次全量同步。
+ */
+function playSettingsValue(v) {
+  if (!isPlainObject(v)) return null;
+  const dissolve = v.dissolve === true;
+  const order = v.order === 'shuffle' ? 'shuffle' : 'seq';
+  if (!dissolve && order === 'seq') return null;
+  const out = { dissolve: dissolve, order: order };
+  if (dissolve) out.dissolve_ms = dissolveMsValue(v.dissolve_ms);
+  return out;
+}
+
+/**
+ * 整张播放设置表规范化（写库与下发共用）：键必须是合法文件夹名，值全默认的丢掉，
+ * 幕内键折回格名（"A01" → "01"）后排序输出 —— 同一组设置不管从哪种键顺序写进来都长同一个样，
+ * rev 才不会因键序/类型抖动虚报"配置变了"。同格两种写法（"01" 与 "A01"）先到先得，与 normalizePanelNos 同口径。
+ */
+function normalizePlaySettings(ps, sceneKey) {
+  const kept = {};
+  if (!isPlainObject(ps)) return kept;
+  Object.keys(ps).sort().forEach(fid => {
+    if (!isSafeFolderName(fid)) return;
+    const v = playSettingsValue(ps[fid]);
+    if (v === null) return;
+    const cell = panelCellKey(sceneKey, fid);
+    if (kept[cell] === undefined) kept[cell] = v;
+  });
+  const out = {};
+  Object.keys(kept).sort().forEach(cell => { out[cell] = kept[cell]; });
+  return out;
+}
+
+/**
+ * 播放设置写入校验：非法的 order / dissolve_ms 静默回落会造成"表里填的和设备演的两回事"，
+ * 所以写库前就报出去（与 findWallpanelFieldError 同一套理由）。空/没带不算错（回落默认）。
+ * 入参是整份 config（两幕都查）；无错返回 null。
+ */
+function findPlaySettingsError(cfg) {
+  const scenes = (cfg && cfg.scenes) || {};
+  for (const key of ['A', 'B']) {
+    const ps = scenes[key] && scenes[key].play_settings;
+    if (!isPlainObject(ps)) continue;
+    for (const fid of Object.keys(ps).sort()) {
+      const cell = ps[fid];
+      if (!isPlainObject(cell)) continue;   // 脏形状由 normalizePlaySettings 丢弃，与 folder_mappings 同口径
+      const where = `场景${key} 文件夹${panelCellKey(key, fid)}`;
+      if (cell.order !== undefined && cell.order !== null && cell.order !== '' && PLAY_ORDERS.indexOf(cell.order) < 0) {
+        return `${where} 的播放顺序只能是 seq（顺序循环）或 shuffle（随机循环）`;
+      }
+      const ms = cell.dissolve_ms;
+      if (ms !== undefined && ms !== null && ms !== '') {
+        const n = (typeof ms === 'number' || typeof ms === 'string') ? Number(ms) : NaN;
+        if (!Number.isInteger(n) || n < PLAY_DISSOLVE_MS_MIN || n > PLAY_DISSOLVE_MS_MAX) {
+          return `${where} 的叠化时长只能是 ${PLAY_DISSOLVE_MS_MIN}~${PLAY_DISSOLVE_MS_MAX} 之间的整数毫秒`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * 单幕合并：incoming（PUT 整份 config 时带的那一幕）× existing（DB 里的那一幕）→ 落库形状。
- * 三个字段三种"没传"的口径，各自都不能猜：
+ * 五个字段的"没传"口径，各自都不能猜：
  *   - folder_mappings：只要带了这个键（含 {} / null / 脏形状）就按传入的规范化结果落库，
  *     完全没带才继承 DB —— 否则映射永远无法清空
+ *   - panel_no：与 folder_mappings 同一套口径（带键即按传入落，没带才继承），否则解绑编号后
+ *     那个键会被 DB 里的旧值一路继承回来，墙板再也按不动
+ *   - play_settings：同 panel_no（带键即按传入落，没带才继承），否则把叠化关回默认后那一格
+ *     会被 DB 旧值继承回来，永远关不掉
  *   - windows：只有非空数组才覆盖。清空窗口走 PUT /rooms/:id/windows —— 那里 windows 是必填
  *     数组，空数组表示"真的一个都不留"，不会和"调用方顺手带了个空 config"混淆
  *   - master：带 brightness 才生效，并 clamp 到 [0,1]
+ * sceneKey（'A'/'B'）用来把 panel_no / play_settings 的幕内键归一成格名，落库的表因此只有一种写法。
  */
-function mergeSceneConfig(incoming, existing, defaultName) {
+function mergeSceneConfig(incoming, existing, defaultName, sceneKey) {
   var src = isPlainObject(incoming) ? incoming : {};
   var ex = isPlainObject(existing) ? existing : {};
   var mappings = (src.folder_mappings === undefined)
     ? (ex.folder_mappings || {})
     : normalizeFolderMappings(src.folder_mappings);
+  var panelNos = (src.panel_no === undefined)
+    ? normalizePanelNos(ex.panel_no, sceneKey)
+    : normalizePanelNos(src.panel_no, sceneKey);
+  var playSettings = (src.play_settings === undefined)
+    ? normalizePlaySettings(ex.play_settings, sceneKey)
+    : normalizePlaySettings(src.play_settings, sceneKey);
   var master;
   if (src.master && src.master.brightness != null) {
     var b = parseFloat(src.master.brightness);
@@ -306,20 +523,97 @@ function mergeSceneConfig(incoming, existing, defaultName) {
   return {
     name: src.name || ex.name || defaultName,
     folder_mappings: mappings,
+    panel_no: panelNos,
+    play_settings: playSettings,
     windows: (Array.isArray(src.windows) && src.windows.length > 0) ? src.windows : (ex.windows || []),
     master: master
   };
 }
 
 /**
- * 将 scenes 对象中的 folder_mappings 键名前缀 scene 标识（A01, B01...）
- * @param {object} scenes - { A: { folder_mappings: { "01": [...] } }, B: { ... } }
- * @returns {object} - { A: { folder_mappings: { "A01": [...] } }, B: { "B01": [...] } }
- * 用途：MQTT 发送时统一格式，避免 A/B 场景共用 "01" 导致物理文件夹冲突
+ * config 写库前的统一净化入口（PUT /api/rooms/:id 与 POST /api/rooms 共用）。
+ * 返回 { error }（400 文案，调用方直接 res.status(400).json）或 { cfg }（可直接 stringify 落库的形状）。
+ * 两个入口必须同口径：POST 过去只做"JSON 合不合法"检查，脏绑定/越界编号能直接入库，
+ * 之后一次不带 panel_no 的 PUT 继承这份脏值再撞上唯一性校验 —— 稳定 400，这间房再也存不进去。
+ * existingCfg 传 null 表示新建房间（没有可继承的旧配置）。
+ */
+function prepareRoomConfig(raw, existingCfg) {
+  var cfg;
+  try { cfg = typeof raw === 'string' ? JSON.parse(raw) : raw; }
+  catch (e) { return { error: 'config 不是合法 JSON 字符串' }; }
+  if (!isPlainObject(cfg)) return { error: 'config 必须是对象' };
+
+  if (cfg.scenes === undefined || cfg.scenes === null) cfg.scenes = {};
+  else if (!isPlainObject(cfg.scenes)) return { error: 'config.scenes 必须是对象' };
+  else {
+    // 只认 A/B 两幕。脏键（典型是 "__proto__"）留在 config 里会被存库，
+    // 下次按 scenes[key] 取值时就把内容挂到了 Object.prototype 上（全进程、跨房间泄漏）
+    Object.keys(cfg.scenes).forEach(function (k) { if (!isSceneKey(k)) delete cfg.scenes[k]; });
+  }
+
+  // incoming 没带的顶层键从 DB 那份继承。少带一个 debug 不只是丢个标志位：收敛点会把它判成
+  // "调试模式变了"，给整间房的在线设备发 set_debug false —— 现场正在排障，大屏的运维 UI 和日志上报会自己关掉。
+  // JSON.parse 出来的脏原型键是 own 属性，直接 obj[k]=v 走的是原型 setter，会把内容挂到
+  // Object.prototype 上（全进程、跨房间），所以 __proto__/constructor/prototype 一律不接。
+  var merged = {};
+  [existingCfg || {}, cfg].forEach(function (src) {
+    Object.keys(src).forEach(function (k) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') return;
+      merged[k] = src[k];
+    });
+  });
+
+  // 墙板字段按下发口径落库（roomWallpanelFields 算出确定形状）：存进 "true"/1 这类真值时
+  // 下发判成 false，界面显示"开"而设备关着，且靠 set_wallpanel 补不回来（两边指纹都是 false）。
+  // 非法的串口节点/波特率先报 400 —— 静默回落等于替运营改了硬件参数，配置表里看到的却还是自己填的。
+  var wpErr = findWallpanelFieldError(merged);
+  if (wpErr) return { error: wpErr };
+  Object.assign(merged, roomWallpanelFields(merged));
+
+  // 播放设置同理：非法的时长/顺序需要在写库前报出去，而不是静默回落成"表里一套、设备演另一套"。
+  // 查的是逐幕合并之前的 scenes —— mergeSceneConfig 里的 normalizePlaySettings 会把脏值直接规范化掉，
+  // 到那时再查就看不见 incoming 写进来的那串了（DB 里的存量都是当年校验过的，继承回来不用再查一遍）
+  var psErr = findPlaySettingsError(merged);
+  if (psErr) return { error: psErr };
+
+  // 逐幕合并：incoming 没带的那一幕、以及 windows/master 这些不归本接口管的字段，
+  // 一律从 DB 继承 —— 前端有多处会 PUT 整份 config，任何一处少填都不该抹掉房间配置
+  var existingScenes = (existingCfg && existingCfg.scenes) || {};
+  var cellConflict = null;
+  ['A', 'B'].forEach(function (key) {
+    // 同一格两个编号要在归并之前查（mergeSceneConfig 之后只剩一个键，歧义就看不见了）
+    if (!cellConflict && isPlainObject(merged.scenes[key])) {
+      cellConflict = findPanelCellConflict(key, merged.scenes[key].panel_no);
+    }
+    merged.scenes[key] = mergeSceneConfig(merged.scenes[key], existingScenes[key], key === 'A' ? '第一幕' : '第二幕', key);
+  });
+  if (cellConflict) return { error: cellConflict };
+
+  // 墙板编号唯一性（同幕一键一文件夹）：放在逐幕合并之后查 —— incoming 没带 panel_no 的那一幕
+  // 会继承 DB 旧值，只改一处也可能与另一处撞上；放在写库之前拦：撞了就不落库，
+  // 报错回给前端，绝不静默保留后写的那个（现场表现是"按 3 号键切的却是隔壁那格"，无从排查）
+  var dupNo = null;
+  ['A', 'B'].some(function (key) {
+    dupNo = findPanelNoConflict(key, merged.scenes[key].panel_no);
+    return !!dupNo;
+  });
+  if (dupNo) return { error: dupNo };
+
+  return { cfg: merged };
+}
+
+/**
+ * DB 形状的 scenes → 下发形状：幕内三张表（folder_mappings / panel_no / play_settings）的文件夹键
+ * 一律加幕前缀（"01" → "A01" / "B01"）；windows 原样透传，content.folderId 仍是裸 "01"。
+ * @param {object} scenes - { A: { folder_mappings: { "01": [...] }, panel_no: { "01": 3 }, play_settings: { "01": {...} }, windows: [...] }, B: {...} }
+ * @returns {object} - { A: { folder_mappings: { "A01": [...] }, panel_no: { "A01": 3 }, play_settings: { "A01": {...} }, windows: [...] }, B: {...} }
+ * 用途：MQTT 发送时统一格式，避免 A/B 两幕共用 "01" 导致物理文件夹冲突（设备按前缀落 scenea/sceneb 目录）。
  * 三处归一化（为了让"配置有没有变"可判定，见 roomSceneDigest）：
  *   - 只取 A/B 两幕（见 isSceneKey；DB 里的脏键不会跟着下发，也不会污染返回值原型）
  *   - 文件夹键排序后再生成，DB 里键顺序变了不算内容变了
  *   - 已带幕前缀的键不二次加前缀（见 prefixedFolderKey）；映射值过 normalizeMaterialIds
+ * 三张表同一套前缀 + 排序口径，设备端才能用同一把键查"这个编号是哪一格 / 这一格该怎么播"。
+ * 区别只在落不落键：folder_mappings 恒在（空表也是 {}），panel_no / play_settings 空表不落键 —— 理由见函数内注释。
  */
 function buildPrefixedScenes(scenes) {
   var result = {};
@@ -337,6 +631,24 @@ function buildPrefixedScenes(scenes) {
       windows: Array.isArray(sceneData.windows) ? sceneData.windows : []
     };
     if (sceneData.master) result[key].master = sceneData.master;
+    // 空表不落键：给每幕都挂一个 panel_no:{} 会让 roomSceneDigest 当场全库漂移一次，
+    // 部署后每台在线设备都被对账判成"rev 落后"补发一发素材同步。解绑到空后键消失，指纹回到原值。
+    var panelNos = normalizePanelNos(sceneData.panel_no, key);
+    var prefixedPanel = {};
+    var panelKeys = Object.keys(panelNos).sort();
+    panelKeys.forEach(function(folderId) {
+      prefixedPanel[prefixedFolderKey(key, folderId)] = panelNos[folderId];
+    });
+    if (panelKeys.length > 0) result[key].panel_no = prefixedPanel;
+    // 播放设置同样加幕前缀 + 排序 + 空表不落键（理由同上：默认值不该让全库 rev 漂移一次）。
+    // 设备端按物理目录 id（"A01"）查这一格该不该叠化、该顺序还是随机。
+    var playSettings = normalizePlaySettings(sceneData.play_settings, key);
+    var psKeys = Object.keys(playSettings).sort();
+    if (psKeys.length > 0) {
+      var prefixedPs = {};
+      psKeys.forEach(function(folderId) { prefixedPs[prefixedFolderKey(key, folderId)] = playSettings[folderId]; });
+      result[key].play_settings = prefixedPs;
+    }
   });
   return result;
 }
@@ -364,11 +676,13 @@ function mergePrefixedMappings(prefixedScenes) {
 }
 
 /**
- * 房间配置的"内容指纹"（rev）：只覆盖会影响设备播放的字段（A/B 两幕的映射+窗口+总亮度）。
+ * 房间配置的"内容指纹"（rev）：只覆盖会影响设备播放的字段（A/B 两幕的映射+窗口+总亮度+编号绑定+播放设置）。
  * 用途有两处：① 写接口落库后比对新旧，配置真变了才打扰设备；② 随命令下发给设备，
  * 设备心跳回传，服务端发现不一致就补发一次同步（对账，替代"每个入口都记得补一枪"）。
  * 键序已由 buildPrefixedScenes 归一化；A/B 显式定序，避免 DB 里键顺序变了被当成内容变了。
- * ⚠️ 指纹只算 scenes，不含 debug —— debug 走轻量的 set_debug，不该触发素材同步。
+ * ⚠️ 指纹只算 scenes：config 顶层的 debug 与 wallpanel_*（总闸/默认编号/串口节点/波特率）都不进 rev。
+ * 它们各走轻量命令（set_debug / set_wallpanel），不该因为"开个调试"就触发一次素材全量同步；
+ * 代价是掉了那一跳不会被心跳对账补回来，只能靠重连或手工同步自愈（见 notifyRoomConfigChanged）。
  */
 function roomSceneDigest(cfg) {
   const p = buildPrefixedScenes((cfg && cfg.scenes) || {});
@@ -377,7 +691,8 @@ function roomSceneDigest(cfg) {
 
 /**
  * 素材映射指纹：只覆盖 folder_mappings（决定"设备上该有哪些文件"）。
- * 用来区分"要重新对账素材"和"只是窗口位置/亮度变了"，后者发轻量 update_windows 就够了。
+ * 用来区分"要重新对账素材"和"只是窗口/总亮度/墙板编号/播放设置变了"，
+ * 后者发轻量 update_windows 就够了（设备原地改视图，不释放播放器、视频不从头播）。
  */
 function roomMappingDigest(cfg) {
   const p = buildPrefixedScenes((cfg && cfg.scenes) || {});
@@ -385,7 +700,7 @@ function roomMappingDigest(cfg) {
   return crypto.createHash('sha1').update(JSON.stringify([m, n])).digest('hex').slice(0, 12);
 }
 
-/** 组装 update_windows 载荷（轻量：APK 原地改视图，结构变化时自行回退全量重建；不触碰素材） */
+/** 组装 update_windows 载荷（轻量：APK 原地改视图，结构/播放设置变化时自行回退全量重建；不触碰素材） */
 function windowCommandPayload(roomId, cfg) {
   return {
     action: 'update_windows',
@@ -398,6 +713,50 @@ function windowCommandPayload(roomId, cfg) {
 
 /** 房间的调试模式标志（config.debug 严格 true 才算开，与所有下发口径一致） */
 function roomDebugFlag(cfg) { return !!(cfg && cfg.debug === true); }
+
+/**
+ * 房间的墙板字段（config 顶层，与 debug 同级）：串口监听总闸 + 开机默认编号 + 串口节点 + 波特率。
+ * 一律算出确定形状（没配 = false / null / 默认节点），设备端不必区分"没带"和"关着"。
+ * 这里同时是「写入侧的归一」（见 prepareRoomConfig）：存进去的形状就是发出去的形状。
+ * 路径/波特率的非法值由 findWallpanelFieldError 在写库前报 400，这里只做回落，保证下发侧永远是总函数。
+ * ⚠️ 这几项和 debug 一样故意不进 rev（见 roomSceneDigest）：换个串口不该让整间房重新对账素材。
+ */
+function roomWallpanelFields(cfg) {
+  var raw = cfg && cfg.wallpanel_default_no;
+  var n = (typeof raw === 'number' || typeof raw === 'string') ? Number(raw) : NaN;
+  var baudRaw = cfg && cfg.wallpanel_baud;
+  var baud = (typeof baudRaw === 'number' || typeof baudRaw === 'string') ? Number(baudRaw) : NaN;
+  var path = cfg && cfg.wallpanel_serial_path;
+  return {
+    wallpanel_enabled: !!(cfg && cfg.wallpanel_enabled === true),
+    wallpanel_default_no: (Number.isInteger(n) && n >= PANEL_NO_MIN && n <= PANEL_NO_MAX) ? n : null,
+    wallpanel_serial_path: isSafeSerialPath(path) ? path : WALLPANEL_DEFAULT_PATH,
+    wallpanel_baud: WALLPANEL_BAUDS.indexOf(baud) >= 0 ? baud : null
+  };
+}
+
+/** 墙板字段指纹（只用于"这一枪是不是只改了墙板"的判定，不是配置 rev） */
+function roomWallpanelDigest(cfg) { return JSON.stringify(roomWallpanelFields(cfg)); }
+
+/**
+ * 墙板硬件字段（串口节点 / 波特率）写入校验：非法值 roomWallpanelFields 会静默回落，
+ * 现场表现是"配置表里填的和自己看到的两回事，设备却按回落值开串口"，最难查，所以写库前就报出去。
+ * 空/没带不算错（回落默认节点 + 驱动默认波特率）。
+ */
+function findWallpanelFieldError(cfg) {
+  var path = cfg.wallpanel_serial_path;
+  if (path !== undefined && path !== null && path !== '' && !isSafeSerialPath(path)) {
+    return '串口节点只能是 /dev/ 下的设备名（字母、数字、-、_），例如 /dev/ttyUSB0';
+  }
+  var baud = cfg.wallpanel_baud;
+  if (baud !== undefined && baud !== null && baud !== '') {
+    var n = (typeof baud === 'number' || typeof baud === 'string') ? Number(baud) : NaN;
+    if (WALLPANEL_BAUDS.indexOf(n) < 0) {
+      return '波特率只能是 ' + WALLPANEL_BAUDS.join(' / ') + ' 之一，留空则用驱动默认';
+    }
+  }
+  return null;
+}
 
 /**
  * MQTT topic 里解出的设备 ID 白名单：字母数字/-/_ ，1~64 位（真实 ID 是 64 位十六进制 UUID）。
@@ -465,15 +824,18 @@ function parseRoomConfig(s) {
 /**
  * 一份房间 config → 设备"按这份配置播"所需的全部字段。
  * auth_result 与 sync_room_materials 共用，两条链路的口径不会再各写各的漏字段。
+ * 墙板字段带在这里（设备端 set_wallpanel 之外的自愈通道）：开关/默认编号没进 rev，
+ * 掉了那一跳的命令靠下一次重连或手工同步补回来，口径同 debug。
  */
 function roomSyncFields(cfg) {
   const prefixedScenes = buildPrefixedScenes((cfg && cfg.scenes) || {});
-  return {
-    scenes: prefixedScenes,                                    // folder_mappings 键已带幕前缀（A01/B01）
+  return Object.assign({
+    scenes: prefixedScenes,                                    // folder_mappings / panel_no / play_settings 键已带幕前缀（A01/B01）
     folder_mappings: mergePrefixedMappings(prefixedScenes),     // A+B 全量，与 HTTP 清单接口同形
-    debug: roomDebugFlag(cfg),
+    debug: roomDebugFlag(cfg)
+  }, roomWallpanelFields(cfg), {
     rev: roomSceneDigest(cfg)
-  };
+  });
 }
 
 /** 组装 sync_room_materials 载荷（各发送方共用一份，不再各写各的字段） */
@@ -486,10 +848,12 @@ function syncCommandPayload(roomId, cfg) {
 }
 
 /**
- * 【同步时机的唯一收敛点】房间 config 落库后调用：真变了才打扰设备，且按变化性质选最轻的那条命令。
- * - folder_mappings 变了   → sync_room_materials（全量对账，可能要下载，会重建窗口）
- * - 只有窗口/总亮度变了    → update_windows（APK 原地改视图，不碰素材；结构变化时自行回退重建）
- * - 只有 debug 变了        → set_debug（轻量，不动素材、不重建，见 APK setDebugMode）
+ * 【同步时机的唯一收敛点】房间 config 落库后调用：真变了才打扰设备，按变化性质发**最轻的那几条**。
+ * - folder_mappings 变了   → sync_room_materials（全量对账，可能要下载，会重建窗口；载荷已含 debug/墙板，不再补轻枪）
+ * - 只有窗口/总亮度/编号/播放设置变了 → update_windows（APK 原地改视图，不碰素材；结构或播放设置变化时自行回退重建）
+ * - debug 变了             → set_debug（轻量，不动素材、不重建，见 APK setDebugMode）
+ * - 墙板字段变了           → set_wallpanel（同上轻量，见 APK applyWallPanelEnabled；含开关/默认编号/节点/波特率）
+ * - 后两类与前两类是并列判定：同一次 PUT 既改编号又开总闸，就 update_windows + set_wallpanel 两条都发
  * - 都没变                 → 一条都不发：前端补写、脚本幂等写、重复 PUT 都不再产生第二次重建
  * 这条规则替代了原先"每个写接口各自记得通知 / 前端各自补一枪"的分散时机，
  * 因此 rmRoomMat、doPushToRoom 这类"先 PUT 再 DELETE 再 sync"的连写会自然收敛成一次下发。
@@ -502,27 +866,37 @@ function syncCommandPayload(roomId, cfg) {
 function notifyRoomConfigChanged(roomId, oldCfgStr, newCfgStr, reason, cb) {
   const oldCfg = parseRoomConfig(oldCfgStr);
   const newCfg = parseRoomConfig(newCfgStr);
-  let payload = null;
-  let label = '';
+  // 并列收集，不是 else-if 链：一次 PUT 经常同时改好几类（墙板表保存就是「编号 + 总闸 + 默认编号」一把写），
+  // 链式判定只发最重的那条，轻量的 set_wallpanel / set_debug 会被静默吞掉 —— 而这两项都故意不进 rev，
+  // 心跳对账只比 roomSceneDigest，永远补不回来，设备得等下次重连才自愈。
+  const commands = [];
+  // 全量同步的载荷由 roomSyncFields 一处收口，debug 与墙板字段都在里面，命中它就不必再补轻量枪
+  let heavyCarriesFlags = false;
   if (roomMappingDigest(oldCfg) !== roomMappingDigest(newCfg)) {
-    payload = syncCommandPayload(roomId, newCfg);
-    label = '素材映射';
+    commands.push(['素材映射', syncCommandPayload(roomId, newCfg)]);
+    heavyCarriesFlags = true;
   } else if (roomSceneDigest(oldCfg) !== roomSceneDigest(newCfg)) {
-    payload = windowCommandPayload(roomId, newCfg);
-    label = '窗口';
-  } else if (roomDebugFlag(oldCfg) !== roomDebugFlag(newCfg)) {
-    payload = { action: 'set_debug', debug: roomDebugFlag(newCfg), timestamp: Date.now() };
-    label = '调试模式';
+    commands.push(['窗口', windowCommandPayload(roomId, newCfg)]);
   }
-  if (!payload) { if (cb) cb(0); return; }
+  if (!heavyCarriesFlags && roomDebugFlag(oldCfg) !== roomDebugFlag(newCfg)) {
+    commands.push(['调试模式', { action: 'set_debug', debug: roomDebugFlag(newCfg), timestamp: Date.now() }]);
+  }
+  if (!heavyCarriesFlags && roomWallpanelDigest(oldCfg) !== roomWallpanelDigest(newCfg)) {
+    commands.push(['墙板', Object.assign({ action: 'set_wallpanel' }, roomWallpanelFields(newCfg), { timestamp: Date.now() })]);
+  }
+  if (commands.length === 0) { if (cb) cb(0); return; }
 
   db.query(
     'SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
     [roomId],
     (err, devices) => {
-      if (err || !devices || devices.length === 0) { if (cb) cb(0); return; }
-      devices.forEach(d => publishToDeviceCommand(d, payload));
-      console.log(`🔔 [${reason}] 房间 ${roomId} ${label}变更 → 已通知 ${devices.length} 台设备 (${payload.action})`);
+      if (err || !devices || devices.length === 0) {
+        // 配置确实变了但没人可发：房间没绑设备/设备未授权时现场点墙板是没反应的，这行是唯一线索
+        if (devices && devices.length === 0) console.log(`🔔 [${reason}] 房间 ${roomId} ${commands.map(c => c[0]).join('+')}变更，但无已授权设备`);
+        if (cb) cb(0); return;
+      }
+      devices.forEach(d => commands.forEach(cmd => publishToDeviceCommand(d, cmd[1])));
+      console.log(`🔔 [${reason}] 房间 ${roomId} ${commands.map(c => c[0]).join('+')}变更 → 已通知 ${devices.length} 台设备 (${commands.map(c => c[1].action).join(',')})`);
       if (cb) cb(devices.length);
     }
   );
@@ -770,6 +1144,11 @@ function handleMqttMessage(topic, message) {
             if (isOnline && data.rev && data.syncing !== true) {
               reconcileDeviceRev(deviceId, data.rev);
             }
+            // 墙板当前编号：归到规范 id 再记账（【S-06i】）。这一跳没带 panel_no 就是"清掉显示"，
+            // 不是"保持原样"—— 设备把墙板关了、房间撤了默认号，界面不能再留着旧编号。
+            resolveDeviceId(deviceId, function (canonId) {
+              rememberDevicePanelNo(canonId, data.panel_no, isOnline);
+            });
           }
         );
         break;
@@ -1142,6 +1521,30 @@ function resolveDeviceId(reportedId, cb) {
   );
 }
 
+// 【S-06i】 设备当前墙板编号：心跳 status 的 panel_no → 内存缓存 → GET /api/devices 的 d.panel_no。
+// 只放内存不落库：这是 30s 一跳的瞬时状态，加列要走 DDL、写库等于把心跳变成写放大（几百台 × 每 30s 一次）。
+// 键用 resolveDeviceId 的规范 id —— 心跳 topic 里可能是装机漂移后的指纹，和 devices.id 是两串（见【S-06h】）。
+// 心跳没带这个字段（本机既没按过号、房间也没默认号）或值越界就清；超过三个心跳周期没刷新也当未知，
+// 免得设备没来得及发 offline 就掉线，界面还挂着它最后一个编号。
+const DEVICE_PANEL_NO_TTL = 90000;
+const devicePanelNoAt = new Map();   // 规范 devices.id -> { no, at }
+
+function rememberDevicePanelNo(id, raw, isOnline) {
+  const no = isOnline ? panelNoValue(raw) : null;
+  if (no === null) devicePanelNoAt.delete(id);
+  else devicePanelNoAt.set(id, { no: no, at: Date.now() });
+}
+
+function devicePanelNo(id) {
+  const hit = devicePanelNoAt.get(id);
+  if (!hit) return null;
+  if (Date.now() - hit.at > DEVICE_PANEL_NO_TTL) {
+    devicePanelNoAt.delete(id);
+    return null;
+  }
+  return hit.no;
+}
+
 // ==================== API 接口 ====================
 
 // 【S-05a】 获取设备列表（支持按 room_id 筛选）
@@ -1155,6 +1558,7 @@ app.get('/api/devices', (req, res) => {
   }
   db.query(sql, params, (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
+    (results || []).forEach(function (d) { d.panel_no = devicePanelNo(d.id); });
     res.json(results);
   });
 });
@@ -1180,6 +1584,7 @@ app.delete('/api/devices/:id', (req, res) => {
     publishAuthRevoked(did, '设备记录已被删除');
     // 清身份映射缓存：行都删了还留着"自报 id → 已删 id"，会把后续日志挂到不存在的设备上
     deviceIdCache.forEach((v, k) => { if (v.id === did) deviceIdCache.delete(k); });
+    devicePanelNoAt.delete(did);   // 墙板当前编号同理（【S-06i】），删了就不该还在设备列表上显示
     db.query('DELETE FROM device_versions WHERE device_id = ?', [did], () => {
       db.query('DELETE FROM device_logs WHERE device_id = ?', [did], () => {
         db.query('DELETE FROM devices WHERE id = ?', [did], (err2) => {
@@ -1214,7 +1619,7 @@ app.post('/api/devices/:id/block', (req, res) => {
 // 未知 action 一律 400，不透传 —— command 主题上的指令设备是照单执行的，不能靠前端自觉。
 // 老 APK(167) 里那条 preset_sync 分支只是留着没人调用，服务端先收掉入口即可，不需要设备升级。
 const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
-                        'update_windows', 'delete_material', 'update', 'set_debug',
+                        'update_windows', 'delete_material', 'update', 'set_debug', 'set_wallpanel',
                         'preview_material', 'preview_stop'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
@@ -1290,21 +1695,27 @@ app.post('/api/devices/:id/command', (req, res) => {
 //      心跳对账（reconcileDeviceRev）就不会把试播误判成"设备没跟上配置"而补发同步把它踢掉。
 //   2. 载荷由服务端按房间当前配置算：目标窗口、带幕前缀的物理目录、落盘文件名都不让调用方给。
 //   3. 只播设备本机已有的文件：试播不下载、不改清单，素材没到位就直接回错，让人先去点同步。
-// 闸门挂在房间 debug 上（与设备侧进度条/状态文字同一口径）：这是运维工具，既不该在营业中的
-// 客人面前被误点，也不该给"任何拿到页面、又能从前端提出 x-api-key 的人"留一个随时占屏的入口。
+// 不挂房间 debug 闸门（2026-11-08 用户定调）：单击素材卡试播是内容操作，与 stop / 推送配置同级，
+// 营业中也要能用。debug 只决定设备端上不上屏运维浮层（状态文字/进度条），不再决定这条命令发不发。
+// 占屏的边界改由下面第 2、3 条守：只能播本房间映射里、且设备本机已有的视频，播完必回原画面。
 const PREVIEW_MAX_MS = 5 * 60 * 1000;
 // 设备端播放链只认这几个扩展名（表在 VIDEO_EXT，图片素材不在链上）
 const PREVIEW_VIDEO_RE = new RegExp('\\.(' + VIDEO_EXT.join('|') + ')$', 'i');
 
 /**
- * 房间 config → "这一格的素材该落在哪扇窗"（与 APK applySceneConfigs 的选窗规则同口径）：
- *   候选 = 这一幕里 enabled 不为 false、content.type 是 SCENE_<本幕>、且绑的就是这一格；
- *          content.folderId 为空时按 APK 的"自动取本幕第一个有素材的文件夹"回退
- *   多个命中取 zIndex 最大 —— APK 按 zIndex 升序 addView，最后加的那个盖在最上层，
- *   在它上面试播才是现场真看得见的画面。
+ * 房间 config → "这一格的素材该落在哪些窗"（与 APK applySceneConfigs 的选窗规则同口径）：
+ *   候选 = 这一幕里 enabled 不为 false、content.type 是 SCENE_<本幕>、且"能播这一格"：
+ *          固定窗口看 content.folderId（为空时按 APK 的"自动取本幕第一个有素材的文件夹"回退）；
+ *          content.follow=true 的窗口播哪一格由墙板决定，云端看不到设备当前编号，
+ *          按"它随时可能播这一格"算命中 —— 现场主屏往往就是那扇跟随窗，
+ *          排除它会让试播报"没有窗口绑这一格"，而屏上明明播得动。
+ *   命中是**全部**：所有窗口的画面严格同步是用户定调的硬约束（2026-11-11），试播只落一扇
+ *   等于当场分裂一次屏，而且那一扇播完回到自己被冻住的位置，轮播顺序就此错开。
+ *   winIds 按 zIndex 降序，第一扇留作旧 APK 的 win_id 兜底与日志显示；设备端不认这份名单，
+ *   它按"本机此刻谁在播这一格"自己认（folder_id 才是判据，见 APK previewTargets）。
  * 数据一律取 buildPrefixedScenes 的结果：键已带幕前缀且已排序，正是 APK 遍历的那一份，
  * 自己再拼前缀/再排一次序就是第四处口径漂移的开始。
- * @returns {{winId:string, winName:string, physicalFolder:string}|null}
+ * @returns {{winIds:string[], winId:string, winName:string, physicalFolder:string}|null}
  */
 function resolvePreviewTarget(cfg, scene, folder) {
   const scenes = buildPrefixedScenes((cfg && cfg.scenes) || {});
@@ -1318,7 +1729,7 @@ function resolvePreviewTarget(cfg, scene, folder) {
   if (windows === 0) {
     if (scene !== 'A') return null;
     const auto = Object.keys(mappings).find(k => (mappings[k] || []).length > 0);
-    return auto === wanted ? { winId: 'win_1', winName: '窗口1（默认）', physicalFolder: wanted } : null;
+    return auto === wanted ? { winIds: ['win_1'], winId: 'win_1', winName: '窗口1（默认）', physicalFolder: wanted } : null;
   }
   // 未指定文件夹的窗口播哪一个：APK 取映射里第一个非空文件夹，排序在 buildPrefixedScenes 里已做完
   const autoFolder = Object.keys(mappings).find(k => (mappings[k] || []).length > 0);
@@ -1326,16 +1737,27 @@ function resolvePreviewTarget(cfg, scene, folder) {
     if (!isPlainObject(w) || w.enabled === false) return false;
     const c = isPlainObject(w.content) ? w.content : {};
     if (String(c.type || '').toUpperCase() !== 'SCENE_' + scene) return false;
+    if (c.follow === true) return true;
     const req = String(c.folderId || '').trim();
     return req ? prefixedFolderKey(scene, req) === wanted : autoFolder === wanted;
   });
   if (matched.length === 0) return null;
-  const top = matched.reduce((a, b) => (Number(b.zIndex) || 0) > (Number(a.zIndex) || 0) ? b : a);
-  return { winId: String(top.id), winName: String(top.name || top.id), physicalFolder: wanted };
+  // 整格命中，按 zIndex 降序：第一扇只用于旧 APK 的兜底字段和日志显示，
+  // 设备上真正接管的是"这一格的所有窗口"（用户定调 2026-11-11：任何情况下所有窗口画面严格同步，
+  // 只换一扇就是当场制造画面分裂）。
+  const byZ = matched.slice().sort((a, b) => (Number(b.zIndex) || 0) - (Number(a.zIndex) || 0));
+  const winIds = byZ.map(w => String(w.id));
+  // 名字取 winIds[0] 那一扇（与兜底字段同口径），否则日志会出现"底部 等 2 扇窗"而 win_id 指着顶层窗
+  const firstName = String(byZ[0].name || byZ[0].id);
+  return {
+    winIds, winId: winIds[0],
+    winName: winIds.length > 1 ? firstName + ' 等 ' + winIds.length + ' 扇窗' : firstName,
+    physicalFolder: wanted
+  };
 }
 
 /**
- * 试播的下发前公共校验：房间 → debug 闸门 → 目标窗口 → 映射 → 素材记录 → 房间内授权设备，
+ * 试播的下发前公共校验：房间 → 目标窗口 → 映射 → 素材记录 → 房间内授权设备，
  * 任一环不成立就把原因回给前端（这一步的失败必须看得见，见下面路由里的注释）。
  * @param {string} roomId
  * @param {{scene?:string, folder?:string, material_id?:string}} body
@@ -1354,9 +1776,6 @@ function preparePreview(roomId, body, fail, ok) {
     if (err) return fail(500, '房间查询失败: ' + err.message);
     if (!rows || rows.length === 0) return fail(404, '房间不存在');
     const cfg = parseRoomConfig(rows[0].config);
-    if (!roomDebugFlag(cfg)) {
-      return fail(409, '试播只在房间调试模式开启时可用：先在窗口配置里打开「应用调试模式」');
-    }
     const target = resolvePreviewTarget(cfg, scene, folder);
     if (!target) {
       return fail(409, '这一幕 ' + folder + ' 没有可试播的视频窗口：'
@@ -1408,6 +1827,7 @@ app.post('/api/rooms/:id/preview', (req, res) => {
       action: 'preview_material',
       room_id: roomId,
       win_id: ctx.target.winId,
+      win_ids: ctx.target.winIds,          // 整格名单；设备端自己认成员，这里只作旧包兜底
       win_name: ctx.target.winName,
       folder_id: ctx.target.physicalFolder,   // 已带幕前缀，APK 直接过 materialDirOf
       filename: ctx.filename,                 // 与同步落盘名同源（manifestFilename）
@@ -1439,14 +1859,14 @@ app.post('/api/rooms/:id/preview/stop', (req, res) => {
     if (err) return res.status(500).json({ error: '房间查询失败: ' + err.message });
     if (!rows || rows.length === 0) return res.status(404).json({ error: '房间不存在' });
     const cfg = parseRoomConfig(rows[0].config);
-    if (!roomDebugFlag(cfg)) {
-      return res.status(409).json({ error: '试播只在房间调试模式开启时可用' });
-    }
     const payload = { action: 'preview_stop', room_id: roomId, timestamp: Date.now() };
     if (scene && folder) {
       const target = resolvePreviewTarget(cfg, scene, folder);
       if (!target) return res.status(409).json({ error: '这一幕 ' + folder + ' 已解析不到窗口，请用「全部停止」' });
+      // folder_id 也带着：设备端按它认这一组的成员（win_id 只是本机名单查不到时的锚点）
       payload.win_id = target.winId;
+      payload.win_ids = target.winIds;
+      payload.folder_id = target.physicalFolder;
       payload.win_name = target.winName;
     }
     db.query('SELECT id, fingerprint FROM devices WHERE room_id = ? AND authorized = 1',
@@ -2130,6 +2550,23 @@ function uploadSizeBytes(url) {
   try { return fs.statSync(p).size; } catch (e) { return 0; }
 }
 
+/**
+ * multipart 的 filename 按浏览器实际发法是 UTF-8 字节，但 busboy 1.x 的 defParamCharset 默认 latin1，
+ * 于是中文原名会被逐字节当成单字节码点解出来："DJ二维码(62).mp4" → "DJäºŒç»´ç\u{A0}\u{81}(62).mp4"。
+ * 这串东西会一路进 materials.name/filename —— 而 filename 是设备端认文件的键，页面上还夹着
+ * 看不见、删不掉的 U+00A0/U+0081。反解判据两条：原串必须全在 latin1 区（真 Unicode 一律不动，
+ * 免得将来 busboy 改了默认值反而把对的名字弄坏），且反解结果不能带 U+FFFD
+ * （带说明客户端真是按 latin1 发的字节、不是 UTF-8 流，此时保留原串才是对的）。
+ */
+function decodeUploadName(name) {
+  if (typeof name !== 'string' || !name) return name;
+  for (var i = 0; i < name.length; i++) {
+    if (name.charCodeAt(i) > 0xFF) return name;
+  }
+  var utf8 = Buffer.from(name, 'latin1').toString('utf8');
+  return utf8.indexOf('\uFFFD') >= 0 ? name : utf8;
+}
+
 function buildSafeUploadName(originalname) {
   const extMatch = originalname.match(/\.[A-Za-z0-9]+$/);
   const ext = extMatch ? extMatch[0].toLowerCase() : '';
@@ -2227,7 +2664,9 @@ app.post("/api/upload", (req, res) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: "no file" });
 
-    const originalName = req.file.originalname || 'file';
+    // 原名先按 UTF-8 反解（见 decodeUploadName）：这一句决定 materials.name/filename 里
+    // 存的是用户起的名字还是一串 latin1 乱码，落盘名不受影响（那边只保留 ASCII 基名）。
+    const originalName = decodeUploadName(req.file.originalname) || 'file';
     const extMatch = originalName.match(/\.[A-Za-z0-9]+$/);
     const ext = extMatch ? extMatch[0].toLowerCase() : '';
     // 类型只认扩展名白名单。以前还写 `|| mimetype.startsWith('video')` 兜底，
@@ -2615,15 +3054,15 @@ app.get('/api/rooms/:id', (req, res) => {
 app.post('/api/rooms', (req, res) => {
   const { store_name, name, config } = req.body;
   if (!store_name || !name) return res.status(400).json({error:'store_name and name required'});
-  // config 与 PUT /rooms/:id 同口径：字符串或对象都收，但一定要落成合法 JSON 文本。
-  // 直接把对象塞进字符串列得到的是 "[object Object]"，房间一出生就带着一份解析不了的配置。
+  // config 与 PUT /rooms/:id 走同一个净化入口（prepareRoomConfig）：字符串或对象都收，
+  // 但一定要落成合法 JSON 文本 —— 直接把对象塞进字符串列得到的是 "[object Object]"，
+  // 房间一出生就带着一份解析不了的配置。墙板绑定/编号/总闸也在这里同口径校验，
+  // 否则脏值入库后 PUT 继承它再撞校验，这间房从创建那一刻起就存不进任何配置。
   var cfgStr = '{}';
   if (config !== undefined) {
-    var cfg;
-    try { cfg = typeof config === 'string' ? JSON.parse(config) : config; }
-    catch (e) { return res.status(400).json({error:'config 不是合法 JSON 字符串'}); }
-    if (!isPlainObject(cfg)) return res.status(400).json({error:'config 必须是对象'});
-    cfgStr = JSON.stringify(cfg);
+    var prep = prepareRoomConfig(config, null);
+    if (prep.error) return res.status(400).json({ error: prep.error });
+    cfgStr = JSON.stringify(prep.cfg);
   }
   const id = 'room_' + Date.now();
   db.query('INSERT INTO stores (name) VALUES (?) ON DUPLICATE KEY UPDATE name=name', [store_name], (errStore) => {
@@ -2658,45 +3097,13 @@ app.put('/api/rooms/:id', (req, res) => {
       var roomName = rowsDb[0].name;
       var targetName = (name !== undefined && name !== roomName) ? name : null;
 
-      // config 允许字符串（前端就是这么发的）或对象。解析失败/类型不对一律 400：
-      // 抛在 MySQL 回调里会被顶层 uncaughtException 吞掉，那次请求永远挂着不返回，
-      // 前端只看到"保存中…"转圈，且这个房间每次保存都稳定复现。
-      var cfg;
-      try { cfg = typeof config === 'string' ? JSON.parse(config) : config; }
-      catch (e) { return res.status(400).json({ error: 'config 不是合法 JSON 字符串' }); }
-      if (!isPlainObject(cfg)) {
-        return res.status(400).json({ error: 'config 必须是对象' });
-      }
-      if (cfg.scenes === undefined || cfg.scenes === null) {
-        cfg.scenes = {};
-      } else if (!isPlainObject(cfg.scenes)) {
-        return res.status(400).json({ error: 'config.scenes 必须是对象' });
-      } else {
-        // 只认 A/B 两幕。脏键（典型是 "__proto__"）留在 config 里会被存库，
-        // 下次按 scenes[key] 取值时就把内容挂到了 Object.prototype 上（全进程、跨房间泄漏）
-        Object.keys(cfg.scenes).forEach(function(k) { if (!isSceneKey(k)) delete cfg.scenes[k]; });
-      }
-
-      // 顶层键同样"incoming 覆盖、其余继承"。scenes 早就按这套走，debug 却没进名单：
-      // 少带一个键不只是丢个标志位，收敛点会把它判成"调试模式变了"，给整间房的在线设备
-      // 发 set_debug false —— 现场正在排障，大屏的运维 UI 和日志上报会自己关掉。
-      // __proto__/constructor/prototype 一律不接：JSON.parse 出来的脏键是 own 属性，
-      // 直接 obj[k]=v 走的是原型 setter，会把内容挂到 Object.prototype 上（全进程、跨房间）。
-      var merged = {};
-      [existingConfig, cfg].forEach(function (src) {
-        Object.keys(src).forEach(function (k) {
-          if (k === '__proto__' || k === 'constructor' || k === 'prototype') return;
-          merged[k] = src[k];
-        });
-      });
-      cfg = merged;
-
-      // 逐幕合并：incoming 没带的那一幕、以及 windows/master 这些不归本接口管的字段，
-      // 一律从 DB 继承 —— 前端有多处会 PUT 整份 config，任何一处少填都不该抹掉房间配置
-      var existingScenes = existingConfig.scenes || {};
-      ['A', 'B'].forEach(function(key) {
-        cfg.scenes[key] = mergeSceneConfig(cfg.scenes[key], existingScenes[key], key === 'A' ? '第一幕' : '第二幕');
-      });
+      // config 允许字符串（前端就是这么发的）或对象；解析、scenes 脏键过滤、顶层继承、逐幕合并和
+      // 墙板编号/字段的校验都在 prepareRoomConfig —— 与 POST /rooms 同一个入口，两边口径不会漂。
+      // 校验失败一律 res 返 400，绝不 throw：抛在 MySQL 回调里会被顶层 uncaughtException 吞掉，
+      // 那次请求永远挂着不返回，前端只看到"保存中…"转圈，且这个房间每次保存都稳定复现。
+      var prep = prepareRoomConfig(config, existingConfig);
+      if (prep.error) return res.status(400).json({ error: prep.error });
+      var cfg = prep.cfg;
 
       var newCfgStr = JSON.stringify(cfg);
       if (targetName) { updates.push('name=?'); values.push(targetName); }
@@ -2768,7 +3175,7 @@ app.put('/api/rooms/:id/windows', (req, res) => {
     }
     if (!existingConfig.scenes[targetScene]) {
       // 该幕还没建过（旧数据只存了单幕）：按标准形状补上，与上面 scenes 缺失时的初始化同构
-      existingConfig.scenes[targetScene] = mergeSceneConfig(null, null, targetScene === 'A' ? '第一幕' : '第二幕');
+      existingConfig.scenes[targetScene] = mergeSceneConfig(null, null, targetScene === 'A' ? '第一幕' : '第二幕', targetScene);
     }
     existingConfig.scenes[targetScene].windows = windows;
     // 场景总亮度（Arena 屏级总控对标）：传入则 clamp 到 [0,1] 后保存

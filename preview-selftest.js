@@ -46,15 +46,23 @@ const OTHER = 'zzpvoth0000000000000000000001';
 const RM = 'zzpvroom_main';       // windowed + device  -> success path, top window wins
 const RD = 'zzpvroom_default';    // no windows + device -> default win_1
 const RN = 'zzpvroom_nodev';      // no windows, no device
-const RX = 'zzpvroom_nodebug';    // debug off
+const RX = 'zzpvroom_nodebug';    // debug off + device -> 照样能播（2026-11-08 起试播不挂 debug）
 const RW = 'zzpvroom_wrongwin';   // every window binds 02, mapping is 01
+const RF = 'zzpvroom_follow';      // 一扇跟随窗 + 一扇固定绑 01 —— 现场主屏那种形态
 const DEV1 = 'zzpvdev1', FP1 = 'zzpvfp1';
 const DEV2 = 'zzpvdev2', FP2 = 'zzpvfp2';
+const DEV3 = 'zzpvdev3', FP3 = 'zzpvfp3';   // RX 必须有设备，否则测到的是"没有已授权设备"那道 409，不是 debug
+const DEV4 = 'zzpvdev4', FP4 = 'zzpvfp4';   // RF 同上，只为让试播能落到设备上
 
 // 三种窗口形态：不配窗口 / 一层绑 01、一层自动、一层禁用但 z 最高 / 只绑 02
 function cfgOf(kind, debug) {
   const windows = kind === 'none' ? [] : kind === 'wrong'
     ? [{ id: 'win_9', name: 'Only02', enabled: true, zIndex: 5, content: { type: 'SCENE_A', folderId: '02' } }]
+    : kind === 'follow'
+    ? [
+      { id: 'win_fl', name: 'FollowWall', enabled: true, zIndex: 1, content: { type: 'SCENE_A', follow: true } },
+      { id: 'win_fx', name: 'Fixed01', enabled: true, zIndex: 2, content: { type: 'SCENE_A', folderId: '01' } }
+    ]
     : [
       { id: 'win_1', name: 'Bottom', enabled: true, zIndex: 1, content: { type: 'SCENE_A', folderId: '01' } },
       { id: 'win_2', name: 'TopLayer', enabled: true, zIndex: 9, content: { type: 'SCENE_A', folderId: '' } },
@@ -85,16 +93,19 @@ async function main() {
   await mkRoom(RN, cfgOf('none'));
   await mkRoom(RX, cfgOf('none', false));
   await mkRoom(RW, cfgOf('wrong'));
+  await mkRoom(RF, cfgOf('follow'));
 
   const mkDev = (id, fp, room) => q("INSERT INTO devices (id,name,fingerprint,mqtt_id,model,authorized,room_id,store,status) VALUES (?,?,?,?,?,?,?,?,?)",
     [id, 'zzpv dev', fp, id, 'probe', 1, room, 'zzpvstore', 'offline']);
   await mkDev(DEV1, FP1, RM);
   await mkDev(DEV2, FP2, RD);
+  await mkDev(DEV3, FP3, RX);
+  await mkDev(DEV4, FP4, RF);
 
   const client = mqtt.connect('mqtt://' + config.mqtt.host + ':' + config.mqtt.port,
     { username: config.mqtt.username || undefined, password: config.mqtt.password || undefined });
   await new Promise((res, rej) => { client.on('connect', res); client.on('error', rej); setTimeout(() => rej(new Error('mqtt timeout')), 8000); });
-  client.subscribe([DEV1, FP1, DEV2, FP2].map(t => 'xvj/device/' + t + '/command'));
+  client.subscribe([DEV1, FP1, DEV2, FP2, DEV3, FP3, DEV4, FP4].map(t => 'xvj/device/' + t + '/command'));
   client.on('message', (t, m) => captured.push({ topic: t, text: m.toString() }));
   console.log('SETUP OK');
   // 其余房间（含现场那间 201）的配置必须一字不动 —— 试播不该在任何地方留下配置痕迹
@@ -110,19 +121,20 @@ async function main() {
   isErr('no material_id', await P(RM, { scene: 'A', folder: '01' }), 400, 'material_id');
   isErr('room missing', await P('zzpvroom_none', { scene: 'A', folder: '01', material_id: VID }), 404, '房间不存在');
 
-  // 闸门
-  isErr('debug off', await P(RX, { scene: 'A', folder: '01', material_id: VID }), 409, '调试模式');
+  // 闸门（debug 不在其中：2026-11-08 起试播是内容操作，debug 关着的房间走下面的成功用例）
   isErr('windows bind another folder', await P(RW, { scene: 'A', folder: '01', material_id: VID }), 409, '没有可试播的视频窗口');
   isErr('scene B has nothing', await P(RM, { scene: 'B', folder: '01', material_id: VID }), 409, '没有可试播的视频窗口');
   isErr('image rejected', await P(RM, { scene: 'A', folder: '01', material_id: IMG }), 400, '只支持视频');
   isErr('material not in mapping', await P(RM, { scene: 'A', folder: '01', material_id: OTHER }), 400, '不在本房间');
   isErr('no authorized device', await P(RN, { scene: 'A', folder: '01', material_id: VID }), 409, '已授权设备');
 
-  // 成功：配了窗口的房间，取 zIndex 最高的启用窗（禁用的 win_3 不算）
+  // 成功：配了窗口的房间 —— 命中这一格的每一扇窗都要进名单（win_1 绑 01、win_2 自动落 01；win_3 禁用不算）
   captured.length = 0;
   let r = await P(RM, { scene: 'A', folder: '01', material_id: VID });
   check('windowed 200', r.code === 200 && r.j && r.j.success === true, JSON.stringify(r.j));
-  check('picks win_2 (TopLayer) by zIndex', r.j && r.j.target && r.j.target.winId === 'win_2' && r.j.target.winName === 'TopLayer', JSON.stringify(r.j && r.j.target));
+  check('group = both windows bound to this cell, zIndex desc',
+    r.j && r.j.target && Array.isArray(r.j.target.winIds) && r.j.target.winIds.join(',') === 'win_2,win_1'
+    && r.j.target.winId === 'win_2' && r.j.target.winName === 'TopLayer 等 2 扇窗', JSON.stringify(r.j && r.j.target));
   check('physical folder prefixed A01', r.j && r.j.target && r.j.target.physicalFolder === 'A01', JSON.stringify(r.j && r.j.target));
   check('filename = manifest name', r.j && r.j.filename === 'probe-video.mp4', JSON.stringify(r.j));
   check('devices counted', r.j && r.j.devices === 1, JSON.stringify(r.j));
@@ -131,7 +143,9 @@ async function main() {
   check('MQTT carried preview_material x2 topics', msgs.length === 2, 'captured=' + captured.length);
   if (msgs.length) {
     const m = msgs[0];
-    check('payload shape', m.win_id === 'win_2' && m.folder_id === 'A01' && m.filename === 'probe-video.mp4'
+    check('payload shape', m.win_ids && m.win_ids.join(',') === 'win_2,win_1'
+      && m.win_id === 'win_2'   // 旧包兜底字段仍在，指向 z 最高那扇
+      && m.folder_id === 'A01' && m.filename === 'probe-video.mp4'
       && m.max_ms === 300000 && m.room_id === RM && typeof m.timestamp === 'number', JSON.stringify(m));
   }
 
@@ -143,18 +157,43 @@ async function main() {
   check('published to id + fingerprint topics', captured.length === 2 && captured.every(c => c.text.indexOf('preview_material') >= 0),
     JSON.stringify(captured.map(c => c.topic)));
 
+  // 成功：debug 关着的房间照样播 —— 试播是内容操作，不挂调试模式（RX 配了 DEV3，排除"没有设备"那道 409）
+  captured.length = 0;
+  r = await P(RX, { scene: 'A', folder: '01', material_id: VID });
+  check('debug-off room 200', r.code === 200 && r.j && r.j.success === true, JSON.stringify(r.j));
+  check('debug-off room still resolves win_1', r.j && r.j.target && r.j.target.winId === 'win_1', JSON.stringify(r.j && r.j.target));
+  await sleep(500);
+  check('debug-off published to device', captured.length === 2 && captured.every(c => c.text.indexOf('preview_material') >= 0),
+    JSON.stringify(captured.map(c => c.topic)));
+  const rxCfg = (await q("SELECT config FROM rooms WHERE id=?", [RX]))[0].config;
+  check('debug-off room config still debug=false', JSON.parse(rxCfg).debug === false, rxCfg);
+
+  // 成功：跟随窗也算命中 —— 现场主屏常常就是那扇 follow 窗，漏了它等于"屏上播得动，试播报没有窗口"
+  captured.length = 0;
+  r = await P(RF, { scene: 'A', folder: '01', material_id: VID });
+  check('follow window joins the group', r.code === 200 && r.j && r.j.target
+    && r.j.target.winIds.join(',') === 'win_fx,win_fl', JSON.stringify(r.j && r.j.target));
+  await sleep(500);
+  check('follow-group payload carries both win_ids',
+    captured.map(c => { try { return JSON.parse(c.text); } catch (e) { return {}; } })
+      .filter(p => p.action === 'preview_material' && p.win_ids && p.win_ids.join(',') === 'win_fx,win_fl').length === 2,
+    JSON.stringify(captured.map(c => c.topic)));
+
   // 停止：定向 + 兜底全停
   captured.length = 0;
   r = await req('POST', '/api/rooms/' + RM + '/preview/stop', { scene: 'A', folder: '01' });
   check('stop targeted 200 win_2', r.code === 200 && r.j && r.j.win_id === 'win_2', JSON.stringify(r.j));
   r = await req('POST', '/api/rooms/' + RD + '/preview/stop', {});
   check('stop all 200 ALL', r.code === 200 && r.j && r.j.win_id === 'ALL', JSON.stringify(r.j));
+  r = await req('POST', '/api/rooms/' + RX + '/preview/stop', { scene: 'A', folder: '01' });
+  check('stop debug-off room 200', r.code === 200 && r.j && r.j.success === true, JSON.stringify(r.j));
   r = await req('POST', '/api/rooms/' + RW + '/preview/stop', { scene: 'A', folder: '01' });
   isErr('stop unparsable window -> ALL fallback refused', r, 409, '全部停止');
   await sleep(500);
   const stops = captured.map(c => { try { return JSON.parse(c.text); } catch (e) { return {}; } }).filter(p => p.action === 'preview_stop');
-  check('stop payload: win_id present / absent', stops.length >= 4
-    && stops.some(p => p.win_id === 'win_2') && stops.some(p => p.win_id === undefined), JSON.stringify(stops));
+  check('stop payload: group win_ids + folder_id / bare ALL fallback', stops.length >= 6
+    && stops.some(p => p.win_ids && p.win_ids.join(',') === 'win_2,win_1' && p.folder_id === 'A01')
+    && stops.some(p => p.win_id === undefined), JSON.stringify(stops));
 
   // 裸发命令通道必须拒掉这几条（路由体形状是 { command: {...} }）
   for (const a of ['preview_material', 'preview_stop', 'update_windows', 'delete_material']) {
@@ -175,7 +214,7 @@ async function main() {
   const pv = parsed.find(x => x.a === 'preview' && x.d.room_id === RM);   // 取本次那间房的，不是"最新一条"（那可能是默认窗那间）
   if (pv) {
     const d = pv.d;
-    check('audit details useful', d.room_id === RM && d.room === 'zzpv main' && d.win_name === 'TopLayer' && d.devices === 1 && d.filename === 'probe-video.mp4', JSON.stringify(d));
+    check('audit details useful', d.room_id === RM && d.room === 'zzpv main' && d.win_name === 'TopLayer 等 2 扇窗' && d.devices === 1 && d.filename === 'probe-video.mp4', JSON.stringify(d));
   } else { check('audit details useful', false, 'no preview row for ' + RM); }
   // 停止那条也要带人话房间名：只留 room_id 的话，操作记录里这一行显示成一串机器 id，现场对不上是哪间包厢
   const stp = parsed.find(x => x.a === 'preview_stop' && x.d.room_id === RM);
