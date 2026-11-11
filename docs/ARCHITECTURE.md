@@ -490,14 +490,16 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 |---|---|
 | 每扇窗进格时独立 `items.shuffled()` → 随机顺序两两不同 | `folderPlaylists[folderKey]` 按格缓存，同格共用一份清单（随机只洗一次） |
 | 每扇窗各自从 index 0 起播、各自按片尾推进 → 漂移累积 | `groupClock(folderKey, excludeWinId)` 取组内基准窗当前位置，后进的窗 `setMediaItems(playlist, index, positionMs)` 对齐进去 |
+| 对齐只在进格那一刻做一次，之后每次轮播交接各路凝滞不同 → 散差 0.12~0.55s 永久留屏 | `tickSyncGroups`（100ms 巡检）以组内 ID 最小且 `STATE_READY` 的窗为基准，落后窗按 `1+gap/2500ms`（上限 ±10%、容忍带 50ms）**只调播放速度、从不 seek**，指数式贴回基准；基准窗未落定 / 成员在试播·叠化·整片错位时一律不动手 |
 | 试播只接管一扇，播完只回它自己的快照位置 | `startGroupPreview` 一次接管这一格的全部窗口，`restorePreviewGroup` 一次归还，整组共用接管前那份 `previewClocks[folderKey]` |
 
 - 设备端**不认云端算好的 `win_ids`**：云端按库里那份配置算窗，设备却可能刚应用过更新的一版，
   那一刻"谁在播这一格"只有设备知道。`previewTargets()` 按本机 `VideoSurface.folderKey` 认成员，
   `win_ids` 只在 `folderKey` 还没落上时兜底；云端 `resolvePreviewTarget` 因此返回**整组名单**
   （`winIds` 按 zIndex 降序，第一扇留作旧包的 `win_id` 兜底与日志显示）。
-- 同步的口径是"对齐到同一位置基准"，**不是硬件级同帧**：多路 ExoPlayer 各自解码，
-  亚 100ms 的相位差仍会慢慢累积，靠下一次进格 / 切幕重新对齐。真同帧需改成 1 路解码 + GL 合成多视图（未做）。
+- 同步的口径是"持续对齐到同一位置基准"，**不是硬件级同帧**：多路 ExoPlayer 各自解码，进格那次对不齐的
+  散差靠 `tickSyncGroups` 的速度微调在两三秒里收回来；仍做不到同帧同时刻出画（真同帧需改成 1 路解码 +
+  GL 合成多视图，未做）。校正刻意避开 seek —— seek 会再触发一次 `STATE_BUFFERING→READY` 凝滞，越拽越散。
 
 ### 5.8 墙板 485 链路（A-14 + `serial/`）
 
