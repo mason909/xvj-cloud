@@ -255,7 +255,7 @@ eq('空', T.isSafeDeviceId(''), false);
 eq('A/B 合法', [T.isSceneKey('A'), T.isSceneKey('B')], [true, true]);
 eq('__proto__/z/constructor 非法', ['__proto__', 'z', 'constructor'].map(T.isSceneKey), [false, false, false]);
 
-console.log('resolvePreviewTarget（含墙板跟随窗）:');
+console.log('resolvePreviewTarget（含墙板跟随窗，命中=整组）:');
 const pvCfg = function (winsA, winsB) {
   return { scenes: { A: { folder_mappings: { '01': ['a1'], '03': ['a3'] }, windows: winsA },
                     B: { folder_mappings: { '02': ['b2'] }, windows: winsB || [] } } };
@@ -265,8 +265,15 @@ const fol = { id: 'w_fol', name: '跟随主屏', enabled: true, zIndex: 9, conte
 eq('固定窗按 folderId 命中', T.resolvePreviewTarget(pvCfg([fixed]), 'A', '03').winId, 'w_fix');
 eq('跟随窗对任何本格素材都算候选（云端看不到设备当前编号）',
   T.resolvePreviewTarget(pvCfg([fol]), 'A', '07').winId, 'w_fol');
-eq('跟随窗与固定窗同时命中 → 取 zIndex 最大的（屏上真看得见的那扇）',
-  T.resolvePreviewTarget(pvCfg([fixed, fol]), 'A', '03').winId, 'w_fol');
+// 整组而非单扇：只接管一扇 = 当场分裂屏幕，播完那一扇还回到自己被冻住的位置（用户定调 2026-11-11）
+eq('跟随窗与固定窗同时命中 → 两扇都要进名单，zIndex 降序、首扇留作兜底',
+  [T.resolvePreviewTarget(pvCfg([fixed, fol]), 'A', '03').winIds,
+   T.resolvePreviewTarget(pvCfg([fixed, fol]), 'A', '03').winId,
+   T.resolvePreviewTarget(pvCfg([fixed, fol]), 'A', '03').winName],
+  [['w_fol', 'w_fix'], 'w_fol', '跟随主屏 等 2 扇窗']);
+const fixed2 = { id: 'w_fix2', name: '也绑03', enabled: true, zIndex: 5, content: { type: 'SCENE_A', folderId: '03' } };
+eq('同格多扇固定窗全部命中（生产 201/301 就是这个形状）',
+  T.resolvePreviewTarget(pvCfg([fixed, fixed2, fol]), 'A', '03').winIds, ['w_fol', 'w_fix2', 'w_fix']);
 eq('enabled:false 的跟随窗不当候选', T.resolvePreviewTarget(pvCfg([{ id: 'x', name: 'x', enabled: false, zIndex: 9, content: { type: 'SCENE_A', follow: true } }]), 'A', '03'), null);
 eq('HDMI/color 窗不受 follow 影响（非本幕 SCENE 直接排除）',
   T.resolvePreviewTarget(pvCfg([{ id: 'h', name: 'h', enabled: true, zIndex: 9, content: { type: 'HDMI', follow: true } }]), 'A', '03'), null);
