@@ -77,16 +77,18 @@ function cfgOf(kind, debug) {
   } };
 }
 
-// 跨幕形态（现场 201 的形状）：A 幕一扇自动窗（没人绑 02），B 幕一扇窗，B 幕 02 干脆不存在。
-// 试播 A/02 时名单里绝不能出现 win_cb —— 那只片子只在 A 幕的目录里，B 幕那扇窗跟它没关系。
+// 跨幕形态（现场 201 的真实形状）：A 幕一扇自动窗（没人绑 02）+ 一扇 SCENE_B 的窗**存在 A 的数组里**，
+// B 的数组反而是空的。判据是 content.type，不是它躺在哪个数组：
+//   试播 A/02 → win_cb 绝不能进名单（那只片子只在 A 幕目录里）；
+//   试播 B/01 → 必须命中 win_cb（2026-11-12 我曾按数组取窗，把这一幕唯一那扇窗整个漏掉，
+//              现场表现为"第二幕 01 试播无反应"）。
 function cfgCross() {
   return { debug: true, scenes: {
     A: { name: 'A', folder_mappings: { '01': [VID], '02': [VID] }, master: { brightness: 1 }, windows: [
-      { id: 'win_ca', name: 'AutoA', enabled: true, zIndex: 1, content: { type: 'SCENE_A', folderId: '' } }
-    ] },
-    B: { name: 'B', folder_mappings: { '01': [] }, master: {}, windows: [
+      { id: 'win_ca', name: 'AutoA', enabled: true, zIndex: 1, content: { type: 'SCENE_A', folderId: '' } },
       { id: 'win_cb', name: 'WinFromB', enabled: true, zIndex: 9, content: { type: 'SCENE_B', folderId: '' } }
-    ] }
+    ] },
+    B: { name: 'B', folder_mappings: { '01': [VID] }, master: {}, windows: [] }
   } };
 }
 
@@ -124,7 +126,7 @@ async function main() {
   const client = mqtt.connect('mqtt://' + config.mqtt.host + ':' + config.mqtt.port,
     { username: config.mqtt.username || undefined, password: config.mqtt.password || undefined });
   await new Promise((res, rej) => { client.on('connect', res); client.on('error', rej); setTimeout(() => rej(new Error('mqtt timeout')), 8000); });
-  client.subscribe([DEV1, FP1, DEV2, FP2, DEV3, FP3, DEV4, FP4, DEV5, FP5].map(t => 'xvj/device/' + t + '/command'));
+  client.subscribe([DEV1, FP1, DEV2, FP2, DEV3, FP3, DEV4, FP4, DEV5, FP5, DEV6, FP6].map(t => 'xvj/device/' + t + '/command'));
   client.on('message', (t, m) => captured.push({ topic: t, text: m.toString() }));
   console.log('SETUP OK');
   // 其余房间（含现场那间 201）的配置必须一字不动 —— 试播不该在任何地方留下配置痕迹
@@ -221,6 +223,17 @@ async function main() {
     JSON.stringify(captured.map(c => c.text)));
   isErr('cross-scene: B/02 has no material -> refused, no preview sent',
     await P(RC, { scene: 'B', folder: '02', material_id: VID }), 400, '不在本房间');
+  // 反方向：这一幕唯一的窗藏在另一幕的数组里，也必须被认出来（2026-11-12「第二幕 01 无反应」的回归判据）
+  captured.length = 0;
+  r = await P(RC, { scene: 'B', folder: '01', material_id: VID });
+  check('cross-scene: B/01 resolves the SCENE_B window stored in scenes.A',
+    r.code === 200 && r.j && r.j.target && r.j.target.winIds.join(',') === 'win_cb'
+    && r.j.target.physicalFolder === 'B01', JSON.stringify(r.j || r.buf));
+  await sleep(500);
+  check('cross-scene: B/01 payload targets win_cb with folder_id B01',
+    captured.map(c => { try { return JSON.parse(c.text); } catch (e) { return {}; } })
+      .some(p => p.action === 'preview_material' && p.win_ids.join(',') === 'win_cb' && p.folder_id === 'B01'),
+    JSON.stringify(captured.map(c => c.text)));
 
   // 停止：定向 + 兜底全停
   captured.length = 0;
@@ -251,7 +264,8 @@ async function main() {
   const roomsAfter = (await q("SELECT id, MD5(config) m FROM rooms WHERE id NOT LIKE 'zzpv%' ORDER BY id"))
     .map(r => r.id + '=' + r.m).join('|');
   check('other rooms untouched (incl. live 201)', roomsBefore === roomsAfter, 'config digest differs');
-  const logs = await q("SELECT action,details FROM operation_logs WHERE action LIKE 'preview%' ORDER BY id DESC LIMIT 10");
+  // 窗口取 40 条而不是 10 条：下面每一段都会写审计行，跨幕那两格加进来后 10 条已经不够回头看 early 的 RM
+  const logs = await q("SELECT action,details FROM operation_logs WHERE action LIKE 'preview%' ORDER BY id DESC LIMIT 40");
   check('audit rows written', logs.length >= 3, 'rows=' + logs.length);
   const parsed = logs.map(l => ({ a: l.action, d: JSON.parse(l.details) }));
   const pv = parsed.find(x => x.a === 'preview' && x.d.room_id === RM);   // 取本次那间房的，不是"最新一条"（那可能是默认窗那间）

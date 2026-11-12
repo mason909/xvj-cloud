@@ -1800,8 +1800,10 @@ const PREVIEW_VIDEO_RE = new RegExp('\\.(' + VIDEO_EXT.join('|') + ')$', 'i');
  *          排除它会让试播报"没有窗口绑这一格"，而屏上明明播得动。
  *   命中是**全部**：所有窗口的画面严格同步是用户定调的硬约束（2026-11-11），试播只落一扇
  *   等于当场分裂一次屏，而且那一扇播完回到自己被冻住的位置，轮播顺序就此错开。
- *   但"全部"只到**本幕**为止（2026-11-12 用户定调）：候选始终从 scenes[scene].windows 里取，
- *   另一幕的窗口跟这一格没关系，点了别的幕的素材也不许被接管。
+ *   但"全部"只到**本幕**为止（2026-11-12 用户定调）：一扇窗属哪一幕只由 `content.type`
+ *   （SCENE_A / SCENE_B）定性，**不由它躺在 scenes.A 还是 scenes.B 数组里**——201 现场那扇
+ *   SCENE_B 的"新窗口5"就存在 scenes.A.windows 里（B 数组反而是空的），按数组取窗会把第二幕
+ *   整个漏掉，当场表现为"试播第二幕没反应"。另一幕的窗口跟这一格没关系，点了别的幕的素材也不许被接管。
  *   winIds 按 zIndex 降序，第一扇留作旧 APK 的 win_id 兜底与日志显示；设备端不认这份名单，
  *   它按"本机此刻谁在播这一格"自己认（folder_id 才是判据，见 APK previewTargets）。
  * 数据一律取 buildPrefixedScenes 的结果：键已带幕前缀且已排序，正是 APK 遍历的那一份，
@@ -1814,18 +1816,20 @@ function resolvePreviewTarget(cfg, scene, folder) {
   if (!sceneData) return null;
   const mappings = sceneData.folder_mappings;
   const wanted = prefixedFolderKey(scene, folder);
-  const windows = ['A', 'B'].reduce((n, k) => n + (((scenes[k] || {}).windows) || []).length, 0);
-  // 两幕一个窗口都没配 → APK 会自建那个默认全屏窗口（win_1，播 A 幕第一个有素材的文件夹）。
+  // APK 的选窗是把两幕数组合成一份再按 content.type 定性（mergeSceneWindows + resolveWindowFolder），
+  // 云端必须跟着合，否则像 201 那样"SCENE_B 的窗存在 scenes.A.windows"的房间，第二幕算不出任何窗。
+  const allWindows = ['A', 'B'].reduce((n, k) => n.concat(((scenes[k] || {}).windows) || []), []);
+  // 一个窗口都没配 → APK 会自建那个默认全屏窗口（win_1，播 A 幕第一个有素材的文件夹）。
   // 新房间第一次试片恰好就是这个状态，漏掉它等于"没配窗口的房间不能试播"。
   // 2026-11-11 用户定调：手动试播是最高权限，任何 A 幕已映射的格都能接管这扇默认窗播一遍，
   // 不再要求"这一格恰好是默认窗在播的那格"（素材在不在设备由下面的映射校验兜）。
-  if (windows === 0) {
+  if (allWindows.length === 0) {
     if (scene !== 'A') return null;
     return { winIds: ['win_1'], winId: 'win_1', winName: '窗口1（默认）', physicalFolder: wanted };
   }
   // 未指定文件夹的窗口播哪一个：APK 取映射里第一个非空文件夹，排序在 buildPrefixedScenes 里已做完
   const autoFolder = Object.keys(mappings).find(k => (mappings[k] || []).length > 0);
-  const matched = (sceneData.windows || []).filter(w => {
+  const matched = allWindows.filter(w => {
     if (!isPlainObject(w) || w.enabled === false) return false;
     const c = isPlainObject(w.content) ? w.content : {};
     if (String(c.type || '').toUpperCase() !== 'SCENE_' + scene) return false;
@@ -1838,9 +1842,9 @@ function resolvePreviewTarget(cfg, scene, folder) {
   // 设备只落那些真在屏上的（previewTargets 的 named 兜底），素材在不在设备由下面的映射校验兜住。
   // ⚠️ 回退名单绝不能带另一幕的窗（2026-11-12 用户定调）：一只片子只有一个物理目录、只属于一幕，
   // 第二幕来源的窗口跟第一幕的这格没有任何关系。曾把两幕一起点进来，现场看到"试播第一幕 02，
-  // 窗口5（内容类型 SCENE_B）也在播它"。
+  // 窗口5（内容类型 SCENE_B）也在播它"。判据是 content.type，不是它躺在哪个数组里。
   const takeover = matched.length > 0 ? matched
-    : (sceneData.windows || []).filter(w => {
+    : allWindows.filter(w => {
         if (!isPlainObject(w) || w.enabled === false) return false;
         const c = isPlainObject(w.content) ? w.content : {};
         return String(c.type || '').toUpperCase() === 'SCENE_' + scene;
