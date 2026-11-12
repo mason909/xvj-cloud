@@ -12,7 +12,7 @@ function grab(name) {
 }
 const names = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isSceneKey', 'isPlainObject',
   'normalizeFolderMappings', 'panelNoValue', 'normalizePanelNos', 'findPanelNoConflict', 'findPanelCellConflict',
-  'dissolveMsValue', 'playSettingsValue', 'normalizePlaySettings', 'findPlaySettingsError',
+  'playSettingsValue', 'normalizePlaySettings', 'findPlaySettingsError',
   'mergeSceneConfig', 'prepareRoomConfig',
   'buildPrefixedScenes', 'mergePrefixedMappings',
   'roomSceneDigest', 'isSafeDeviceId', 'parseRoomConfig', 'isSafeFolderName', 'isSafeSerialPath',
@@ -57,13 +57,13 @@ eq('windows 非数组 → []', T.buildPrefixedScenes({ A: { windows: 'x' } }).A.
 eq('panel_no 加幕前缀 + 排序，设备按同一把键查', T.buildPrefixedScenes({ A: { panel_no: { '02': 7, '01': 3 } } }).A.panel_no, { A01: 3, A02: 7 });
 eq('空/缺失 panel_no 不落键', Object.keys(T.buildPrefixedScenes({ A: { folder_mappings: {}, panel_no: {} }, B: { panel_no: { '01': 1 } } }).A), ['name', 'folder_mappings', 'windows']);
 eq('脏编号下发前被丢掉', T.buildPrefixedScenes({ A: { panel_no: { '01': 3, '02': 99 } } }).A.panel_no, { A01: 3 });
-eq('play_settings 加幕前缀 + 排序，设备按物理目录 id 查', T.buildPrefixedScenes({ A: { play_settings: { '02': { order: 'shuffle' }, '01': { dissolve: true, dissolve_ms: 600 } } } }).A.play_settings,
-  { A01: { dissolve: true, order: 'seq', dissolve_ms: 600 }, A02: { dissolve: false, order: 'shuffle' } });
-eq('空/全默认 play_settings 不落键', Object.keys(T.buildPrefixedScenes({ A: { play_settings: { '01': { dissolve: false, order: 'seq' } } }, B: { play_settings: {} } }).A), ['name', 'folder_mappings', 'windows']);
+eq('play_settings 加幕前缀 + 排序，设备按物理目录 id 查', T.buildPrefixedScenes({ A: { play_settings: { '02': { order: 'shuffle' }, '03': { order: 'seq' } } } }).A.play_settings,
+  { A02: { order: 'shuffle' } });
+eq('空/全默认 play_settings 不落键', Object.keys(T.buildPrefixedScenes({ A: { play_settings: { '01': { order: 'seq' } } }, B: { play_settings: {} } }).A), ['name', 'folder_mappings', 'windows']);
 eq('A/B 各存各的（两幕是两套物理目录）', (() => {
-  const p = T.buildPrefixedScenes({ A: { play_settings: { '01': { dissolve: true } } }, B: { play_settings: { '01': { order: 'shuffle' } } } });
+  const p = T.buildPrefixedScenes({ A: { play_settings: { '01': { order: 'shuffle' } } }, B: { play_settings: { '01': { order: 'shuffle' } } } });
   return [p.A.play_settings, p.B.play_settings];
-})(), [{ A01: { dissolve: true, order: 'seq', dissolve_ms: 400 } }, { B01: { dissolve: false, order: 'shuffle' } }]);
+})(), [{ A01: { order: 'shuffle' } }, { B01: { order: 'shuffle' } }]);
 
 console.log('roomWallpanelFields / roomWallpanelDigest:');
 eq('缺省 → false + null + 默认节点 + 驱动波特率', T.roomWallpanelFields({}),
@@ -121,33 +121,26 @@ eq('无重复 → null', T.findPanelNoConflict('A', { '01': 1, '02': 2 }), null)
 eq('同幕重复 → 报出两个文件夹', T.findPanelNoConflict('A', { '01': 3, '02': 3 }), '场景A的墙板编号 3 同时绑在文件夹 01 和 02 上，一键只能对一个文件夹');
 eq('空表 → null', T.findPanelNoConflict('A', undefined), null);
 
-console.log('playSettingsValue / normalizePlaySettings（文件夹级播放设置）:');
-eq('全默认 → null（这一格不落键）', T.playSettingsValue({ dissolve: false, order: 'seq' }), null);
+console.log('playSettingsValue / normalizePlaySettings（文件夹级播放设置，只剩 order）:');
+eq('顺序循环 → null（这一格不落键）', T.playSettingsValue({ order: 'seq' }), null);
 eq('缺字段也算全默认', T.playSettingsValue({}), null);
-eq('非严格 true 不算开叠化', T.playSettingsValue({ dissolve: 'true', order: 'seq' }), null);
-eq('开叠化 → 带默认时长', T.playSettingsValue({ dissolve: true }), { dissolve: true, order: 'seq', dissolve_ms: 400 });
-eq('只改随机顺序也保留（叠化关着）', T.playSettingsValue({ order: 'shuffle' }), { dissolve: false, order: 'shuffle' });
-eq('叠化关着时时长不落键（否则关回去 rev 也回不到原值）', T.playSettingsValue({ dissolve: false, dissolve_ms: 900 }), null);
-eq('时长数字字符串收下', T.playSettingsValue({ dissolve: true, dissolve_ms: '800' }).dissolve_ms, 800);
-eq('越界时长回落默认（下发侧是总函数，写入侧另有 400）', T.playSettingsValue({ dissolve: true, dissolve_ms: 99 }).dissolve_ms, 400);
-eq('脏 order 回落顺序', T.playSettingsValue({ dissolve: true, order: 'random' }).order, 'seq');
+eq('随机 → 只带 order', T.playSettingsValue({ order: 'shuffle' }), { order: 'shuffle' });
+eq('残留的 dissolve 键不再往下带', T.playSettingsValue({ dissolve: true, dissolve_ms: 600, order: 'shuffle' }), { order: 'shuffle' });
+eq('只有残留 dissolve、顺序仍默认 → 整格不落键', T.playSettingsValue({ dissolve: true, dissolve_ms: 600 }), null);
+eq('脏 order 回落顺序（= 默认，null）', T.playSettingsValue({ order: 'random' }), null);
 eq('非对象格 → null', [T.playSettingsValue(true), T.playSettingsValue(null), T.playSettingsValue('x')], [null, null, null]);
-eq('键排序 + 幕内键归一 + 全默认格丢掉', T.normalizePlaySettings({ '02': { order: 'shuffle' }, '01': { dissolve: false }, 'A03': { dissolve: true, dissolve_ms: 600 }, '../x': { dissolve: true } }, 'A'),
-  { '02': { dissolve: false, order: 'shuffle' }, '03': { dissolve: true, order: 'seq', dissolve_ms: 600 } });
-eq('别的幕里 A03 是它自己的键，不动', T.normalizePlaySettings({ 'A03': { order: 'shuffle' } }, 'B'), { 'A03': { dissolve: false, order: 'shuffle' } });
-eq('同格两种写法先到先得，与入参键顺序无关', T.normalizePlaySettings({ '01': { order: 'shuffle' }, 'A01': { dissolve: true } }, 'A'), { '01': { dissolve: false, order: 'shuffle' } });
+eq('键排序 + 幕内键归一 + 全默认格丢掉', T.normalizePlaySettings({ '02': { order: 'shuffle' }, '01': { order: 'seq' }, 'A03': { order: 'shuffle' }, '../x': { order: 'shuffle' } }, 'A'),
+  { '02': { order: 'shuffle' }, '03': { order: 'shuffle' } });
+eq('别的幕里 A03 是它自己的键，不动', T.normalizePlaySettings({ 'A03': { order: 'shuffle' } }, 'B'), { 'A03': { order: 'shuffle' } });
+eq('同格两种写法先到先得，与入参键顺序无关', T.normalizePlaySettings({ '01': { order: 'shuffle' }, 'A01': { order: 'seq' } }, 'A'), { '01': { order: 'shuffle' } });
 eq('非对象入参 → 空表', [T.normalizePlaySettings('abc'), T.normalizePlaySettings(null), T.normalizePlaySettings([1])], [{}, {}, {}]);
 
 console.log('findPlaySettingsError（写入侧，非法值不许静默回落）:');
 eq('没带 → null', T.findPlaySettingsError({}), null);
-eq('合法两幕 → null', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { dissolve: true, dissolve_ms: 400, order: 'shuffle' } } }, B: { play_settings: { '02': { order: 'seq' } } } } }), null);
-eq('空串/没带不算错', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { dissolve_ms: '', order: '' } } } } }), null);
+eq('合法两幕 → null', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { order: 'shuffle' } } }, B: { play_settings: { '02': { order: 'seq' } } } } }), null);
+eq('空串/没带不算错', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { order: '' } } } } }), null);
 eq('脏 order 报出可选值', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { order: 'random' } } } } }),
   '场景A 文件夹01 的播放顺序只能是 seq（顺序循环）或 shuffle（随机循环）');
-eq('越界时长报错', T.findPlaySettingsError({ scenes: { B: { play_settings: { '07': { dissolve_ms: 5000 } } } } }),
-  '场景B 文件夹07 的叠化时长只能是 100~3000 之间的整数毫秒');
-eq('小数时长报错', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { dissolve_ms: 400.5 } } } } }) !== null, true);
-eq('对象型时长不当数字蒙混', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { dissolve_ms: { v: 400 } } } } } }) !== null, true);
 eq('带前缀的键在文案里折回格名', T.findPlaySettingsError({ scenes: { A: { play_settings: { 'A01': { order: 'x' } } } } }).indexOf('文件夹01') > 0, true);
 eq('脏形状格不报（由规范化丢弃，与 folder_mappings 同口径）', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': true } } } }), null);
 
@@ -160,10 +153,11 @@ eq('没带 panel_no → 继承 DB 的绑定', T.mergeSceneConfig({ folder_mappin
 eq('显式 panel_no:{} 解绑（不能被 DB 旧值继承回来）', T.mergeSceneConfig({ panel_no: {} }, ex, '第一幕').panel_no, {});
 eq('继承来的脏编号也重新规范化', T.mergeSceneConfig({}, { panel_no: { '01': 99, '02': 4 } }, '第一幕').panel_no, { '02': 4 });
 eq('带 sceneKey 时继承的带前缀键也归一', T.mergeSceneConfig({}, { panel_no: { 'A01': 4 } }, '第一幕', 'A').panel_no, { '01': 4 });
-eq('没带 play_settings → 继承 DB 的设置', T.mergeSceneConfig({ folder_mappings: {} }, { play_settings: { '01': { dissolve: true, dissolve_ms: 600 } } }, '第一幕', 'A').play_settings,
-  { '01': { dissolve: true, order: 'seq', dissolve_ms: 600 } });
+eq('没带 play_settings → 继承 DB 的设置', T.mergeSceneConfig({ folder_mappings: {} }, { play_settings: { '01': { order: 'shuffle' } } }, '第一幕', 'A').play_settings,
+  { '01': { order: 'shuffle' } });
 eq('显式 play_settings:{} 关回默认（不能被 DB 旧值继承回来）', T.mergeSceneConfig({ play_settings: {} }, { play_settings: { '01': { order: 'shuffle' } } }, '第一幕', 'A').play_settings, {});
-eq('把叠化关掉 = 那一格整个消失', T.mergeSceneConfig({ play_settings: { '01': { dissolve: false, order: 'seq' } } }, { play_settings: { '01': { dissolve: true } } }, '第一幕', 'A').play_settings, {});
+eq('随机改回顺序 = 那一格整个消失', T.mergeSceneConfig({ play_settings: { '01': { order: 'seq' } } }, { play_settings: { '01': { order: 'shuffle' } } }, '第一幕', 'A').play_settings, {});
+eq('DB 里残留的叠化键继承时一并丢掉', T.mergeSceneConfig({}, { play_settings: { '01': { dissolve: true, dissolve_ms: 600 } } }, '第一幕', 'A').play_settings, {});
 eq('空 windows 数组不覆盖（清空走 PUT /windows）', T.mergeSceneConfig({ windows: [] }, ex, '第一幕').windows, ex.windows);
 eq('非空 windows 覆盖', T.mergeSceneConfig({ windows: [{ id: 'n', name: 'N' }] }, ex, '第一幕').windows, [{ id: 'n', name: 'N' }]);
 eq('master clamp 上界', T.mergeSceneConfig({ master: { brightness: 3 } }, ex, '第一幕').master, { brightness: 1 });
@@ -200,17 +194,15 @@ eq('脏绑定不会锁死这间房：出生时归一，后续 PUT 继承的是�
   return T.prepareRoomConfig({ scenes: { A: { folder_mappings: {} } } }, born).cfg.scenes.A.panel_no;
 })(), { '01': 3 });
 eq('顶层键不丢（少带 debug 会被收敛点判成关了调试）', T.prepareRoomConfig({}, { debug: true, scenes: {} }).cfg.debug, true);
-eq('播放设置非法时长写库被拦', T.prepareRoomConfig({ scenes: { A: { play_settings: { '01': { dissolve: true, dissolve_ms: 99 } } } } }, null).error,
-  '场景A 文件夹01 的叠化时长只能是 100~3000 之间的整数毫秒');
 eq('播放设置非法顺序写库被拦', T.prepareRoomConfig({ scenes: { B: { play_settings: { '02': { order: 'loop' } } } } }, null).error,
   '场景B 文件夹02 的播放顺序只能是 seq（顺序循环）或 shuffle（随机循环）');
-eq('播放设置出生即归一（带前缀键折回格名、默认格丢掉）', T.prepareRoomConfig({ scenes: { A: { play_settings: { 'A01': { dissolve: true, dissolve_ms: 600 }, '02': { dissolve: false } } } } }, null).cfg.scenes.A.play_settings,
-  { '01': { dissolve: true, order: 'seq', dissolve_ms: 600 } });
+eq('播放设置出生即归一（带前缀键折回格名、默认格丢掉）', T.prepareRoomConfig({ scenes: { A: { play_settings: { 'A01': { order: 'shuffle' }, '02': { order: 'seq' } } } } }, null).cfg.scenes.A.play_settings,
+  { '01': { order: 'shuffle' } });
 eq('少带 play_settings 的那一幕从 DB 继承（整份 PUT 不该抹掉另一幕）', (() => {
-  const db = { scenes: { A: { play_settings: { '01': { order: 'shuffle' } } }, B: { play_settings: { '02': { dissolve: true } } } } };
+  const db = { scenes: { A: { play_settings: { '01': { order: 'shuffle' } } }, B: { play_settings: { '02': { order: 'seq' } } } } };
   const c = T.prepareRoomConfig({ scenes: { A: { name: '第一幕' } } }, db).cfg;
   return [c.scenes.A.play_settings, c.scenes.B.play_settings];
-})(), [{ '01': { dissolve: false, order: 'shuffle' } }, { '02': { dissolve: true, order: 'seq', dissolve_ms: 400 } }]);
+})(), [{ '01': { order: 'shuffle' } }, {}]);
 eq('不带 scenes 时两幕全从 DB 继承', (() => {
   const dbCfg = { scenes: { A: { name: '第一幕', folder_mappings: { '01': ['m'] }, panel_no: { '01': 2 }, windows: [{ id: 'w', name: 'W' }], master: { brightness: 1 } } } };
   const c = T.prepareRoomConfig({ wallpanel_enabled: true }, dbCfg).cfg;
@@ -231,12 +223,14 @@ eq('解绑回空后 rev 回到原值', T.roomSceneDigest({ scenes: { A: { folder
 // 同一条理由适用于新增的 play_settings：上线那一刻全库每幕都会多一个 play_settings:{}（mergeSceneConfig 的确定形状），
 // 它若跟着进指纹，每台在线设备都被对账判成落后、各补发一次同步、视频从头播
 eq('空 play_settings 不改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: {} } } }), r1);
-eq('全默认的格子不改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { dissolve: false, order: 'seq', dissolve_ms: 900 } } } } }), r1);
-eq('开叠化会改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { dissolve: true } } } } }) !== r1, true);
+eq('全默认的格子不改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { order: 'seq' } } } } }), r1);
 eq('改随机顺序会改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { order: 'shuffle' } } } } }) !== r1, true);
-eq('关回默认后 rev 回到原值', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { dissolve: false, order: 'seq' } } } } }), r1);
-eq('键顺序不影响 rev', T.roomSceneDigest({ scenes: { A: { play_settings: { '02': { order: 'shuffle' }, '01': { dissolve: true } } } } }),
-  T.roomSceneDigest({ scenes: { A: { play_settings: { '01': { dissolve: true }, '02': { order: 'shuffle' } } } } }));
+// 叠化下线后 DB 里还可能留着 dissolve/dissolve_ms 脏键：归一一次就把它们抹了，
+// 所以它们绝不进指纹 —— 存量房间不会因为"历史上有过叠化"而多抖一次 rev
+eq('残留的叠化脏键不改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { dissolve: true, dissolve_ms: 600, order: 'seq' } } } } }), r1);
+eq('关回默认后 rev 回到原值', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { order: 'seq' } } } } }), r1);
+eq('键顺序不影响 rev', T.roomSceneDigest({ scenes: { A: { play_settings: { '02': { order: 'shuffle' }, '01': { order: 'shuffle' } } } } }),
+  T.roomSceneDigest({ scenes: { A: { play_settings: { '01': { order: 'shuffle' }, '02': { order: 'shuffle' } } } } }));
 
 console.log('parseRoomConfig:');
 eq('合法字符串', T.parseRoomConfig('{"debug":true}'), { debug: true });
@@ -275,10 +269,16 @@ const fixed2 = { id: 'w_fix2', name: '也绑03', enabled: true, zIndex: 5, conte
 eq('同格多扇固定窗全部命中（生产 201/301 就是这个形状）',
   T.resolvePreviewTarget(pvCfg([fixed, fixed2, fol]), 'A', '03').winIds, ['w_fol', 'w_fix2', 'w_fix']);
 eq('enabled:false 的跟随窗不当候选', T.resolvePreviewTarget(pvCfg([{ id: 'x', name: 'x', enabled: false, zIndex: 9, content: { type: 'SCENE_A', follow: true } }]), 'A', '03'), null);
-eq('HDMI/color 窗不受 follow 影响（非本幕 SCENE 直接排除）',
-  T.resolvePreviewTarget(pvCfg([{ id: 'h', name: 'h', enabled: true, zIndex: 9, content: { type: 'HDMI', follow: true } }]), 'A', '03'), null);
-eq('follow 脏值（字符串 "true"）不算跟随',
-  T.resolvePreviewTarget(pvCfg([{ id: 's', name: 's', enabled: true, zIndex: 9, content: { type: 'SCENE_A', folderId: '03', follow: 'yes' } }]), 'A', '07'), null);
+const hdmi = { id: 'h', name: 'h', enabled: true, zIndex: 9, content: { type: 'HDMI', follow: true } };
+eq('HDMI 窗挂着 follow 也不进命中组（非本幕 SCENE 直接排除）',
+  T.resolvePreviewTarget(pvCfg([fixed, hdmi]), 'A', '03').winIds, ['w_fix']);
+const dirty = { id: 's', name: 's', enabled: true, zIndex: 9, content: { type: 'SCENE_A', folderId: '03', follow: 'yes' } };
+const fixed7 = { id: 'w_fix7', name: '固定07', enabled: true, zIndex: 1, content: { type: 'SCENE_A', folderId: '07' } };
+eq('follow 脏值（字符串 "yes"）不算跟随', T.resolvePreviewTarget(pvCfg([fixed7, dirty]), 'A', '07').winIds, ['w_fix7']);
+// 兜底：这一格没窗口绑/在播时，试播按最高权限接管全部启用窗（#161 定调），
+// 设备端只落真在屏上的那几扇（previewTargets 的 named 兜底）
+eq('空格兜底 = 接管全部启用窗（连 HDMI 窗也在名单里，判据交给设备）',
+  T.resolvePreviewTarget(pvCfg([hdmi]), 'A', '03').winIds, ['h']);
 eq('B 幕的跟随窗不抢 A 幕', T.resolvePreviewTarget(pvCfg([fixed], [{ id: 'wb', name: 'B跟随', enabled: true, zIndex: 5, content: { type: 'SCENE_B', follow: true } }]), 'A', '03').winId, 'w_fix');
 eq('B 幕试播命中 B 的跟随窗', T.resolvePreviewTarget(pvCfg([fixed], [{ id: 'wb', name: 'B跟随', enabled: true, zIndex: 5, content: { type: 'SCENE_B', follow: true } }]), 'B', '07').winId, 'wb');
 

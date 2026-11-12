@@ -193,9 +193,6 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
 .ps-tbl th,.ps-tbl td{text-align:center}
 .ps-tbl th:first-child,.ps-tbl td:first-child{text-align:left}
 .ps-sep{border-left:1px solid #3a3a3a}
-.ps-num{background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:3px 5px;font-size:12px;width:68px}
-.ps-num:disabled{color:#555;border-color:#2a2a2a;background:#151515}
-.ps-num.bad{border-color:#e94560;background:rgba(233,69,96,.14);color:#ff8fa3}
 /* ===== 窄视口适配（Ctrl+滚轮放大后 CSS 视口宽度会变小，等价于窄屏）===== */
 /* 侧栏不能再整条隐藏（隐藏=没法切模块），改成顶部横排导航 */
 @media(max-width:768px){
@@ -768,7 +765,7 @@ function createPlayer(url, type, container, poster) {
  *         【F-06c】新建房间 createRoom()   　【F-06d】房间工作台 rmDevice()
  *         【F-06e】工作台模式开关与互斥 sfW()/sfCrop()/sfWP()/sfPS()（草稿确认统一在 _exitTableModes()）
  *         【F-06f】墙板配置表 renderWpEditor()/wpSave()（编号表 + 跟随一览 + 总闸/串口参数）
- *         【F-06g】播放设置表 renderPsEditor()/psSave()（每格叠化开关/时长 + 随机/顺序循环）
+ *         【F-06g】播放设置表 renderPsEditor()/psSave()（每格随机/顺序循环；素材轮播交接一律硬切）
  * 【F-07】素材推送 showPushDialog() & doPushToRoom()
  * 【F-08】房间内素材删除 rmRoomMat()（只调一次 DELETE /materials，设备通知由服务端收敛点发；
  *         doSyncRoom() 现在只服务手工「🔄 同步当前房间」按钮）
@@ -810,7 +807,7 @@ var s = {
     _wpMode: false,        // 工作台「墙板配置」编辑模式（纯前端态，不跨页面保留）
     _wpDraft: null,        // 墙板表草稿 {roomId, enabled, defaultNo, path, baud, A:{}, B:{}, base:''}，只跟当前房间绑定
     _psMode: false,        // 工作台「播放设置」编辑模式（同上，与窗口/截取/墙板三者互斥）
-    _psDraft: null,        // 播放设置草稿 {roomId, A:{格:{dissolve,dissolve_ms,order}}, B:{}, base:''}，只跟当前房间绑定
+    _psDraft: null,        // 播放设置草稿 {roomId, A:{格:{order}}, B:{}, base:''}，只跟当前房间绑定
     _snap: localStorage.getItem('xsnap') !== '0',   // 窗口画布吸附开关（纯编辑辅助，本地偏好，默认开）
     fs: [],
     ms: [],
@@ -1620,7 +1617,7 @@ function rmDevice() {
     h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">输入截取</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="cropToggle" style="opacity:0;width:0;height:0" ' + (s._cropMode ? 'checked' : '') + ' onchange="sfCrop()"><span id="cropSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._cropMode ? '#2ecc71' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="cropKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._cropMode ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
     // 墙板配置：一张 01~30 × A/B 的编号绑定总表（编号要横向比对才知道撞没撞，所以不做成散在 30 个文件夹里的控件）
     h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">墙板配置</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="wpToggle" style="opacity:0;width:0;height:0" ' + (s._wpMode ? 'checked' : '') + ' onchange="sfWP()"><span id="wpSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._wpMode ? '#f5a623' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="wpKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._wpMode ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
-    // 播放设置：同样一张 01~30 × A/B 的总表（叠化/播放顺序按文件夹各设一份，A、B 是两套独立素材目录）
+    // 播放设置：同样一张 01~30 × A/B 的总表（播放顺序按文件夹各设一份，A、B 是两套独立素材目录）
     h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">播放设置</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="psToggle" style="opacity:0;width:0;height:0" ' + (s._psMode ? 'checked' : '') + ' onchange="sfPS()"><span id="psSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._psMode ? '#4aa3df' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="psKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._psMode ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
     h += '</div></div>';
 
@@ -1797,7 +1794,7 @@ function rmDevice() {
 //   scenes.B.windows：场景 B 的窗口布局列表
 //   scenes[X].master.brightness：该幕总亮度，与每扇窗自己的 brightness 相乘
 //   scenes[X].panel_no：该幕「文件夹 → 墙板编号」绑定表（编辑面见【F-06f】）
-//   scenes[X].play_settings：该幕「文件夹 → 叠化/播放顺序」设置表（编辑面见【F-06g】）
+//   scenes[X].play_settings：该幕「文件夹 → 播放顺序」设置表（编辑面见【F-06g】）
 //
 // 【与外部信号的关系】
 // 墙板 RS485 信号 → 编号（1~32）→ 按 panel_no 反查那一格 → content.follow 的窗口切过去播放
@@ -2423,40 +2420,24 @@ async function wpSave() {
 
 // ============================================================================
 // 【F-06g】播放设置表（工作台「播放设置」模式）
-// 表形与墙板表同构：行 = 文件夹 01~30，列 = A幕 / B幕 各一组（素材数 + 叠化 + 时长 + 播放顺序）。
+// 表形与墙板表同构：行 = 文件夹 01~30，列 = A幕 / B幕 各一组（素材数 + 播放顺序）。
 // A、B 是两套独立的物理素材目录（scenea/01 与 sceneb/01 各播各的），所以设置也各存一份。
-// 落库形状 scenes[X].play_settings = {格: {dissolve, dissolve_ms, order}}，全默认的格子不落键、
+// 落库形状 scenes[X].play_settings = {格: {order}}，全默认的格子不落键、
 // 空表整个键都不下发 —— 与服务端 playSettingsValue / buildPrefixedScenes 同一口径，
 // 存量房间不会因为新增这个字段而 rev 漂移一次（那会让每台在线设备白重同步、视频从头播）。
+// 叠化（dissolve / dissolve_ms）已于 2026-11-12 随功能一起删除：素材轮播交接一律硬切。
 // 后续要加的设置项直接往这一组列里添，草稿/快照/保存三处都按「整格对象」走，不用改结构。
 // ============================================================================
 
-var PS_DISSOLVE_MS_MIN = 100, PS_DISSOLVE_MS_MAX = 3000, PS_DISSOLVE_MS_DEFAULT = 400;
 var PS_ORDERS = ['seq', 'shuffle'];
 
-/** 时长是否是合法档位（保存前拦一道，别让人填 5000 之后静默变成 400） */
-function _psMsOk(n) {
-    return typeof n === 'number' && Number.isInteger(n) && n >= PS_DISSOLVE_MS_MIN && n <= PS_DISSOLVE_MS_MAX;
-}
-
-/** 读库时的时长规范化：脏值/缺省一律回落到默认档，与服务端 dissolveMsValue 同口径 */
-function _psMs(v) {
-    var n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
-    return _psMsOk(n) ? n : PS_DISSOLVE_MS_DEFAULT;
-}
-
 /**
- * 一格设置的规范形状；全默认（不叠化 + 顺序循环）→ null = 不落键。
+ * 一格设置的规范形状；全默认（顺序循环）→ null = 不落键。
  * 读库和编辑都过它，两处不会各漂一份口径。
  */
 function _psCell(v) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-    var dissolve = v.dissolve === true;
-    var order = v.order === 'shuffle' ? 'shuffle' : 'seq';
-    if (!dissolve && order === 'seq') return null;
-    var c = { dissolve: dissolve, order: order };
-    if (dissolve) c.dissolve_ms = _psMs(v.dissolve_ms);
-    return c;
+    return v.order === 'shuffle' ? { order: 'shuffle' } : null;
 }
 
 /** 某一幕的设置表：01~30 之外的键原样留着（表只画 30 行，保存是整表 PUT，丢了等于替别人清设置） */
@@ -2477,25 +2458,11 @@ function _psSnap(d) {
         var o = {};
         Object.keys(m).sort().forEach(function (k) {
             var c = m[k];
-            o[k] = [c.dissolve === true, c.order === 'shuffle' ? 'shuffle' : 'seq', c.dissolve_ms == null ? null : c.dissolve_ms];
+            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq'];
         });
         return o;
     };
     return JSON.stringify([srt(d.A), srt(d.B)]);
-}
-
-/** 草稿里填坏的时长（开着叠化却不是 100~3000 的整数）：保存前拦下，服务端 findPlaySettingsError 的 400 是兜底 */
-function _psErrors(d) {
-    var out = [];
-    ['A', 'B'].forEach(function (sc) {
-        Object.keys(d[sc]).sort().forEach(function (fid) {
-            var c = d[sc][fid];
-            if (c.dissolve && !_psMsOk(c.dissolve_ms)) {
-                out.push((sc === 'A' ? '第一幕' : '第二幕') + ' ' + fid + ' 的叠化时长');
-            }
-        });
-    });
-    return out;
 }
 
 function _psDirty() {
@@ -2506,7 +2473,7 @@ function _psDirty() {
 /** 有未保存草稿就问一句；返回 false = 用户要留下（调用方负责把刚拨的开关还原） */
 function _confirmDropPsDraft() {
     if (!_psDirty()) return true;
-    return confirm('播放设置表还有未保存的改动（叠化/播放顺序），离开这张表就丢了，不会自动落库。\n确定离开？');
+    return confirm('播放设置表还有未保存的改动（播放顺序），离开这张表就丢了，不会自动落库。\n确定离开？');
 }
 
 /** 退出播放设置模式：草稿随模式一起丢，重开时按云端真值重建。确认框由调用方弹（见 _exitTableModes） */
@@ -2561,24 +2528,13 @@ function _psDraftOf() {
     return d;
 }
 
-/** 一幕一格的四个格子：素材数（只读参照）+ 叠化开关 + 时长（关着时禁用）+ 播放顺序 */
+/** 一幕一格的两个格子：素材数（只读参照）+ 播放顺序 */
 function _psGroupHtml(sc, fid, cell, count, sep) {
     var c = cell || {};
-    var on = c.dissolve === true;
-    var msBad = on && !_psMsOk(c.dissolve_ms);
-    var msVal = (c.dissolve_ms == null || c.dissolve_ms === '') ? '' : c.dissolve_ms;
     var ord = c.order === 'shuffle' ? 'shuffle' : 'seq';
     var where = '第' + sc + '幕 文件夹' + fid;
     var h = '<td class="wp-cnt' + (count ? ' has' : '') + (sep ? ' ps-sep' : '') + '"'
         + ' title="' + escA(where + ' 里有几个素材（0 个的话设了也没画面）') + '">' + (count || '—') + '</td>';
-    h += '<td><input type="checkbox" name="psd-' + sc + '-' + fid + '" aria-label="' + escA(where + ' 的叠化开关') + '"'
-        + ' title="' + escA('开 = 这一格内素材轮播的交接做叠化（含最后一只回到第一只）；切墙板/切幕/试播仍是硬切') + '"'
-        + (on ? ' checked' : '') + ' onchange="psSet(\'' + sc + '\',\'' + fid + '\',\'dissolve\',this.checked)"></td>';
-    h += '<td><input class="ps-num' + (msBad ? ' bad' : '') + '" type="number" min="' + PS_DISSOLVE_MS_MIN + '" max="' + PS_DISSOLVE_MS_MAX + '" step="50"'
-        + ' name="psms-' + sc + '-' + fid + '" aria-label="' + escA(where + ' 的叠化时长（毫秒）') + '" value="' + escA(String(msVal)) + '"'
-        + ' placeholder="' + PS_DISSOLVE_MS_DEFAULT + '"' + (on ? '' : ' disabled')
-        + ' title="' + escA('两段画面交叉淡入淡出的时长，' + PS_DISSOLVE_MS_MIN + '~' + PS_DISSOLVE_MS_MAX + ' 毫秒；越长越柔和，也越吃解码资源') + '"'
-        + ' onchange="psSet(\'' + sc + '\',\'' + fid + '\',\'dissolve_ms\',this.value)"></td>';
     var opts = '';
     PS_ORDERS.forEach(function (o) {
         opts += '<option value="' + o + '"' + (ord === o ? ' selected' : '') + '>' + (o === 'shuffle' ? '随机循环' : '顺序循环') + '</option>';
@@ -2605,15 +2561,12 @@ function _psTableHtml() {
     h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:12px" onclick="psSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:12px;margin-left:6px" title="丢掉未保存的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:11px;margin-top:6px">叠化只作用于同一文件夹内素材轮播的交接（含最后一只回到第一只）；切墙板、切幕、试播接管都是硬切。未设置的格子 = 不叠化 + 顺序循环。</div>';
-
-    var errs = _psErrors(d);
-    if (errs.length) h += '<div class="wp-err" style="margin-top:6px">时长要填 ' + PS_DISSOLVE_MS_MIN + '~' + PS_DISSOLVE_MS_MAX + ' 之间的整数毫秒：' + esc(errs.join('、')) + '</div>';
+    h += '<div style="color:#666;font-size:11px;margin-top:6px">素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
-        + '<tr><th rowspan="2">文件夹</th><th colspan="4">第一幕 (A)</th><th colspan="4" class="ps-sep">第二幕 (B)</th></tr>'
-        + '<tr><th>素材</th><th>叠化</th><th>时长(ms)</th><th>播放顺序</th>'
-        + '<th class="ps-sep">素材</th><th>叠化</th><th>时长(ms)</th><th>播放顺序</th></tr>'
+        + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th></tr>'
+        + '<tr><th>素材</th><th>播放顺序</th>'
+        + '<th class="ps-sep">素材</th><th>播放顺序</th></tr>'
         + '</thead><tbody>';
     for (var i = 1; i <= 30; i++) {
         var f = String(i).padStart(2, '0');
@@ -2639,25 +2592,12 @@ function renderPsEditor() {
 /** 改一格草稿（只动内存，点「保存」才落库）；回到全默认就删键，与服务端"默认值不落键"同口径 */
 function psSet(sc, fid, field, v) {
     var d = _psDraftOf();
-    if (!d || (sc !== 'A' && sc !== 'B')) return;
-    var c = d[sc][fid] ? Object.assign({}, d[sc][fid]) : { dissolve: false, order: 'seq' };
-    if (field === 'dissolve') {
-        c.dissolve = !!v;
-        if (c.dissolve && c.dissolve_ms == null) c.dissolve_ms = PS_DISSOLVE_MS_DEFAULT;
-    } else if (field === 'order') {
-        c.order = v === 'shuffle' ? 'shuffle' : 'seq';
-    } else if (field === 'dissolve_ms') {
-        // 原样收下（含空串/越界），由 _psErrors 标红并拦住保存 —— 静默回落成 400 会让人以为填进去了
-        var t = String(v == null ? '' : v).trim();
-        c.dissolve_ms = t === '' ? null : Number(t);
+    if (!d || (sc !== 'A' && sc !== 'B') || field !== 'order') return;
+    var ord = v === 'shuffle' ? 'shuffle' : 'seq';
+    if (ord === 'seq') {
+        delete d[sc][fid];   // 回到全默认就删键，与服务端"默认值不落键"同口径
     } else {
-        return;
-    }
-    if (!c.dissolve && c.order !== 'shuffle') {
-        delete d[sc][fid];
-    } else {
-        if (!c.dissolve) delete c.dissolve_ms;   // 关着就不带时长，服务端也不认这个键
-        d[sc][fid] = c;
+        d[sc][fid] = { order: 'shuffle' };
     }
     renderPsEditor();
 }
@@ -2683,8 +2623,6 @@ async function psReload() {
 async function psSave() {
     var d = _psDraftOf();
     if (!d || !s.rf) return;
-    var errs = _psErrors(d);
-    if (errs.length) { alert('先把这些格子的叠化时长改成 ' + PS_DISSOLVE_MS_MIN + '~' + PS_DISSOLVE_MS_MAX + ' 的整数毫秒：\n' + errs.join('\n')); return; }
     var btn = document.getElementById('psSaveBtn');
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
     var cfg;

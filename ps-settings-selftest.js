@@ -55,9 +55,9 @@ function grab(name) {
 }
 const depNames = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isSceneKey', 'isPlainObject',
   'normalizeFolderMappings', 'panelNoValue', 'normalizePanelNos', 'isSafeFolderName',
-  'dissolveMsValue', 'playSettingsValue', 'normalizePlaySettings',
+  'playSettingsValue', 'normalizePlaySettings',
   'buildPrefixedScenes', 'mergePrefixedMappings', 'roomSceneDigest', 'parseRoomConfig'];
-const consts = src.match(/^const (PANEL_NO_MIN|PLAY_ORDERS|PLAY_DISSOLVE_MS_MIN).*$/gm).join('\n');
+const consts = src.match(/^const (PANEL_NO_MIN|PLAY_ORDERS).*$/gm).join('\n');
 const sandbox = {};
 new Function('exports', 'crypto', consts + '\n' + depNames.map(grab).join('\n')
   + '\nObject.assign(exports,{' + depNames.join(',') + '});')(sandbox, crypto);
@@ -104,31 +104,34 @@ const T = sandbox;
 
   await putCfg({
     scenes: {
-      A: { play_settings: { '01': { dissolve: true, dissolve_ms: 600, order: 'shuffle' },
-                            '02': { dissolve: false, order: 'seq' },
-                            'A03': { dissolve: true },
+      A: { play_settings: { '01': { order: 'shuffle' },
+                            '02': { order: 'seq' },
+                            'A03': { order: 'shuffle' },
                             '99': { order: 'shuffle' } } },
-      B: { play_settings: { '05': { order: 'shuffle', dissolve: false } } }
+      B: { play_settings: { '05': { order: 'shuffle' } } }
     }
   });
   let db = await cfgOf();
-  // 落库形状的唯一入口是 playSettingsValue：单格键序固定 dissolve → order → dissolve_ms
-  check('A 幕：合法格落库、全默认格(02)丢掉、带前缀键(A03)折回格名',
-    canon(db.scenes.A.play_settings) === canon({ '01': { dissolve: true, order: 'shuffle', dissolve_ms: 600 }, '03': { dissolve: true, order: 'seq', dissolve_ms: 400 }, '99': { dissolve: false, order: 'shuffle' } }),
+  // 落库形状的唯一入口是 playSettingsValue：随机格只留 { order: 'shuffle' }，顺序格整格不落
+  check('A 幕：随机格落库、默认格(02)丢掉、带前缀键(A03)折回格名',
+    canon(db.scenes.A.play_settings) === canon({ '01': { order: 'shuffle' }, '03': { order: 'shuffle' }, '99': { order: 'shuffle' } }),
     canon(db.scenes.A.play_settings));
   // 键闸与 folder_mappings 同一把（isSafeFolderName），不是 01-30；前端表格只渲染 01-30，
   // 所以 31+ 这种键只有手写 config 才会出现 —— 它照样生效，这是刻意保持的口径一致
   check('两位数以外的文件夹键按 isSafeFolderName 收下（与映射同闸，不另设区间）',
     db.scenes.A.play_settings['99'] !== undefined, JSON.stringify(db.scenes.A.play_settings));
-  check('B 幕只改顺序 → 不落 dissolve_ms',
-    JSON.stringify(db.scenes.B.play_settings) === JSON.stringify({ '05': { dissolve: false, order: 'shuffle' } }),
+  check('B 幕随机格只带 order 一个键',
+    JSON.stringify(db.scenes.B.play_settings) === JSON.stringify({ '05': { order: 'shuffle' } }),
     JSON.stringify(db.scenes.B.play_settings));
 
-  // 时长只字符串数字也认（表格里填的就是字符串）
-  await putCfg({ scenes: { A: { play_settings: { '07': { dissolve: true, dissolve_ms: '1200' } } } } });
+  // 存量 DB 里可能还留着叠化时代的脏键：写侧归一必须把它们抹掉，且"只有叠化没随机"的格子整格不落
+  await putCfg({ scenes: { A: { play_settings: { '07': { dissolve: true, dissolve_ms: '1200' },
+                                                 '08': { dissolve: true, dissolve_ms: 600, order: 'shuffle' } } } } });
   db = await cfgOf();
-  check('incoming 只带 A 幕时 B 幕从 DB 继承', JSON.stringify(db.scenes.B.play_settings) === JSON.stringify({ '05': { dissolve: false, order: 'shuffle' } }), JSON.stringify(db.scenes.B.play_settings));
-  check('字符串时长 "1200" → 数字 1200', db.scenes.A.play_settings['07'] && db.scenes.A.play_settings['07'].dissolve_ms === 1200, JSON.stringify(db.scenes.A.play_settings['07']));
+  check('incoming 只带 A 幕时 B 幕从 DB 继承', JSON.stringify(db.scenes.B.play_settings) === JSON.stringify({ '05': { order: 'shuffle' } }), JSON.stringify(db.scenes.B.play_settings));
+  check('残留叠化脏键写入时一并丢掉：只剩真正随机的那一格',
+    canon(db.scenes.A.play_settings) === canon({ '08': { order: 'shuffle' } }),
+    canon(db.scenes.A.play_settings));
 
   // 显式空表 = 关掉，不能被 DB 旧值继承回来
   await putCfg({ scenes: { A: { play_settings: {} } } });
@@ -140,14 +143,15 @@ const T = sandbox;
   // ===== 4. 非法值写库前拦住，不静默回落 =====
   r = await putCfg({ scenes: { A: { play_settings: { '01': { order: 'loop' } } } } });
   check('非法 order → 400', r.code === 400, r.code + ' ' + r.buf);
-  r = await putCfg({ scenes: { A: { play_settings: { '01': { dissolve: true, dissolve_ms: 99 } } } } });
-  check('时长低于下限 → 400', r.code === 400, r.code + ' ' + r.buf);
-  r = await putCfg({ scenes: { A: { play_settings: { '01': { dissolve: true, dissolve_ms: 3001 } } } } });
-  check('时长超上限 → 400', r.code === 400, r.code + ' ' + r.buf);
-  r = await putCfg({ scenes: { A: { play_settings: { '01': { dissolve: true, dissolve_ms: 400.5 } } } } });
-  check('小数时长 → 400', r.code === 400, r.code + ' ' + r.buf);
+  r = await putCfg({ scenes: { B: { play_settings: { '05': { order: 2 } } } } });
+  check('order 传数字 → 400（不静默当 seq）', r.code === 400, r.code + ' ' + r.buf);
+  r = await putCfg({ scenes: { A: { play_settings: { '01': 'shuffle' } } } });
+  check('整格不是对象 → 不报错，按脏形状丢弃（与 folder_mappings 同口径）', r.code === 200, r.code + ' ' + r.buf);
+  r = await putCfg({ scenes: { A: { play_settings: { '01': { dissolve: true, dissolve_ms: 600 } } } } });
+  check('残留叠化键（没带 order）→ 不报错，归一后整格不落', r.code === 200, r.code + ' ' + r.buf);
   db = await cfgOf();
-  check('被拦的写法没有落库', JSON.stringify(db.scenes.A.play_settings) === JSON.stringify({}), JSON.stringify(db.scenes.A.play_settings));
+  check('被拦的写法没有落库', canon(db.scenes.A.play_settings || {}) === canon({}) && canon(db.scenes.B.play_settings || {}) === canon({ '05': { order: 'shuffle' } }),
+    canon(db.scenes.A.play_settings) + ' | ' + canon(db.scenes.B.play_settings));
 
   // ===== 5. 下发侧：设备拿到的键带幕前缀，且 rev 随之变化 =====
   const DEV = 'zzpsdev' + ts;
@@ -158,10 +162,10 @@ const T = sandbox;
                            B: { play_settings: {} } } });
   r = await req('POST', '/api/devices/' + DEV + '/command', { command: { action: 'sync_room_materials' } });
   const sc = r.j && r.j.command && r.j.command.scenes;
-  check('sync 载荷带 A01（物理目录 id，设备端就按这把键查）',
-    !!(sc && sc.A && sc.A.play_settings && sc.A.play_settings.A01
-      && sc.A.play_settings.A01.dissolve === true && sc.A.play_settings.A01.dissolve_ms === 600
-      && sc.A.play_settings.A01.order === 'shuffle'), JSON.stringify(sc && sc.A && sc.A.play_settings));
+  // 下发只带 order：叠化下线后，脏键既不落库也不下发，设备端拿到的一定是它认得的形状
+  check('sync 载荷带 A01 = { order: shuffle }（物理目录 id，设备端就按这把键查）',
+    canon(sc && sc.A && sc.A.play_settings && sc.A.play_settings.A01) === canon({ order: 'shuffle' }),
+    JSON.stringify(sc && sc.A && sc.A.play_settings));
   check('没设置的 B 幕不落 play_settings 键', !(sc && sc.B && sc.B.play_settings), JSON.stringify(sc && sc.B));
   const revWith = r.j && r.j.command && r.j.command.rev;
   check('带设置时的 rev 与空配置不同', typeof revWith === 'string' && revWith !== revEmpty, revWith + ' vs ' + revEmpty);
@@ -173,13 +177,11 @@ const T = sandbox;
   check('关回默认后下发里再没有 play_settings',
     !(r.j.command.scenes.A && r.j.command.scenes.A.play_settings), JSON.stringify(r.j.command.scenes.A));
 
-  // ===== 6. 只改播放顺序（不动叠化）也要能下发：APK 靠这份表判 playlist 排法和是否起第二路 =====
-  await putCfg({ scenes: { A: { play_settings: { '02': { order: 'shuffle' } } } } });
+  // ===== 6. 随机单开关独立成立：APK 只认 order，再没有第二个字段 =====
+  await putCfg({ scenes: { A: { play_settings: { '02': { order: 'shuffle' }, '03': { order: 'seq' } } } } });
   r = await req('POST', '/api/devices/' + DEV + '/command', { command: { action: 'sync_room_materials' } });
-  check('随机循环单开关也能下发',
-    !!(r.j.command.scenes.A.play_settings && r.j.command.scenes.A.play_settings.A02
-      && r.j.command.scenes.A.play_settings.A02.order === 'shuffle'
-      && r.j.command.scenes.A.play_settings.A02.dissolve === false),
+  check('随机循环单开关下发、顺序格不落键',
+    canon(r.j.command.scenes.A.play_settings) === canon({ A02: { order: 'shuffle' } }),
     JSON.stringify(r.j.command.scenes.A.play_settings));
 
   // ===== 清理 =====

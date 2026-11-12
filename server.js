@@ -64,11 +64,12 @@
  *     A: { name: '第一幕',
  *          folder_mappings: { "01": [materialId, ...], "02": [...] },   // 键是未加前缀的两位编号；值是素材库 id 或预设素材 id，两种都合法
  *          panel_no: { "01": 3, "02": 7 },    // 墙板编号：文件夹 → 485 墙板「编号切换」帧的 NN(1~32)；没列出的键=该格不响应。同幕内 NN 不得重复（PUT /rooms 落库前校验，冲突 400）
- *          play_settings: { "01": { dissolve: true, dissolve_ms: 400, order: 'shuffle' } },
- *                         // 文件夹级播放设置：dissolve=同格素材轮播交接时叠化（切墙板/切幕/试播一律硬切），
- *                         // dissolve_ms=100~3000 整数毫秒（仅叠化开着时落键），order='seq' 顺序循环 | 'shuffle' 随机循环。
- *                         // 没列出的键 = 全默认（关叠化 + 顺序循环）；全默认的格子不落键，空表整个键都不下发，
- *                         // 所以存量房间的 rev 不会因为新增这个字段而漂移。非法 order/时长写库前 400。
+ *          play_settings: { "01": { order: 'shuffle' } },
+ *                         // 文件夹级播放设置：order='seq' 顺序循环 | 'shuffle' 随机循环。
+ *                         // 素材轮播交接一律硬切（叠化已于 2026-11-12 从三端删除，载荷里残留的 dissolve /
+ *                         // dissolve_ms 键写库时被丢掉，不必清库）。
+ *                         // 没列出的键 = 全默认（顺序循环）；全默认的格子不落键，空表整个键都不下发，
+ *                         // 所以存量房间的 rev 不会因为新增这个字段而漂移。非法 order 写库前 400。
  *          windows: [WinConfig, ...],
  *          master: { brightness: Number } },   // 场景总亮度 0..1，服务端在 PUT windows 时夹取
  *     B: { ... }
@@ -408,35 +409,22 @@ function findPanelCellConflict(sceneKey, panelNos) {
 /**
  * 文件夹级播放设置（scenes[X].play_settings）的取值口径 —— 三端共用一份，改这里要同步
  * 前端 _psCell/psSet* 与 APK 的 playSettingsOf：
- *   dissolve    Boolean        同一文件夹内素材轮播交接时叠化（切墙板/切幕/试播接管一律硬切）
- *   dissolve_ms Number         叠化时长 100~3000ms；设备端另需暖机提前量，片长不够时自动退化硬切
  *   order       'seq'|'shuffle' 顺序循环（按文件名）/ 随机循环
  * A、B 是两套独立物理目录（scenea/01 与 sceneb/01 装的不是同一批片子），所以设置按幕各存一份。
  * 全默认的格子一律不落键：给每幕挂一张 30 格默认表会让 roomSceneDigest 当场全库漂移一次，
  * 部署后每台在线设备都被对账判成"rev 落后"补发一发同步、视频从头播（与 panel_no 空表不落键同理）。
+ * 素材轮播交接一律硬切：叠化（dissolve / dissolve_ms）已于 2026-11-12 整条删除，存量格子里残留的
+ * 那两个键在规范化时被丢掉 —— 谁之前开过叠化，这次部署会因该格形状变化多同步一次，仅此而已。
  */
 const PLAY_ORDERS = ['seq', 'shuffle'];
-const PLAY_DISSOLVE_MS_MIN = 100, PLAY_DISSOLVE_MS_MAX = 3000, PLAY_DISSOLVE_MS_DEFAULT = 400;
-
-/** 叠化时长：档内整数原样收下，其余回落默认（下发侧必须是总函数，非法值由 findPlaySettingsError 在写库前拦） */
-function dissolveMsValue(raw) {
-  const n = (typeof raw === 'number' || typeof raw === 'string') ? Number(raw) : NaN;
-  return (Number.isInteger(n) && n >= PLAY_DISSOLVE_MS_MIN && n <= PLAY_DISSOLVE_MS_MAX) ? n : PLAY_DISSOLVE_MS_DEFAULT;
-}
 
 /**
  * 单格播放设置 → 确定形状；等于全默认返回 null（= 这一格不落键）。
- * dissolve_ms 只在叠化开着时才有意义：关着还留个时长会让这一格永远算"非默认"，
- * 用户把叠化关回去 rev 也回不到原值，白白多一次全量同步。
+ * 只认 order：残留的 dissolve 类键不再往下带，设备端已经不读它们，留着只会让 rev 比出假变化。
  */
 function playSettingsValue(v) {
   if (!isPlainObject(v)) return null;
-  const dissolve = v.dissolve === true;
-  const order = v.order === 'shuffle' ? 'shuffle' : 'seq';
-  if (!dissolve && order === 'seq') return null;
-  const out = { dissolve: dissolve, order: order };
-  if (dissolve) out.dissolve_ms = dissolveMsValue(v.dissolve_ms);
-  return out;
+  return v.order === 'shuffle' ? { order: 'shuffle' } : null;
 }
 
 /**
@@ -460,7 +448,7 @@ function normalizePlaySettings(ps, sceneKey) {
 }
 
 /**
- * 播放设置写入校验：非法的 order / dissolve_ms 静默回落会造成"表里填的和设备演的两回事"，
+ * 播放设置写入校验：非法的 order 静默回落会造成"表里填的和设备演的两回事"，
  * 所以写库前就报出去（与 findWallpanelFieldError 同一套理由）。空/没带不算错（回落默认）。
  * 入参是整份 config（两幕都查）；无错返回 null。
  */
@@ -476,13 +464,6 @@ function findPlaySettingsError(cfg) {
       if (cell.order !== undefined && cell.order !== null && cell.order !== '' && PLAY_ORDERS.indexOf(cell.order) < 0) {
         return `${where} 的播放顺序只能是 seq（顺序循环）或 shuffle（随机循环）`;
       }
-      const ms = cell.dissolve_ms;
-      if (ms !== undefined && ms !== null && ms !== '') {
-        const n = (typeof ms === 'number' || typeof ms === 'string') ? Number(ms) : NaN;
-        if (!Number.isInteger(n) || n < PLAY_DISSOLVE_MS_MIN || n > PLAY_DISSOLVE_MS_MAX) {
-          return `${where} 的叠化时长只能是 ${PLAY_DISSOLVE_MS_MIN}~${PLAY_DISSOLVE_MS_MAX} 之间的整数毫秒`;
-        }
-      }
     }
   }
   return null;
@@ -495,8 +476,8 @@ function findPlaySettingsError(cfg) {
  *     完全没带才继承 DB —— 否则映射永远无法清空
  *   - panel_no：与 folder_mappings 同一套口径（带键即按传入落，没带才继承），否则解绑编号后
  *     那个键会被 DB 里的旧值一路继承回来，墙板再也按不动
- *   - play_settings：同 panel_no（带键即按传入落，没带才继承），否则把叠化关回默认后那一格
- *     会被 DB 旧值继承回来，永远关不掉
+ *   - play_settings：同 panel_no（带键即按传入落，没带才继承），否则把随机改回顺序后那一格
+ *     会被 DB 旧值继承回来，永远改不回来
  *   - windows：只有非空数组才覆盖。清空窗口走 PUT /rooms/:id/windows —— 那里 windows 是必填
  *     数组，空数组表示"真的一个都不留"，不会和"调用方顺手带了个空 config"混淆
  *   - master：带 brightness 才生效，并 clamp 到 [0,1]
@@ -642,7 +623,7 @@ function buildPrefixedScenes(scenes) {
     });
     if (panelKeys.length > 0) result[key].panel_no = prefixedPanel;
     // 播放设置同样加幕前缀 + 排序 + 空表不落键（理由同上：默认值不该让全库 rev 漂移一次）。
-    // 设备端按物理目录 id（"A01"）查这一格该不该叠化、该顺序还是随机。
+    // 设备端按物理目录 id（"A01"）查这一格该顺序还是随机循环。
     var playSettings = normalizePlaySettings(sceneData.play_settings, key);
     var psKeys = Object.keys(playSettings).sort();
     if (psKeys.length > 0) {
