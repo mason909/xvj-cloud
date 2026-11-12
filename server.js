@@ -1800,6 +1800,8 @@ const PREVIEW_VIDEO_RE = new RegExp('\\.(' + VIDEO_EXT.join('|') + ')$', 'i');
  *          排除它会让试播报"没有窗口绑这一格"，而屏上明明播得动。
  *   命中是**全部**：所有窗口的画面严格同步是用户定调的硬约束（2026-11-11），试播只落一扇
  *   等于当场分裂一次屏，而且那一扇播完回到自己被冻住的位置，轮播顺序就此错开。
+ *   但"全部"只到**本幕**为止（2026-11-12 用户定调）：候选始终从 scenes[scene].windows 里取，
+ *   另一幕的窗口跟这一格没关系，点了别的幕的素材也不许被接管。
  *   winIds 按 zIndex 降序，第一扇留作旧 APK 的 win_id 兜底与日志显示；设备端不认这份名单，
  *   它按"本机此刻谁在播这一格"自己认（folder_id 才是判据，见 APK previewTargets）。
  * 数据一律取 buildPrefixedScenes 的结果：键已带幕前缀且已排序，正是 APK 遍历的那一份，
@@ -1831,11 +1833,18 @@ function resolvePreviewTarget(cfg, scene, folder) {
     const req = String(c.folderId || '').trim();
     return req ? prefixedFolderKey(scene, req) === wanted : autoFolder === wanted;
   });
-  // 手动试播 = 最高权限（2026-11-11 用户定调）：点任意一格的素材都要立即整屏接管播一遍，播完各自回到原位。
-  // 这一格有窗口在播/绑定 → 接管那组（严格同步）；没有 → 退回接管全部启用窗口，
+  // 手动试播 = 最高权限（2026-11-11 用户定调）：点任意一格的素材都要立即接管播一遍，播完各自回到原位。
+  // 这一格有窗口在播/绑定 → 接管那组（严格同步）；没有 → 退回接管**本幕**全部启用窗口，
   // 设备只落那些真在屏上的（previewTargets 的 named 兜底），素材在不在设备由下面的映射校验兜住。
+  // ⚠️ 回退名单绝不能带另一幕的窗（2026-11-12 用户定调）：一只片子只有一个物理目录、只属于一幕，
+  // 第二幕来源的窗口跟第一幕的这格没有任何关系。曾把两幕一起点进来，现场看到"试播第一幕 02，
+  // 窗口5（内容类型 SCENE_B）也在播它"。
   const takeover = matched.length > 0 ? matched
-    : ['A', 'B'].reduce((n, k) => n.concat(((scenes[k] || {}).windows) || []), []).filter(w => isPlainObject(w) && w.enabled !== false);
+    : (sceneData.windows || []).filter(w => {
+        if (!isPlainObject(w) || w.enabled === false) return false;
+        const c = isPlainObject(w.content) ? w.content : {};
+        return String(c.type || '').toUpperCase() === 'SCENE_' + scene;
+      });
   if (takeover.length === 0) return null;
   // 按 zIndex 降序：第一扇只用于旧 APK 的兜底字段和日志显示，
   // 设备上真正接管的是"这一格的所有窗口"（用户定调 2026-11-11：任何情况下所有窗口画面严格同步，

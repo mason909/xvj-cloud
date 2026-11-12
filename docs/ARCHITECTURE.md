@@ -1,8 +1,8 @@
 # XVJ 系统架构文档
 
 > 最后更新：2026-11-10
-> 代码规模：前端 `public/index.html` **4777 行** · 后端 `server.js` **3704 行** · APK `MainActivity.kt` **3800 行**
-> （另：`serial/WallPanelLink.kt` 212 行、`serial/WallPanelParser.kt` 93 行）
+> 代码规模：前端 `public/index.html` **4777 行** · 后端 `server.js` **3704 行** · APK `MainActivity.kt` **4332 行**
+> （另：`ShareCanvasView.kt` 419 行、`serial/WallPanelLink.kt` 212 行、`serial/WallPanelParser.kt` 93 行）
 >
 > **本文是导览，不是契约。** 三端源码头部注释才是权威口径：
 > `server.js` L1–154（表结构 / MQTT 主题 / 场景与 WinConfig 字段 / 同步触发口径）、
@@ -17,9 +17,9 @@
 
 | | 前端 (Web) | 后端 (Node.js) | APK (Android) |
 |---|---|---|---|
-| 文件 | `public/index.html` | `server.js` | `MainActivity.kt` + `serial/` |
-| 规模 | 4777 行，单文件 SPA | 3704 行 | 3800 行 |
-| 技术 | 原生 JS + HTML + CSS，无框架无构建 | Express + mysql2 + mqtt | Kotlin + media3 ExoPlayer + Paho |
+| 文件 | `public/index.html` | `server.js` | `MainActivity.kt` + `ShareCanvasView.kt` + `serial/` |
+| 规模 | 4777 行，单文件 SPA | 3704 行 | 4332 行 + 419 行 |
+| 技术 | 原生 JS + HTML + CSS，无框架无构建 | Express + mysql2 + mqtt | Kotlin + media3 ExoPlayer + Paho + GLES20（同格共享解码那层） |
 | 职责 | 素材/客户/房间配置、窗口编辑、运维控制台 | 唯一真相源：落库、校验、下发、审计 | 瘦执行器：下素材、渲染窗口、上报状态 |
 | 通信 | 只走 HTTP `/api/*`，**不直连 MQTT** | HTTP + MQTT broker | MQTT + HTTP GET（素材/清单/APK） |
 
@@ -371,11 +371,12 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 
 ⚠️ media3 **1.2.1** 没有 `VideoSize.frameRate`（1.3+ 才有）。本机无 Kotlin 编译器，
 括号平衡检查挡不住这类 API 版本问题 ⇒ 改完 `.kt` 的首次 CI 构建要当"真编译"看待。
+结构性体检脚本：`node 工作区/apk_artifacts/kt-balance.js <各 .kt 路径>`（跳过注释与字符串数花括号/圆括号，只挡"编辑时少了一瓣括号"）。
 
 其余 `.kt` 文件（`BootReceiver` / `SettingsActivity` / `FolderManagerActivity` / `hdmi/*` / `serial/Hdmi*` /
 `serial/Serial*`）都只有一行 `// disabled`，是历史遗留占位；`android_serialport_api/SerialPort.kt`（180 行）
 全文无人引用（墙板链路改用 `Os.open` + `stty`，不走 JNI）。
-**真正活着的只有 `MainActivity.kt` 与 `serial/WallPanelLink.kt` + `WallPanelParser.kt`。**
+**真正活着的只有 `MainActivity.kt`、`ShareCanvasView.kt`（同格共享解码的 GL 画布，见 §5.7）与 `serial/WallPanelLink.kt` + `WallPanelParser.kt`。**
 ⚠️ 但 Manifest 仍声明着那三个不存在的类，见 §七。
 
 ### 5.2 模块索引（与代码里的 `【A-XX】` 标签对应）
@@ -387,7 +388,7 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | A-03 | 注册 & 授权 | `registerDevice` / `sendStatus` / `handleAuthResponse` |
 | A-04 | 命令分发 | `handleCommand` → `when(action)` |
 | A-06 | 素材同步 | `requestRoomMaterialSync` / `runRoomSyncLoop` / `doRoomMaterialSync` / `fetchRoomMaterials` / `syncSceneFolders` / `syncFolderWithIds` |
-| A-07 | 窗口配置 & 渲染 | `applySceneConfigs` / `scenesFingerprint` / `applyLiveWindowUpdate` / `createWindowView` / `resolveWindowFolder` / `playFolderInWindow` |
+| A-07 | 窗口配置 & 渲染 | `applySceneConfigs` / `scenesFingerprint` / `enabledWindowsSorted` / `applyLiveWindowUpdate` / `createWindowView` / `resolveWindowFolder` / `playFolderInWindow`；同格共享解码那层 `createShareGroup` / `refreshShareGroup` / `destroyShareGroups`（画布在 `ShareCanvasView.kt`），日志共用 `armWindowLogger` |
 | A-08 | 窗口释放 | `releaseAllWindows` |
 | A-09 | OTA 自更新 | `checkForUpdate` / `isTrustedApkUrl` / `isValidFilepath` / `verifyApkSignature` / `downloadAndInstall` / `installApk` / `retryPendingInstall` |
 | A-10 | 系统 UI | `hideSystemUI` |
@@ -519,17 +520,47 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 
 - 设备端**不认云端算好的 `win_ids`**：云端按库里那份配置算窗，设备却可能刚应用过更新的一版，
   那一刻"谁在播这一格"只有设备知道。`previewTargets()` 按本机 `VideoSurface.folderKey` 认成员，
-  `win_ids` 只在 `folderKey` 还没落上时兜底；云端 `resolvePreviewTarget` 因此返回**整组名单**
-  （`winIds` 按 zIndex 降序，第一扇留作旧包的 `win_id` 兜底与日志显示）。
+  `win_ids` 只在 `folderKey` 还没落上时兜底，**且兜底名单也要按幕筛过**（`sceneOfWindow()`：
+  先认 folderKey 的幕前缀，落不上再查生效配置里的 `content.type`）；云端 `resolvePreviewTarget`
+  因此返回**整组名单**（`winIds` 按 zIndex 降序，第一扇留作旧包的 `win_id` 兜底与日志显示）。
 - **手动试播 = 最高权限（2026-11-11 用户定调）**：点任意一格的素材都要立即接管、播一遍、回到原位，
   不再要求"恰好有窗口绑定/跟随这一格"。`resolvePreviewTarget` 命中这一格的窗口优先；一格都没绑定时
-  退回接管**全部启用窗口**（设备只落真在屏上的那些），没配窗口的房间则落 APK 自建的默认窗 `win_1`。
+  退回接管**本幕全部启用窗口**（设备只落真在屏上的那些），没配窗口的房间则落 APK 自建的默认窗 `win_1`。
   素材在不在设备上仍由"必须在本房间本格映射里"这道校验兜底（映射过的格才会同步到本机），所以能点的素材必然播得动。
-- 同步的口径是"持续对齐到同一位置基准 + 同一时刻交接"，**仍不是硬件级同帧**：多路 ExoPlayer 各自解码，
-  硬切那一格每次交接仍有各路"首帧凝滞"不同造成的 0.1~0.5s 画面散差，摁住等待只能把它压到切点前，压不进同一帧。
-  要真同帧只剩一条路：改成 1 路解码 + GL 合成多视图（未做，见 §七）。seek 只留给"已经过界/整组散开"（那已经是错到必须硬拽），日常贴齐全靠速度。
+- **试播的作用域止于那一幕（2026-11-12 用户定调）**：一只素材只在一个物理目录、只属于一幕，
+  另一幕来源的窗口跟它没有任何关系。曾出过的现场事故：试播第一幕 02，第二幕来源的窗口5 也跟着播 ——
+  那是"一格没绑定时接管全部启用窗口"这条回退跨了幕。回退名单与设备兜底都改成只取本幕后，
+  这一幕自己的窗口照样整组接管，`B/02` 那种"另一幕的同号格没素材"根本不会被点到（映射校验先拦 400）。
+- 同步的口径是"持续对齐到同一位置基准 + 同一时刻交接"，**多路解码时仍不是硬件级同帧**：各路"首帧凝滞"不同，
+  硬切那一格每次交接仍有 0.1~0.5s 画面散差，摁住等待只能把它压到切点前，压不进同一帧。
+  **真同帧只在这一种情形成立**：同一格挂 ≥2 扇视频窗时，设备端合成一组共享解码（见 §5.7.1），天生同帧，不参与上面这套校正。
+  seek 只留给"已经过界/整组散开"（那已经是错到必须硬拽），日常贴齐全靠速度。
 - 试播接管前必须先 `releaseSyncHold()` 再存快照：摁住就是 `playWhenReady=false`，不解除就会被
   `PreviewState` 一起存走，试播播完恢复正片时那扇窗再也起不来。换格 / 重建窗口同样逐路解除。
+
+#### 5.7.1 同格共享解码（任务 #175，`ShareCanvasView.kt`）
+
+**它治的是结构问题，不是调参问题**：同一格挂 N 扇窗，以前起 N 路 ExoPlayer、N 个 MediaCodec 解同一条码流，
+交接延迟与凝滞按窗数线性放大（308 实测 6 扇同格散差 3.5s、混进 4K 那一路凝滞 4.8s，同步校正因此在第一次交接就熔断）。
+解出来的画面明明一模一样，却付了 N 遍解码。现在 **1 路解码 → GL 复制 N 份**：
+
+- `applySceneConfigs` 先把每扇窗该播哪一格解析出来（`enabledWindowsSorted` + `resolveWindowFolder`），
+  同格 ≥2 扇的**视频**窗合成一个 `ShareGroup`：一路 ExoPlayer 输出到画布自己的离屏 `SurfaceTexture`，
+  `ShareCanvasView` 在独立 GL 线程把这张外部纹理按每扇成员窗的位置/尺寸/取景/旋转/镜像/透明度/亮度各画一遍。
+  复制发生在 GPU 上，代价与窗口数基本无关。
+- **成员窗不再有自己的播放器**：`windowPlayers[leaderId]` 是唯一真值，基准 = 组内 ID 最小那扇（与 `groupClock`、
+  判据窗同一口径）。`playFolderInWindow` 里跟随那几扇只代记 `folderKey` / `settings` / `playlistSig`，
+  试播范围、熔断、日志都按这张账找到整组（`previewTargets` 只认有播放器的基准那一路，扇数由 `winShareGroup` 换算）。
+- **共享格整体退出同步校正**（`tickSyncGroups` / `syncGroupsWithCorrection` 都按 `shareGroups` 跳过）：散差按构造是 0，
+  继续巡检只是白烧主线程。
+- 单窗房间、以及一格只有一扇窗的房间**完全不走这条路**，渲染链路逐字节照旧。
+- 代价（已与用户确认）：整组是一块画布（成员矩形的并集），跨组的 z 交错没了；音频只剩一路。
+- 组构成变化只由全量重建负责（`update_windows` 轻路径只重排几何 `refreshShareGroup`）；墙板编号若把成员分到不同格子，
+  `handleWallPanelNumber` 检测到就回退全量重建。
+- ⚠️ **未真机验证**：GL/EGL 在 RK3588 盒子上首次跑这条路，三处必须上机看 —— `bindWindow` 把解码端
+  （离屏 `SurfaceTexture` + `Surface`）生在常驻上下文里、经 `onDecoderSurface` 回主线程喂播放器；
+  帧驱动（`onFrameAvailable` → GL 线程 `updateTexImage`）跟不跟手；切后台再回来，承载 st 换了一块而
+  上下文与解码端都不动，画面能不能复活。
 
 ### 5.8 墙板 485 链路（A-14 + `serial/`）
 
@@ -653,7 +684,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 | HDMI 输入 | `content.type = HDMI` 只有占位视图 | `HdmiManager` / `HdmiProcessor` 仍是 `// disabled`，真采集未实现 |
 | **开机自启** | Manifest 声明了 `.BootReceiver`（`BOOT_COMPLETED`，`exported=true`），但 `BootReceiver.kt` 只有一行 `// disabled`，**类不存在** → 广播投递时 `ClassNotFoundException`，开机自启这条链路是断的 | 未修。`MainActivity` 带 `HOME` category，盒子设成默认桌面时仍能起；要真自启得补回 receiver 类（需构建）。另有 `.SettingsActivity` / `.FolderManagerActivity` 两条同样悬空的声明，无人启动，属可删的死条目 |
 | 墙板真机验证 | 485 物理层（波特率/电气）未抓包 | 「按键→切窗」「试播抢占跟随窗」只过了纯函数用例 |
-| 同帧精度 | 同步组已做到"同一位置基准 + 同一时刻交接"（三档纠偏：减速贴齐 / 摁住等待 / 过界硬对齐，见 5.7），但硬切那一格各路解码器的首帧凝滞不同（实测 0.12~0.55s），摁住只能把散差压到切点前，压不进同一帧 | 真同帧需 1 路解码 + GL 合成多视图，未做（叠化那条路已于 2026-11-12 整条删除） |
+| 同帧精度 | 多路解码那一类（一格只挂一扇窗、或不同格并排）仍做不到硬件级同帧：各路首帧凝滞不同（实测 0.12~0.55s），摁住只能把散差压到切点前 | 同格 ≥2 扇已改成 1 路解码 + GL 合成多视图（§5.7.1，任务 #175），天生同帧；**代码已就位、真机未验**（GL/EGL 首次在盒子上跑）。叠化那条路已于 2026-11-12 整条删除 |
 | 故障记录路径 | `FAULT_LOG = '/workspace/xvj-backup/故障记录.md'` 是容器时代遗留绝对路径 | 裸机上该目录不存在则写入失败（已有 try/catch 告警），崩溃现场只剩 `journalctl` |
 | 静默安装 | OTA 需人工确认，覆盖安装后应用不自启 | 等上 RK3588 盒子再按环境选实现 |
 | 店铺独立账号 | 现平台 = 总部端，无账号体系 | 将来每店独立账号只看自己门店，落地时窗口/素材/设备查询都要带店铺隔离 |
