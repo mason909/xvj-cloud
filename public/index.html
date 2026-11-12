@@ -259,6 +259,7 @@ body.nav-off .brand-name{display:inline}
 </div>
 <div id="btns">
 <button class="btn btn-primary" onclick="document.getElementById('fi').click()">上传文件</button></div>
+<div id="authbox" style="margin-left:auto"></div>
 </header>
 <div class="content">
 <div id="pm">
@@ -390,36 +391,151 @@ body.nav-off .brand-name{display:inline}
 <div class="modal" id="m" onclick="if(event.target === this) closeModal()"><div class="modal-content"><button class="modal-close" onclick="closeModal()">×</button><div id="mc"></div></div></div>
 <script src="/mqtt.min.js"></script>
 <script>
-// 【F-00】API 密钥注入：服务端对写操作（POST/PUT/DELETE）要求 x-api-key，这里为所有请求统一附加
+// 【F-00】写接口凭据：页面里不再有任何 API key（历史上那把 key 就写死在本文件第 395 行，
+// 公开可提取 = 写接口等于无鉴权，即 P3-10）。现在浏览器只凭 POST /api/session 换来的
+// HttpOnly cookie 调写接口：同源请求自带 cookie，不需要 JS 持有凭据，也就无从"查看源码拿到 key"。
+// 未登录/会话过期时服务端回 401 code=LOGIN_REQUIRED，这里弹口令框，登录成功后重放原来那一次请求。
 (function () {
-    var K = 'xvj_secret_key_2024';
     var _fetch = window.fetch;
-    window.fetch = function (input, init) {
-        try {
-            var url = typeof input === 'string' ? input : (input && input.url) || '';
-            if (url.indexOf('/api/') === 0) {
-                // 必须另建 init 并把 header 塞进新的 Headers：原地改 init 只在"这一层就是最外层"时成立。
-                // 实测（自动化/监控脚本会先浅拷贝 init 再往下传）不带 headers 的写请求会丢 key ——
-                // `apiCall(url,{method:'DELETE'})` 稳定 401，而 {...,headers:{}} 就 200。删房间正是前者。
-                var src = (init && init.headers)
-                    || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : null);
-                var h = new Headers(src);
-                h.set('x-api-key', K);
-                init = Object.assign({}, init || {}, { headers: h });
+    var _pending = null;      // 并发 401 共用同一个口令框：登录结果大家一起拿
+    var _box = null;
+    var _authed = null;       // null=还没探过服务端；true/false=GET /api/session 的回话
+
+    function _isApi(u) {
+        return typeof u === 'string' && (u.indexOf('/api/') === 0 || u.indexOf(location.origin + '/api/') === 0);
+    }
+    // /api/session 自己必须放行：给它再套一层"401 就弹登录"会变成弹完再弹
+    function _isSession(u) { return typeof u === 'string' && u.indexOf('/api/session') === 0; }
+
+    function _ensureBox() {
+        if (_box) return _box;
+        _box = document.createElement('div');
+        _box.id = 'xvjLogin';
+        // z-index 必须高于【.modal】的 100：登录框可能盖在任何业务弹窗之上（写请求就来自那次操作）
+        _box.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;display:none;align-items:center;justify-content:center';
+        _box.innerHTML = '<div style="background:#1a1a1a;border-radius:12px;padding:28px 30px;min-width:320px;max-width:90%;box-shadow:0 20px 60px rgba(0,0,0,.6)">' +
+            '<div style="font-size:18px;font-weight:bold;margin-bottom:6px">管理台登录</div>' +
+            '<div style="color:#888;font-size:13px;margin-bottom:16px">改数据需要口令，登录后 12 小时内免登</div>' +
+            '<input id="xvjLoginPw" type="password" autocomplete="current-password" placeholder="管理口令" ' +
+            'style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #444;background:#242424;color:#eee;font-size:15px">' +
+            '<div id="xvjLoginErr" style="color:#ff6b6b;font-size:13px;margin-top:8px;min-height:18px"></div>' +
+            '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">' +
+            '<button class="btn btn-secondary" id="xvjLoginCancel">取消</button>' +
+            '<button class="btn btn-primary" id="xvjLoginOk">登录</button></div></div>';
+        document.body.appendChild(_box);
+        return _box;
+    }
+
+    function _paint() {
+        var b = document.getElementById('authbox');
+        if (!b) return;
+        if (_authed === null) { b.innerHTML = ''; return; }   // 还没探过服务端，别先画一个"退出登录"
+        b.innerHTML = _authed === false
+            ? '<button class="btn btn-secondary" onclick="xvjRequireLogin()">登录</button>'
+            : '<button class="btn btn-secondary" onclick="xvjLogout()" title="清掉本机 12 小时免登凭据（口令本身不变，换机/清缓存即失效）">退出登录</button>';
+    }
+
+    function _ask() {
+        if (_pending) return _pending;
+        var box = _ensureBox();
+        box.style.display = 'flex';
+        var inp = document.getElementById('xvjLoginPw');
+        var err = document.getElementById('xvjLoginErr');
+        var okBtn = document.getElementById('xvjLoginOk');
+        err.innerText = ''; inp.value = '';
+        setTimeout(function () { inp.focus(); }, 0);
+        _pending = new Promise(function (resolve) {
+            function done(ok) {
+                box.style.display = 'none';
+                inp.onkeydown = null; okBtn.onclick = null;
+                document.getElementById('xvjLoginCancel').onclick = null;
+                _pending = null;
+                // 登录态在这里统一落地：不这么做，弹窗成功关掉、右上角却还是"登录"，
+                // 用户会以为没登进去再点一次
+                _authed = !!ok; _paint();
+                resolve(!!ok);
             }
-        } catch (e) {}
-        return _fetch.call(window, input, init);
+            function submit() {
+                var pw = inp.value;
+                if (!pw) { err.innerText = '请输入管理口令'; return; }
+                okBtn.disabled = true; okBtn.innerText = '登录中…';
+                _fetch.call(window, '/api/session', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: pw })
+                }).then(function (r) {
+                    return r.json().catch(function () { return {}; }).then(function (j) { return { code: r.status, j: j }; });
+                }).then(function (res) {
+                    okBtn.disabled = false; okBtn.innerText = '登录';
+                    if (res.code === 200 && res.j.success) return done(true);
+                    // 服务端 503（没配 ADMIN_PASSWORD）与 429（连错太多次）的原文都在这里回显，运维不用翻日志
+                    err.innerText = res.j.error || ('HTTP ' + res.code);
+                    inp.focus(); inp.select();
+                }).catch(function (e) {
+                    okBtn.disabled = false; okBtn.innerText = '登录';
+                    err.innerText = '登录请求没发出去：' + ((e && e.message) || e);
+                });
+            }
+            okBtn.onclick = submit;
+            document.getElementById('xvjLoginCancel').onclick = function () { done(false); };
+            inp.onkeydown = function (e) { if (e.key === 'Enter') submit(); };
+        });
+        return _pending;
+    }
+
+    function _needLogin(j) { return !!j && (j.code === 'LOGIN_REQUIRED' || j.code === 'SESSION_EXPIRED'); }
+
+    window.fetch = function (input, init) {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (!_isApi(url) || _isSession(url)) return _fetch.call(window, input, init);
+        init = Object.assign({}, init || {}, { credentials: 'same-origin' });
+        return _fetch.call(window, input, init).then(function (res) {
+            // 只重放"传 url 字符串"的请求：input 是 Request 时它的 body 已经消费过，重放必炸。
+            // 本页面所有写请求都走 apiCall/apiPost/apiGet（url 字符串），这条限制打不到正常路径。
+            if (res.status !== 401 || typeof input !== 'string') return res;
+            return res.clone().json().catch(function () { return {}; }).then(function (j) {
+                if (!_needLogin(j)) return res;
+                return _ask().then(function (ok) {
+                    if (!ok) return res;
+                    return _fetch.call(window, input, init);   // 登录态已由 _ask 落好
+                });
+            });
+        });
     };
-    var _open = XMLHttpRequest.prototype.open;
+
+    // 上传走 XMLHttpRequest（要靠 upload.onprogress 出进度），同样只带 cookie；
+    // 401 时弹口令框但不重放——上传重放等于悄悄传第二遍，让用户自己决定。
+    var _open = XMLHttpRequest.prototype.open, _send = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function (method, url) {
-        this._xvjApi = typeof url === 'string' && url.indexOf('/api/') === 0;
+        this._xvjApi = _isApi(url) && !_isSession(url);
         return _open.apply(this, arguments);
     };
-    var _send = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function () {
-        if (this._xvjApi) { try { this.setRequestHeader('x-api-key', K); } catch (e) {} }
+        var xhr = this;
+        if (xhr._xvjApi) {
+            xhr.addEventListener('load', function () {
+                if (xhr.status !== 401) return;
+                var j = {}; try { j = JSON.parse(xhr.responseText); } catch (e) {}
+                if (_needLogin(j)) _ask();
+            });
+        }
         return _send.apply(this, arguments);
     };
+
+    window.xvjRequireLogin = function () { return _ask(); };
+    window.xvjLogout = function () {
+        // 服务端是无状态签名 cookie，这里只清本机那份（12 小时后它自己过期）；
+        // 清完绝不顺手再弹口令框——那等于退出没退出。
+        return _fetch.call(window, '/api/session', { method: 'DELETE', credentials: 'same-origin' })
+            .catch(function () {})
+            .then(function () { _authed = false; _paint(); return false; });
+    };
+    // 启动先探一次：读接口全开放，所以未登录时页面照样渲染得出来，只是动不了数据；
+    // 直接弹框比等用户点坏了再弹好——他会以为"保存没反应"。
+    _fetch.call(window, '/api/session', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) { _authed = !!(j && j.authed); _paint(); if (!_authed) _ask(); })
+        .catch(function () { _authed = false; _paint(); });
 })();
 </script>
 <script>
@@ -463,7 +579,8 @@ function escJsA(s) {
 
 /**
  * 发一次写请求并拿结果：HTTP 非 2xx、或 body 里 success 不为 true 都算失败并抛出。
- * 服务端写接口统一回 {success:true} / {error:'…'}（x-api-key 由 F-00 的 fetch 包装自动带），
+ * 服务端写接口统一回 {success:true} / {error:'…'}（凭据由【F-00】的会话 cookie 自动带上，
+ * 未登录时那一层还会顺手弹口令框并重放这次请求），
  * 所以这一层就够用。别再 `await fetch(...)` 后直接刷新列表 —— 那等于"失败也报成功"。
  */
 async function apiCall(url, opts) {
@@ -639,7 +756,7 @@ function createPlayer(url, type, container, poster) {
 /* ============================================================
  * 【代码索引】搜索 "【F-XX】" 快速定位（带 b 的是同一模块里的第二个入口）
  * ─────────────────────────────────────────────────────────
- * 【F-00】API 密钥注入：fetch/XHR 统一补 x-api-key
+ * 【F-00】登录态：fetch/XHR 遇 401 弹口令框走 /api/session，页面不再持有 API key
  * 【F-01】全局状态对象 s
  * 【F-02】菜单切换 sp(p)（各页初始化在这里分派）
  * 【F-03】素材管理页 lm()     　【F-03b】预设素材页 lp()

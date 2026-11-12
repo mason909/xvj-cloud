@@ -24,6 +24,7 @@
  * 【S-11】店铺管理 API（/api/stores*）
  * 【S-12】版本管理 API（/api/versions*、/api/device/version*、push-update）
  * 【S-13】配置 & 默认素材 & 未注册设备（/api/config*、/api/default-materials*、/api/unregistered）
+ * 【S-14】会话鉴权（POST/GET/DELETE /api/session、makeSessionToken / sessionValid / requireAuth）
  * ─────────────────────────────────────────────
  *
  * 核心表：
@@ -902,29 +903,136 @@ function notifyRoomConfigChanged(roomId, oldCfgStr, newCfgStr, reason, cb) {
   );
 }
 
+/**
+ * 【S-14】会话鉴权：口令 → 短时效签名 cookie（无状态，不落库）。
+ * ─────────────────────────────────────────────────────────────
+ * cookie 值 = `base64url(过期毫秒.口令摘要).HMAC-SHA256(前一段, key 由 API_KEY+口令 派生)`：
+ *   - 没有 session 表 ⇒ 服务重启不会把所有人踢下线，也没有内存增长；
+ *   - 摘要进载荷 ⇒ 换 ADMIN_PASSWORD 的同一瞬间，线上所有会话一起作废（不用逐个登出）；
+ *   - 签名密钥也含 API_KEY ⇒ 换 key 同样整体失效。
+ * 口令与 key 都只从 env 来（config.js 读 /etc/xvj/web.env），仓库与公开页面里都不再有明文。
+ */
+const SESSION_COOKIE = 'xvj_session';
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;   // 一个班次内免登，隔天重来
+const LOGIN_MAX_FAILS = 8;                     // 同一来源连错 8 次锁 5 分钟：只当刹车，防不住定向猜测，真正靠口令本身
+const LOGIN_LOCK_MS = 5 * 60 * 1000;
+const loginFails = new Map();                  // 来源 -> { n, at }
+
+/** 等长摘要比较：直接比原始口令的 buffer 会因为长度不同早停，先各自 sha256 再 timingSafeEqual */
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+function sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }
+
+/** 会话签名密钥：换口令或换 API_KEY 都会让旧 cookie 验不过 */
+function _sessionKey() {
+  return crypto.createHash('sha256').update('xvj-session|' + (config.apiKey || '') + '|' + (config.adminPassword || '')).digest();
+}
+function _sessionBody() { return Buffer.from(Date.now() + SESSION_TTL_MS + '.' + sha256(config.adminPassword).slice(0, 16)).toString('base64url'); }
+function sessionToken() {
+  const body = _sessionBody();
+  return body + '.' + crypto.createHmac('sha256', _sessionKey()).update(body).digest('base64url');
+}
+function readCookie(req, name) {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of String(raw).split(';')) {
+    const eq = part.indexOf('=');
+    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+/** cookie 解码成 {exp, pwHash}，验签/过期/换口令任一不过都回 null */
+function sessionPayload(req) {
+  if (!config.adminPassword) return null;   // 没配口令 = 这道门根本没装，cookie 一律不认（fail closed）
+  const tok = readCookie(req, SESSION_COOKIE);
+  if (!tok || tok.indexOf('.') <= 0) return null;
+  const dot = tok.indexOf('.'), body = tok.slice(0, dot);
+  const want = crypto.createHmac('sha256', _sessionKey()).update(body).digest('base64url');
+  if (!safeEqual(tok.slice(dot + 1), want)) return null;
+  let txt;
+  try { txt = Buffer.from(body, 'base64url').toString(); } catch (e) { return null; }
+  const parts = txt.split('.');
+  const exp = Number(parts[0]);
+  if (!Number.isFinite(exp) || exp <= Date.now()) return null;
+  if (parts[1] !== sha256(config.adminPassword).slice(0, 16)) return null;
+  return { exp };
+}
+function sessionValid(req) { return sessionPayload(req) !== null; }
+function sessionExpireAt(req) {
+  const p = sessionPayload(req);
+  return p ? new Date(p.exp).toISOString() : null;
+}
+function sessionCookie(tok, maxAgeSec) {
+  // 生产仍是 http://IP，没有 TLS 就不能声明 Secure（带了浏览器直接丢 cookie = 全站登不上）。
+  // 上域名 + HTTPS 之后在这里补 Secure。SameSite=Lax：书签/外链直接打开仍带 cookie，跨站 POST 不带。
+  return SESSION_COOKIE + '=' + tok + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAgeSec;
+}
+/** 来源只用于登录失败节流：反代后 req.ip 恒为 127.0.0.1，所以取 XFF 第一段（可伪造，但节流只是刹车不是墙） */
+function loginSource(req) {
+  const xff = req.headers['x-forwarded-for'];
+  const first = Array.isArray(xff) ? xff[0] : xff;
+  return String(first || '').split(',')[0].trim() || (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+function loginHandler(req, res) {
+  if (!config.adminPassword) {
+    return res.status(503).json({ error: '服务端未配置管理口令：在 /etc/xvj/web.env 写 ADMIN_PASSWORD 后 systemctl restart xvj' });
+  }
+  const src = loginSource(req), now = Date.now(), rec = loginFails.get(src);
+  if (rec && now - rec.at > LOGIN_LOCK_MS) loginFails.delete(src);
+  else if (rec && rec.n >= LOGIN_MAX_FAILS) {
+    return res.status(429).json({ error: '口令连续错误过多，' + Math.ceil((LOGIN_LOCK_MS - (now - rec.at)) / 1000) + ' 秒后再试' });
+  }
+  const pw = req.body ? req.body.password : undefined;
+  if (typeof pw !== 'string' || pw.length === 0 || pw.length > 256) return res.status(400).json({ error: '请输入管理口令' });
+  if (!safeEqual(sha256(pw), sha256(config.adminPassword))) {
+    const n = (rec && now - rec.at <= LOGIN_LOCK_MS ? rec.n : 0) + 1;
+    if (loginFails.size > 1000) loginFails.clear();   // 节流表不需要精确历史，长了就重开
+    loginFails.set(src, { n, at: now });
+    console.warn('🔐 登录失败 第' + n + '次 来自 ' + src);
+    return res.status(401).json({ error: '口令不对' });
+  }
+  loginFails.delete(src);
+  res.setHeader('Set-Cookie', sessionCookie(sessionToken(), SESSION_TTL_MS / 1000));
+  console.log('🔐 管理台登录成功（来源 ' + src + '）');
+  logAction('login', 'session', { source: src });
+  res.json({ success: true, expires_at: new Date(Date.now() + SESSION_TTL_MS).toISOString() });
+}
+
 const app = express();
 const PORT = config.port;
 
 /**
- * API 认证中间件（验证 x-api-key 头或 ?apiKey= 查询参数，值取 config.apiKey）
- * ⚠️ 密钥目前内嵌在前端 index.html 里，公开可提取 —— 写接口等于无鉴权（P3-10，待登录态改造）
+ * 写接口鉴权：浏览器带【会话 cookie】（口令在 /api/session 换），脚本与机器客户端带 x-api-key。
+ * 2026-11-12 之前只认 x-api-key，而那把 key 就写在公开页面的 index.html 里（P3-10），等于写接口无鉴权；
+ * 现在 key 只存在于服务端 env（API_KEY），浏览器改走短时效、可因改口令而整体失效的签名 cookie。
  * @param {object} req - Express 请求对象
  * @param {object} res - Express 响应对象
  * @param {function} next - 下一个中间件
  */
 function requireAuth(req, res, next) {
   const apiKey = req.headers['x-api-key'] || req.query.apiKey;
-  if (!apiKey || apiKey !== config.apiKey) {
-    return res.status(401).json({ error: '未授权', message: '无效的 API 密钥' });
-  }
-  next();
+  if (apiKey && config.apiKey && safeEqual(String(apiKey), String(config.apiKey))) return next();
+  if (sessionValid(req)) return next();
+  // LOGIN_REQUIRED 是给前端看的：fetch 补丁据此弹口令框（没有它就只能把 401 原样抛给用户）
+  res.status(401).json({ error: '未授权', code: 'LOGIN_REQUIRED', message: '需要登录或有效的 API 密钥' });
 }
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// 写操作统一要求 API 密钥；GET/OPTIONS/HEAD 全开放。
+// 【S-14】会话路由必须在写接口闸门之前注册：登录本身不是"已鉴权的写操作"，
+// 放在闸门之后会变成"要登录才能拿到登录接口"。
+app.post('/api/session', loginHandler);
+app.get('/api/session', (req, res) => res.json({ authed: sessionValid(req), expires_at: sessionExpireAt(req) }));
+app.delete('/api/session', (req, res) => {
+  res.setHeader('Set-Cookie', sessionCookie('', 0));
+  res.json({ success: true });
+});
+
+// 写操作统一要求凭据（会话 cookie 或 x-api-key）；GET/OPTIONS/HEAD 全开放。
 // 设备侧确实只做 GET（/api/config、/api/room-materials-v2），其余通信全走 MQTT；
 // 但 POST /api/device/version 与 POST /api/log 也是写接口，同样要带 key —— 现有 APK 不调它们
 // （版本上报走 status 心跳字段，日志走 xvj/device/{id}/log），这两个 HTTP 口是给脚本/旧版留的。
@@ -2678,7 +2786,7 @@ app.post("/api/upload", (req, res) => {
     // 类型只认扩展名白名单。以前还写 `|| mimetype.startsWith('video')` 兜底，
     // 而落盘名保留客户端扩展名（buildSafeUploadName），于是
     // `evil.html` + `Content-Type: video/mp4` 就能判定成 video，在 /uploads/ 下写出一个
-    // 同源 text/html —— 上传型 stored XSS（上传接口的那道 x-api-key 就写在页面里，等于公开）。
+    // 同源 text/html —— 上传型 stored XSS（当时写接口只认 x-api-key，而那把 key 就写在页面里，等于公开）。
     // 兜底等于把白名单作废，删掉它才是收口：能落盘的扩展名必然在两组白名单之内。
     let type = null;
     if (UPLOAD_VIDEO_EXT.includes(ext)) type = "video";
@@ -3362,6 +3470,10 @@ setInterval(() => {
 
 app.listen(PORT, () => {
   console.log(`🚀 XVJ 云后台服务启动: http://localhost:${PORT}`);
+  // 这两项缺失时服务照常起（读接口与设备 MQTT 不受影响），但写接口会全线 401、管理台登录回 503：
+  // 属于"配漏了 env"，必须显眼地喊出来，不能静默降级成"任何人都改不动数据"却看不出原因
+  if (!config.adminPassword) console.warn('⚠️ 未配置 ADMIN_PASSWORD：管理台无法登录（POST /api/session 回 503）');
+  if (!config.apiKey) console.warn('⚠️ 未配置 API_KEY：x-api-key 通道全部拒绝，脚本类写请求会 401');
   initDatabase();
 });
 

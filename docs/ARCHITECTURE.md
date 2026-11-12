@@ -129,7 +129,7 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 
 | 标签 | 功能 | 核心函数 |
 |---|---|---|
-| F-00 | API 密钥注入（fetch + XHR 双覆盖） | 统一补 `x-api-key` |
+| F-00 | 写接口凭据（fetch + XHR 双覆盖） | 带同源会话 cookie；401 `LOGIN_REQUIRED` 弹口令框并重放一次 |
 | F-01 | 全局状态对象 | `var s = {...}` |
 | F-02 | 菜单切换与各页初始化 | `sp(p)` |
 | F-03 / F-03b | 素材管理页 / 预设素材页 | `lm()` / `lp()` |
@@ -242,11 +242,15 @@ const { v4: uuidv4 } = require('uuid');
 | S-11 | 店铺管理 |
 | S-12 | 版本管理 & OTA |
 | S-13 | 配置 & 默认素材 & 未注册设备 |
+| S-14 | 会话鉴权（口令换 cookie） |
 
 ### 4.2 API 路由全表
 
-**鉴权**：`app.use('/api', ...)` 对 **POST / PUT / DELETE** 要求 `x-api-key`（header 或 `query.apiKey`）；
-GET / OPTIONS / HEAD 开放（设备端只做 GET）。前端由【F-00】统一注入。
+**鉴权**：`app.use('/api', ...)` 对 **POST / PUT / DELETE** 要求二者之一（见【S-14】）：
+① 浏览器带来的会话 cookie `xvj_session`（`POST /api/session` 用管理口令换，12 小时有效，HttpOnly + SameSite=Lax，
+无状态 HMAC 签名，换口令即整体失效）；② `x-api-key`（header 或 `query.apiKey`，值取 `config.apiKey`）——
+留给自测脚本与机器客户端。两条凭据都只从 `/etc/xvj/web.env` 读，仓库与页面里都不再有明文。
+GET / OPTIONS / HEAD 开放（设备端只做 GET）。前端由【F-00】负责带 cookie 与"401 就弹口令框后重放"。
 
 | 分组 | 路由 |
 |---|---|
@@ -642,7 +646,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 | 编号 | 问题 | 现状 |
 |---|---|---|
 | **P1-4** | `xvj/auth/response` 是全设备共享广播，载荷带完整 scenes/folder_mappings → 场端任意设备可读到别店配置 | **未修**。改 per-device `xvj/device/{id}/auth` 必须**先发新 APK（同时订阅两个主题）再改服务端只发定向**，顺序不能反 |
-| **P3-10** | `x-api-key` 内嵌在公开的 `index.html` 里，写接口等于无鉴权 | **未修**，与「店铺独立账号」改造一起做真正的登录态 |
+| **P3-10** | `x-api-key` 内嵌在公开的 `index.html` 里，写接口等于无鉴权 | **已修**（2026-11-12，见【S-14】）：管理台改为口令登录换 12h 会话 cookie，页面与仓库里都不再有凭据；`API_KEY` 已轮换并只留在 `/etc/xvj/web.env`。**仍待**「店铺独立账号」做多用户登录态（现在是一把全员共用口令，只有"能不能改数据"，没有"谁改的"） |
 | broker 阶段3 | mosquitto ACL 未启用（`allow_anonymous true` 仍在） | 已在临时实例做过正/负对照验证；**前置条件是所有设备都装了 `clientId == deviceId` 的 167+**，提前开会把老包挡死 |
 | HDMI 输入 | `content.type = HDMI` 只有占位视图 | `HdmiManager` / `HdmiProcessor` 仍是 `// disabled`，真采集未实现 |
 | **开机自启** | Manifest 声明了 `.BootReceiver`（`BOOT_COMPLETED`，`exported=true`），但 `BootReceiver.kt` 只有一行 `// disabled`，**类不存在** → 广播投递时 `ClassNotFoundException`，开机自启这条链路是断的 | 未修。`MainActivity` 带 `HOME` category，盒子设成默认桌面时仍能起；要真自启得补回 receiver 类（需构建）。另有 `.SettingsActivity` / `.FolderManagerActivity` 两条同样悬空的声明，无人启动，属可删的死条目 |

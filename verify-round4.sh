@@ -2,7 +2,10 @@
 # 第4轮审计修复上线后的服务端证据验证。
 # 只操作临时房间（ZZROUND4 前缀，测完删除）与不存在的设备 id；绝不碰真实设备 ee9e3c13*。
 # 全部测试数据 ASCII：curl 传中文会破坏数据。
-K="xvj_secret_key_2024"
+# key 从 config.js 拿（它会把 /etc/xvj/mqtt.env、web.env 读进 process.env），仓库里不再留明文。
+# 必须在仓库根目录跑，否则 require('./config') 找不到。
+K=$(node -e "process.stdout.write(require('./config').apiKey||'')")
+if [ -z "$K" ]; then echo "拿不到 API_KEY：在服务器上于 /var/www/xvj 运行，或先 export API_KEY=…"; exit 1; fi
 B="http://localhost:3000"
 pass=0; fail=0
 chk() { # chk 名称 期望 实际
