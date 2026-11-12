@@ -47,12 +47,13 @@ const RM = 'zzpvroom_main';       // windowed + device  -> success path, top win
 const RD = 'zzpvroom_default';    // no windows + device -> default win_1
 const RN = 'zzpvroom_nodev';      // no windows, no device
 const RX = 'zzpvroom_nodebug';    // debug off + device -> 照样能播（2026-11-08 起试播不挂 debug）
-const RW = 'zzpvroom_wrongwin';   // every window binds 02, mapping is 01
+const RW = 'zzpvroom_wrongwin';   // 唯一窗口绑 02，但要试播 01 —— 2026-11-11 起这是"最高权限"的正例：接管那扇窗
 const RF = 'zzpvroom_follow';      // 一扇跟随窗 + 一扇固定绑 01 —— 现场主屏那种形态
 const DEV1 = 'zzpvdev1', FP1 = 'zzpvfp1';
 const DEV2 = 'zzpvdev2', FP2 = 'zzpvfp2';
 const DEV3 = 'zzpvdev3', FP3 = 'zzpvfp3';   // RX 必须有设备，否则测到的是"没有已授权设备"那道 409，不是 debug
 const DEV4 = 'zzpvdev4', FP4 = 'zzpvfp4';   // RF 同上，只为让试播能落到设备上
+const DEV5 = 'zzpvdev5', FP5 = 'zzpvfp5';   // RW 同上，让"接管未绑定这一格的窗口"能真发出去
 
 // 三种窗口形态：不配窗口 / 一层绑 01、一层自动、一层禁用但 z 最高 / 只绑 02
 function cfgOf(kind, debug) {
@@ -101,11 +102,12 @@ async function main() {
   await mkDev(DEV2, FP2, RD);
   await mkDev(DEV3, FP3, RX);
   await mkDev(DEV4, FP4, RF);
+  await mkDev(DEV5, FP5, RW);
 
   const client = mqtt.connect('mqtt://' + config.mqtt.host + ':' + config.mqtt.port,
     { username: config.mqtt.username || undefined, password: config.mqtt.password || undefined });
   await new Promise((res, rej) => { client.on('connect', res); client.on('error', rej); setTimeout(() => rej(new Error('mqtt timeout')), 8000); });
-  client.subscribe([DEV1, FP1, DEV2, FP2, DEV3, FP3, DEV4, FP4].map(t => 'xvj/device/' + t + '/command'));
+  client.subscribe([DEV1, FP1, DEV2, FP2, DEV3, FP3, DEV4, FP4, DEV5, FP5].map(t => 'xvj/device/' + t + '/command'));
   client.on('message', (t, m) => captured.push({ topic: t, text: m.toString() }));
   console.log('SETUP OK');
   // 其余房间（含现场那间 201）的配置必须一字不动 —— 试播不该在任何地方留下配置痕迹
@@ -122,8 +124,12 @@ async function main() {
   isErr('room missing', await P('zzpvroom_none', { scene: 'A', folder: '01', material_id: VID }), 404, '房间不存在');
 
   // 闸门（debug 不在其中：2026-11-08 起试播是内容操作，debug 关着的房间走下面的成功用例）
-  isErr('windows bind another folder', await P(RW, { scene: 'A', folder: '01', material_id: VID }), 409, '没有可试播的视频窗口');
-  isErr('scene B has nothing', await P(RM, { scene: 'B', folder: '01', material_id: VID }), 409, '没有可试播的视频窗口');
+  // 2026-11-11 用户定调：手动试播是最高权限 —— 点一个当前没人播的格子的素材，也要接管窗口立即播，不再报"没有可试播的视频窗口"
+  const rw = await P(RW, { scene: 'A', folder: '01', material_id: VID });
+  check('unbound folder takes over the enabled window (highest privilege, not 409)',
+    rw.code === 200 && rw.j && rw.j.target && rw.j.target.winIds.join(',') === 'win_9' && rw.j.target.physicalFolder === 'A01',
+    JSON.stringify(rw.j || rw.buf));
+  isErr('scene B has nothing -> material not in that cell mapping', await P(RM, { scene: 'B', folder: '01', material_id: VID }), 400, '不在本房间');
   isErr('image rejected', await P(RM, { scene: 'A', folder: '01', material_id: IMG }), 400, '只支持视频');
   isErr('material not in mapping', await P(RM, { scene: 'A', folder: '01', material_id: OTHER }), 400, '不在本房间');
   isErr('no authorized device', await P(RN, { scene: 'A', folder: '01', material_id: VID }), 409, '已授权设备');
@@ -188,7 +194,7 @@ async function main() {
   r = await req('POST', '/api/rooms/' + RX + '/preview/stop', { scene: 'A', folder: '01' });
   check('stop debug-off room 200', r.code === 200 && r.j && r.j.success === true, JSON.stringify(r.j));
   r = await req('POST', '/api/rooms/' + RW + '/preview/stop', { scene: 'A', folder: '01' });
-  isErr('stop unparsable window -> ALL fallback refused', r, 409, '全部停止');
+  check('stop targeted at the taken-over unbound window', r.code === 200 && r.j && r.j.win_id === 'win_9', JSON.stringify(r.j));
   await sleep(500);
   const stops = captured.map(c => { try { return JSON.parse(c.text); } catch (e) { return {}; } }).filter(p => p.action === 'preview_stop');
   check('stop payload: group win_ids + folder_id / bare ALL fallback', stops.length >= 6

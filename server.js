@@ -1726,10 +1726,11 @@ function resolvePreviewTarget(cfg, scene, folder) {
   const windows = ['A', 'B'].reduce((n, k) => n + (((scenes[k] || {}).windows) || []).length, 0);
   // 两幕一个窗口都没配 → APK 会自建那个默认全屏窗口（win_1，播 A 幕第一个有素材的文件夹）。
   // 新房间第一次试片恰好就是这个状态，漏掉它等于"没配窗口的房间不能试播"。
+  // 2026-11-11 用户定调：手动试播是最高权限，任何 A 幕已映射的格都能接管这扇默认窗播一遍，
+  // 不再要求"这一格恰好是默认窗在播的那格"（素材在不在设备由下面的映射校验兜）。
   if (windows === 0) {
     if (scene !== 'A') return null;
-    const auto = Object.keys(mappings).find(k => (mappings[k] || []).length > 0);
-    return auto === wanted ? { winIds: ['win_1'], winId: 'win_1', winName: '窗口1（默认）', physicalFolder: wanted } : null;
+    return { winIds: ['win_1'], winId: 'win_1', winName: '窗口1（默认）', physicalFolder: wanted };
   }
   // 未指定文件夹的窗口播哪一个：APK 取映射里第一个非空文件夹，排序在 buildPrefixedScenes 里已做完
   const autoFolder = Object.keys(mappings).find(k => (mappings[k] || []).length > 0);
@@ -1741,11 +1742,16 @@ function resolvePreviewTarget(cfg, scene, folder) {
     const req = String(c.folderId || '').trim();
     return req ? prefixedFolderKey(scene, req) === wanted : autoFolder === wanted;
   });
-  if (matched.length === 0) return null;
-  // 整格命中，按 zIndex 降序：第一扇只用于旧 APK 的兜底字段和日志显示，
+  // 手动试播 = 最高权限（2026-11-11 用户定调）：点任意一格的素材都要立即整屏接管播一遍，播完各自回到原位。
+  // 这一格有窗口在播/绑定 → 接管那组（严格同步）；没有 → 退回接管全部启用窗口，
+  // 设备只落那些真在屏上的（previewTargets 的 named 兜底），素材在不在设备由下面的映射校验兜住。
+  const takeover = matched.length > 0 ? matched
+    : ['A', 'B'].reduce((n, k) => n.concat(((scenes[k] || {}).windows) || []), []).filter(w => isPlainObject(w) && w.enabled !== false);
+  if (takeover.length === 0) return null;
+  // 按 zIndex 降序：第一扇只用于旧 APK 的兜底字段和日志显示，
   // 设备上真正接管的是"这一格的所有窗口"（用户定调 2026-11-11：任何情况下所有窗口画面严格同步，
   // 只换一扇就是当场制造画面分裂）。
-  const byZ = matched.slice().sort((a, b) => (Number(b.zIndex) || 0) - (Number(a.zIndex) || 0));
+  const byZ = takeover.slice().sort((a, b) => (Number(b.zIndex) || 0) - (Number(a.zIndex) || 0));
   const winIds = byZ.map(w => String(w.id));
   // 名字取 winIds[0] 那一扇（与兜底字段同口径），否则日志会出现"底部 等 2 扇窗"而 win_id 指着顶层窗
   const firstName = String(byZ[0].name || byZ[0].id);
@@ -1779,7 +1785,7 @@ function preparePreview(roomId, body, fail, ok) {
     const target = resolvePreviewTarget(cfg, scene, folder);
     if (!target) {
       return fail(409, '这一幕 ' + folder + ' 没有可试播的视频窗口：'
-        + '需要有一个启用的窗口，内容类型是本幕素材且绑定了这一格文件夹');
+        + '需要有一个启用的窗口，内容类型是本幕素材，且它跟随墙板或绑定了这一格文件夹');
     }
     const mappings = normalizeFolderMappings(((cfg.scenes || {})[scene] || {}).folder_mappings);
     const ids = normalizeMaterialIds(mappings[folder] || mappings[target.physicalFolder]);
