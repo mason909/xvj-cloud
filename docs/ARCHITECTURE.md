@@ -69,7 +69,7 @@
 - 没有"当前幕"概念：切幕只是前端编辑视角，设备侧两幕的窗口同时活着。485 墙板走独立链路（见 §五.7）。
 
 ```
-                 终端设备（单一合成面，1920×1080 画布按真实分辨率换算）
+                 终端设备（单一合成面，按房间输出基准换算落屏）
    ┌──────────────────────────────────────────────────────────────┐
    │  zIndex 升序叠放，A/B 的窗口混在同一容器里                     │
    │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
@@ -100,9 +100,30 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 |---|---|---|
 | 文件夹编号 | `01`~`30` | 素材分组，前端目录签写死 30 个 |
 | 墙板编号 | `1`~`32` | 485 墙板「编号切换」帧的 NN，经 `scenes[X].panel_no` 反查到某一格文件夹 |
+| 输出基准宽高 | `16`~`7680` px | 窗口坐标那把尺（`config.output`），见 §二.4 |
 
 `panel_no` 是「文件夹 → 墙板编号」的绑定表，同幕内编号不得重复、同格不得挂两个编号（写库前校验，冲突 400）。
 没列出的键 = 那一格不响应墙板。DMX512 尚未实现。
+
+### 2.4 输出基准（`config.output`，任务 #177）
+
+窗口 `x/y/width/height` 写在哪把尺上，编辑器画布就开多大、设备就按那把尺换算落屏：
+
+```
+落屏 px = 设计 px × (屏宽 / output.w)   ← 横向
+落屏 px = 设计 px × (屏高 / output.h)   ← 纵向
+```
+
+- **没设 = `1920×1080` 设计稿**（历史口径）。两轴分母不等时形状会变形：20:9 的手机上 `sx/sy = 1.25`，
+  数据里的正方形落屏就是长方形。
+- **设成这台屏的真实像素 ⇒ 两轴相等 ⇒ 编辑器里画成正方形，屏上就是正方形**（不用在拉伸/黑边/裁边里挑）。
+  设备心跳自报 `screen_w/screen_h`（内存 90s 缓存，同 `panel_no` 那样无 DDL），前端画布右下角一键「取本机」。
+- 非法值（非整数、越界、非 `{w,h}` 对象）在写库前 400，绝不静默回落成设计稿——那等于替运营改了整间房的版式。
+- 进 `roomSceneDigest`（rev），但**只在真设了时才计入**：存量房间全部没设，部署瞬间指纹逐字节不变，
+  不会把全库设备判成落后各补发一次素材同步（`panel_no` / `play_settings`「空表不落键」的同一条教训）。
+- ⚠️ 改基准是**重排**不是**倒带**：已存在的窗口坐标不会被换算，原来 1920×1080 铺满整屏的窗，
+  换成 2400×1080 的尺后只占画布左边一截，要手动拉大或删了重画。旧版 APK 不认这个字段（仍按 1920×1080
+  理解坐标），给没升级的设备设基准反而更宽出截——前端在按钮上写明了。
 
 ---
 
@@ -147,6 +168,7 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 | F-09c | 画布吸附（纯编辑辅助） | `_snapLines()` / `toggleSnap()` |
 | F-09d | 自动同步 | `autoSyncWinConfig()` / `flushAutoSync()` |
 | F-09e | 输入截取取景画板 | `renderCropEditor()` |
+| F-09f | 房间输出基准（画布那把尺） | `_designOf()` / `_roomDesign()` / `saveOutputBase()`（§二.4） |
 | F-10 | 设备日志页 | `loadDeviceLogs()` |
 | F-11 | 客户/店铺两级 Tab | `rd()`（`sd`/`as`/`ds`/`rs`/`rr`） |
 | F-12 | 版本管理页 | `lv()` / `lvd()` / `uv()` / `dv()` / `pushUpdate()` / `pushVersionToAll()` |
@@ -234,7 +256,7 @@ const { v4: uuidv4 } = require('uuid');
 | S-03 | 预设素材（`/api/preset/materials*`） |
 | S-04 | 房间 CRUD（含 `PUT /api/rooms/:id/windows`） |
 | S-05 / S-05p | 授权 & 设备管理 / 大屏试播（`resolvePreviewTarget`） |
-| S-06 | MQTT 收发、载荷组装与变更收敛（`roomSceneDigest` / `roomSyncFields` / `syncCommandPayload` / `notifyRoomConfigChanged` / `reconcileDeviceRev` / `resolveDeviceId`） |
+| S-06 | MQTT 收发、载荷组装与变更收敛（`roomSceneDigest` / `roomSyncFields` / `syncCommandPayload` / `windowCommandPayload` / `notifyRoomConfigChanged` / `reconcileDeviceRev` / `resolveDeviceId`；输出基准 `roomOutputField` + 心跳自报屏幕的内存缓存 `rememberDeviceScreen` / `deviceScreen`，见 §二.4） |
 | S-07 | 素材同步 & 删除 |
 | S-08 | 日志 & 操作记录（`logAction`） |
 | S-09 | 静态文件 & 前端页面 |
@@ -298,7 +320,7 @@ GET / OPTIONS / HEAD 开放（设备端只做 GET）。前端由【F-00】负责
 | 变化 | 下发 |
 |---|---|
 | 素材映射变了（`roomMappingDigest`） | `sync_room_materials`（全量对账） |
-| 窗口 / 总亮度 / 编号绑定 / 播放设置变了（`roomSceneDigest`） | `update_windows`（轻通道，设备原地改视图） |
+| 窗口 / 总亮度 / 编号绑定 / 播放设置 / 输出基准变了（`roomSceneDigest`） | `update_windows`（轻通道，设备原地改视图；只改基准也是在这一跳按新分母重排几何） |
 | `debug` 变了 | `set_debug` |
 | `wallpanel_*` 变了 | `set_wallpanel` |
 | 什么都没变 | 一条不发 |
@@ -393,8 +415,8 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | A-09 | OTA 自更新 | `checkForUpdate` / `isTrustedApkUrl` / `isValidFilepath` / `verifyApkSignature` / `downloadAndInstall` / `installApk` / `retryPendingInstall` |
 | A-10 | 系统 UI | `hideSystemUI` |
 | A-11 | 工具方法 | `logToFile` / `sha256` / `generateDeviceFingerprint` / `calculateMd5` |
-| A-12 | 播放设置 | `playSettingsOf` / `playSettingsJson` / `ensurePlayTicker` / `playTickNeeded`（100ms 巡检的 `playTick` 本体在字段区） |
-| A-13 | 大屏试播 | `startGroupPreview` / `previewTargets` / `startWindowPreview` / `restorePreviewGroup` / `restoreWindowPreview` / `abortAllPreviews`；同格同步组见 `groupClock` / `folderPlaylists`，轮播交接的「快窗等慢窗 + 硬对齐」见 `tickSyncGroups` / `holdForGroup` / `hardAlign` / `settledPlayer` |
+| A-12 | 播放设置 | `playSettingsOf` / `playSettingsJson` |
+| A-13 | 大屏试播 | `startGroupPreview` / `previewTargets` / `startWindowPreview` / `restorePreviewGroup` / `restoreWindowPreview` / `abortAllPreviews`；接管那一刻的正片位置按 `groupClock` / `folderPlaylists` / `previewClocks` 记 |
 | A-14 | 墙板 485 链路 | `applyWallPanelEnabled` / `applyWallPanelFields` / `handleWallPanelEvent` / `handleWallPanelNumber` / `effectivePanelNo` / `folderForPanelNo` |
 
 > **A-05 是空号**：单播放器点播时代的 `playFromUrl()` / `playLocalVideo()` 早已删除，标签保留不复用。
@@ -407,7 +429,7 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | `stop` | 停欢迎视频播放器 + 释放全部窗口播放器（必须 post 到主线程） |
 | `config` | 改 `mqtt_server` / `loop`（只影响单播放器，不影响窗口播放器） |
 | `sync_room_materials` | 房间素材全量对账 |
-| `update_windows` | 轻量窗口重排，不下素材 |
+| `update_windows` | 轻量窗口重排，不下素材（载荷也带 `output`：只改基准时走这条轻通道原地重排） |
 | `delete_material` | 删单个本地素材文件 |
 | `update` | OTA：带 `url` / `version` / `md5` → `downloadAndInstall` |
 | `set_debug` | 立即开关 `debug_mode`（临时值，下次带该字段的载荷会覆盖） |
@@ -435,6 +457,12 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | `applySceneConfigs` | 全量同步、授权、重连 | **释放并重建全部播放器 → 视频从头播** |
 | `applyLiveWindowUpdate` | `update_windows` | 原地更新几何/属性，不重建；判定为结构变化时才回退全量重建 |
 
+**窗口坐标怎么落屏**：`windowGeom()` 是唯一换算口，两轴各算各的比例，
+分母是**这间房的输出基准**（`config.output`，没设则 `1920×1080` 设计稿，冷启动从 `output_w/output_h` 读回），
+和编辑器画布那把尺同一份。写成 `屏宽/基准宽` 而不是统一比例，是为了让基准**恰好等于本机物理分辨率**时
+比例恒为 1，达到所见即所得；基准与屏比例不符时会按轴拉伸，这是选择不是缺陷（§二.4）。
+心跳把 `displayMetrics.widthPixels/heightPixels` 作为 `screen_w/screen_h` 回传，供后台「取本机」一键对齐基准。
+
 **窗口该播哪一格**由 `resolveWindowFolder()` 单一入口决定（全量重建与墙板切换共用，两处各写一份口径必漂）：
 
 ```
@@ -445,7 +473,7 @@ content.folderId 非空 → 只播指定那格；不在映射或那格空 → nu
 本幕第一个「有素材」的文件夹（不是固定 01）
 ```
 
-**所有场景都没有窗口时**，自动为 Scene A 建一扇 1920×1080 全屏默认窗口（`content.type = SCENE_A`），
+**所有场景都没有窗口时**，自动为 Scene A 建一扇整屏默认窗口（尺寸=房间输出基准，`content.type = SCENE_A`），
 并**必须把它塞回 `allWindows`** —— 后面那圈选文件夹的循环按 `allWindows` 查配置，漏了就是"视图建了、素材也在、画面全黑"。
 第二幕默认窗口为空，由用户手动配置。
 
@@ -487,36 +515,44 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 - **改设置不动映射** → 服务端发 `update_windows` 轻通道；但设置不在窗口 `content` 里，内容签名比不出它，
   所以本机另记 `appliedPlaySettingsJson`，真变了就判成结构变化回退全量重建（**视频会从头播**）。
 
-### 5.7 同步组与整组试播（A-07 / A-13）
+### 5.7 同格严格同步与整组试播（A-07 / A-13）
 
 **硬约束（2026-11-11 用户定调）：任何情况下，所有窗口的播放画面严格同步。**
 多扇窗绑同一格是生产常态（201/301 四扇窗全部无 `folderId` → 都自动解析到 01），
-"各放各的"从来不是设计意图，只是几处实现细节让它们在路上分家：
+"各放各的"从来不是设计意图，只是几处实现细节让它们在路上分家。
+
+**同格 ≥2 扇视频窗 = 一路解码 + GL 复制 N 份画面**（任务 #175，见 §5.7.1）：散差按构造就是 0，
+不存在"两路播放器要对齐"这回事。因此 2026-11-13 把 N 路解码时代那整套**同步巡检校正**整层删掉了
+—— 100ms 闹钟 `playTick` / 减速贴齐 / 摁住等待 / 硬对齐 seek / 清单指纹 `playlistSig` / 3 轮熔断
+（任务 #155 #156 #162，含 #166 那次"闹钟睡死"的修补）。删的理由不是它不努力，是它修不动结构问题：
+308 实测同格 6 扇散差 3.5s、混进 4K 那一路凝滞 4.8s，**校正在第一次交接就熔断**，
+而每一次拽回自己还要付一遍解码器重配。留着它只剩两个害处：白烧主线程 + 让"同格有几路解码"这件事在代码里含糊。
+
+剩下的分家点只有三处，各由一处收口：
 
 | 分家点 | 收口做法 |
 |---|---|
-| 每扇窗进格时独立 `items.shuffled()` → 随机顺序两两不同 | `folderPlaylists[folderKey]` 按格缓存，同格共用一份清单（随机只洗一次） |
-| 每扇窗各自从 index 0 起播、各自按片尾推进 → 漂移累积 | `groupClock(folderKey, excludeWinId)` 取组内基准窗当前位置，后进的窗 `setMediaItems(playlist, index, positionMs)` 对齐进去 |
-| 对齐只在进格那一刻做一次，之后每次轮播交接各路凝滞不同 → 散差 0.12~0.55s 且逐轮累积 | `tickSyncGroups`（100ms 巡检）把同组每扇窗的进度铺平成一维时间尺（`lap × 单只时长 + 片内位置`），**以进度最靠后那扇为基准**，对超前的窗按误差分三档处理（下表）。组内 ID 最小那扇只是「落定判据窗」，用来决定这一轮动不动手，不是位置基准 |
-| 快窗先过交接点 → 屏上并排两只不同的片子 | 同上：过界的一次 seek 拽回基准正在播的那一帧，没过的在交接点前摁住等（见下表第二、三档） |
+| 每扇窗进格时独立 `items.shuffled()` → 随机顺序两两不同 | `folderPlaylists[folderKey]` 按格缓存，同格共用一份清单（随机只洗一次；缓存是否在效按 URI 逐个比 `sameItems`，素材增删过自然作废） |
+| 进格就从 index 0 起播 → 重进同一格等于整组倒带 | `groupClock(folderKey)` 取这一格此刻的（第几只，第几毫秒），清单对得上就 `setMediaItems(playlist, index, positionMs)` 接着走 |
 | 试播只接管一扇，播完只回它自己的快照位置 | `startGroupPreview` 一次接管这一格的全部窗口，`restorePreviewGroup` 一次归还，整组共用接管前那份 `previewClocks[folderKey]` |
-| **校正本身会睡死**：判据窗在换片那段时间不是 `STATE_READY`，`playTickNeeded` 判 false 就把这颗 100ms 闹钟收掉；而硬切轮播的换片走播放器内部 playlist、不经过 `playFolderInWindow`，没有任何事件再排它 —— 第一次凝滞之后三档闸门彻底停摆，散差照旧逐轮攒大（175 实测 79ms→626ms）且一行日志都不留 | 播放器回调里在 **BUFFERING→READY 的状态沿** `mqttHandler.post { ensurePlayTicker() }` 重新排上（只在沿上触发，不刷主线程）。**判因顺序**（叠化没了以后不再有"淡入能跑"这个可见代理，三档动作本身也不打日志）：① 看有没有 `退出同步校正` 的 WARN —— 有就是组认出来了、只是拽不齐（多半同格混了不同分辨率）；② 没有则比这组两路的清单指纹与素材数，不一致 = 组没配对，`tickSyncGroups` 直接跳过；③ 两者都对，散差却仍逐轮攒大 = 闹钟没排上，查 READY 状态沿那一步 |
 
-三档力度（误差从小到大，一轮巡检只落一档）：
+- **`groupClock` 的基准 = 组内 ID 最小、真有播放器在跑、且没在试播的那一路**，与 `ShareGroup.leaderId` 同一口径。
+  #175 之后一格只有一路播放器，所以它**不再排除"正要起播的那扇自己"**：那是多路时代的口径（新起的窗停在第 1 只 0ms，
+  拿它当基准会把全组拽回开头），照搬到现在会让共享组的基准窗每次重进自己那一格都从头播。
+  换到别的格子时手上那份清单跟新清单逐个对不上（`sameItems` 为假），照旧从头起播 —— 判据是内容，不是格子编号。
+- **不需要对齐的两种情形**：一格只挂一扇窗 → 本来就是唯一那一路；两扇窗播**不同**的格子 → 屏上就是两只
+  不同的片子，各走各的正是预期。
+- **同步不再有运行时手段**：变速（`PlaybackParameters` —— media3 1.2.1 变速即变调，±3% 就听得出走调）、
+  摁住（`playWhenReady=false`，一扇窗定在屏上比散一次交接严重）、硬拽（`seekTo`，每次付一遍解码器重配）
+  这三样随这一层一起删掉了，代码里剩下的 `playWhenReady` / `seekTo` 只服务于试播的接管与归还，不再参与同步。
+  以后若要求"不同格的切换也落在同一帧"，那是 §5.7.1 那条 GL 合成路的延伸（把多格喂进同一张画布），
+  不是把巡检捞回来。
 
-| 档 | 触发 | 做法 |
-|---|---|---|
-| 减速贴齐 | 超前 >50ms（容忍带外）、还没到冻结点 | 倍速取 `我的剩余时长 / 基准的剩余时长`（这样两扇同时到达交接点），幅度封顶 **-3%** |
-| 摁住等待 | 已到冻结点（距片尾 150ms）仍超前 | `playWhenReady=false` 停在最后一帧，基准到位即放行；最长摁 1200ms，超时先放行 —— 一扇窗定在屏上比散这一次交接严重得多 |
-| 硬对齐 | 已经抢跑过交接点，或整组散过 900ms | 一次 `seekTo` 拽回基准正在播的那一帧；散过 900ms 是等不起了（要等的比一只片子还长），改成整组一次 seek 跳到**最前面**那扇。同一扇窗两次拽回至少隔 1500ms |
-| 熔断 | 同一格**连着 3 轮**"整组散开且真发生过 seek"还拽不齐 | 这一格整个退出校正（不 seek / 不减速 / 不摁住），直到有窗口重新进这一格。拽不齐的差不是轮播攒的，是某一路天生追不动（同格混了 4K 和 1080p），继续硬拽就是每 1.5s 全屏跳一次，比并排放两只片子更糟。日志 `退出同步校正`（WARN / PLAYBACK / SYNC）就是这条 |
+- **同格的同帧精度取决于解码方式**：≥2 扇窗并到一路解码之后，N 张画面是同一张纹理的各份拷贝，
+  天生同帧（§5.7.1）。剩下的 0.1~0.5s 级别误差只出现在"两个不同格子并排"那种情形 —— 两路独立解码，
+  各自的首帧凝滞不同，那本来就不是同一只片子，不需要同帧。
 
-- **负载口径**：这套不增加持续开销 —— `playTick` 的频率没变、没有新线程也没有新 IO，每轮只是读几个播放器字段加一次小循环；
-  **摁住那一档反而是减负**（那一路停解码，CPU/GPU/读盘归零）。三档里唯一花钱的是 seek（一次解码器重配 = 实测那 0.12~0.55s 凝滞），
-  所以它被三层闸卡着：只在过界/散开时用、同窗 1500ms 冷却、摁住档的存在本身就是为了让它别触发，再加 3 轮熔断兜底。
-- **只用速度做减法，从不提速**：音频要保留，media3 1.2.1 变速即变调，±10% ≈ 一个全音会走调；而基准就是最慢那扇，没人比它更慢，提速这条路整个删掉了。代价是交接前那一小段画面停住 —— 大屏上「四扇窗同时切」值这个代价。
-- **跨路对齐靠清单指纹**：`VideoSurface.playlistSig` 是排序后的 URI 集合（与从第几只起播无关），`indexOfItem(player, clipUri)` 把目标下标翻译回自己那份清单。同组两扇窗手上的清单可能不是同一版（素材刚增删过、只重建了其中一扇 → 位置整体漂移），直接比 `currentMediaItemIndex` 会把同一只片子读成差一只，seek 目标下标更会落到另一只片子上 —— 内容看着同步了，其实各播各的。
-- **三条不动手**：判据窗没落定（参考点这轮不跳窗）；组内清单指纹不一致（素材刚变过、只重建了其中一扇，拽过去会播到别的片子上）；成员在试播或非 `STATE_READY`（交接正在进行，那一路还没落定，拽了也是白拽）。
+**整组试播**（这套与"几路解码"无关，#175 前后口径一致）：
 
 - 设备端**不认云端算好的 `win_ids`**：云端按库里那份配置算窗，设备却可能刚应用过更新的一版，
   那一刻"谁在播这一格"只有设备知道。`previewTargets()` 按本机 `VideoSurface.folderKey` 认成员，
@@ -536,12 +572,6 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   窗口5 就存在 `scenes.A.windows` 里（B 数组反而空）。回退第一版按数组取窗，第二幕算不出任何窗口，
   当场表现为"试播第二幕 01 无反应"（`resolvePreviewTarget` 返回 null → 409，一条 MQTT 都没发）。
   云端因此同样在**合并后的窗口表**上筛 `content.type`（`resolvePreviewTarget` 的 `allWindows`）。
-- 同步的口径是"持续对齐到同一位置基准 + 同一时刻交接"，**多路解码时仍不是硬件级同帧**：各路"首帧凝滞"不同，
-  硬切那一格每次交接仍有 0.1~0.5s 画面散差，摁住等待只能把它压到切点前，压不进同一帧。
-  **真同帧只在这一种情形成立**：同一格挂 ≥2 扇视频窗时，设备端合成一组共享解码（见 §5.7.1），天生同帧，不参与上面这套校正。
-  seek 只留给"已经过界/整组散开"（那已经是错到必须硬拽），日常贴齐全靠速度。
-- 试播接管前必须先 `releaseSyncHold()` 再存快照：摁住就是 `playWhenReady=false`，不解除就会被
-  `PreviewState` 一起存走，试播播完恢复正片时那扇窗再也起不来。换格 / 重建窗口同样逐路解除。
 
 #### 5.7.1 同格共享解码（任务 #175，`ShareCanvasView.kt`）
 
@@ -553,11 +583,9 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   同格 ≥2 扇的**视频**窗合成一个 `ShareGroup`：一路 ExoPlayer 输出到画布自己的离屏 `SurfaceTexture`，
   `ShareCanvasView` 在独立 GL 线程把这张外部纹理按每扇成员窗的位置/尺寸/取景/旋转/镜像/透明度/亮度各画一遍。
   复制发生在 GPU 上，代价与窗口数基本无关。
-- **成员窗不再有自己的播放器**：`windowPlayers[leaderId]` 是唯一真值，基准 = 组内 ID 最小那扇（与 `groupClock`、
-  判据窗同一口径）。`playFolderInWindow` 里跟随那几扇只代记 `folderKey` / `settings` / `playlistSig`，
-  试播范围、熔断、日志都按这张账找到整组（`previewTargets` 只认有播放器的基准那一路，扇数由 `winShareGroup` 换算）。
-- **共享格整体退出同步校正**（`tickSyncGroups` / `syncGroupsWithCorrection` 都按 `shareGroups` 跳过）：散差按构造是 0，
-  继续巡检只是白烧主线程。
+- **成员窗不再有自己的播放器**：`windowPlayers[leaderId]` 是唯一真值，基准 = 组内 ID 最小那扇（与 `groupClock` 同一口径）。
+  `playFolderInWindow` 里跟随那几扇只代记 `folderKey` / `settings`，试播范围、墙板认成员、日志扇数都按这张账找到整组
+  （`previewTargets` 只认有播放器的基准那一路，扇数由 `winShareGroup` 换算）。
 - 单窗房间、以及一格只有一扇窗的房间**完全不走这条路**，渲染链路逐字节照旧。
 - 代价（已与用户确认）：整组是一块画布（成员矩形的并集），跨组的 z 交错没了；音频只剩一路。
 - 组构成变化只由全量重建负责（`update_windows` 轻路径只重排几何 `refreshShareGroup`）；墙板编号若把成员分到不同格子，
@@ -623,6 +651,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
     B: { ... }
   },
   debug: false,                    // 运维层闸门（进度条/状态文字上屏）；不进 rev
+  output: { w: 2400, h: 1080 },    // 输出基准（§二.4）：窗口坐标那把尺；没设=不落这个键，设备按 1920×1080 设计稿；进 rev
   wallpanel_enabled: false,        // 串口监听总闸，严格 true 才算开；不进 rev
   wallpanel_default_no: null       // 开机/无信号默认编号 1~32，非法值下发 null；不进 rev
   // 另有串口节点 / 波特率两个字段，与设备端 WallPanelLink 同一份白名单
@@ -634,7 +663,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `id` / `name` | String | 窗口唯一 ID / 显示名 |
-| `x` / `y` / `width` / `height` | Number | 画布坐标与尺寸（px，画布固定 1920×1080，设备按真实分辨率轴向换算） |
+| `x` / `y` / `width` / `height` | Number | 画布坐标与尺寸（px，写在这间房的**输出基准**坐标系里，见 §二.4；设备按 屏宽/基准宽、屏高/基准高 两轴换算） |
 | `zIndex` | Number | 层级，越大越上层（A/B 合并后统一排序） |
 | `aspectRatio` | String \| null | 如 `"16:9"`，可选 |
 | `opacity` | Number | 0..1，作用于容器 alpha |
@@ -689,7 +718,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 | HDMI 输入 | `content.type = HDMI` 只有占位视图 | `HdmiManager` / `HdmiProcessor` 仍是 `// disabled`，真采集未实现 |
 | **开机自启** | Manifest 声明了 `.BootReceiver`（`BOOT_COMPLETED`，`exported=true`），但 `BootReceiver.kt` 只有一行 `// disabled`，**类不存在** → 广播投递时 `ClassNotFoundException`，开机自启这条链路是断的 | 未修。`MainActivity` 带 `HOME` category，盒子设成默认桌面时仍能起；要真自启得补回 receiver 类（需构建）。另有 `.SettingsActivity` / `.FolderManagerActivity` 两条同样悬空的声明，无人启动，属可删的死条目 |
 | 墙板真机验证 | 485 物理层（波特率/电气）未抓包 | 「按键→切窗」「试播抢占跟随窗」只过了纯函数用例 |
-| 同帧精度 | 多路解码那一类（一格只挂一扇窗、或不同格并排）仍做不到硬件级同帧：各路首帧凝滞不同（实测 0.12~0.55s），摁住只能把散差压到切点前 | 同格 ≥2 扇已改成 1 路解码 + GL 合成多视图（§5.7.1，任务 #175），天生同帧；**代码已就位、真机未验**（GL/EGL 首次在盒子上跑）。叠化那条路已于 2026-11-12 整条删除 |
+| 同帧精度 | 一格只挂一扇窗、或不同格并排：各路首帧凝滞不同（实测 0.12~0.55s），切点落不到同一帧 | 同格 ≥2 扇已改成 1 路解码 + GL 合成多视图（§5.7.1，任务 #175），天生同帧；**代码已就位、真机未验**（GL/EGL 首次在盒子上跑）。叠化那条路已于 2026-11-12 整条删除，同步巡检校正层已于 2026-11-13 随它一起删除 |
 | 故障记录路径 | `FAULT_LOG = '/workspace/xvj-backup/故障记录.md'` 是容器时代遗留绝对路径 | 裸机上该目录不存在则写入失败（已有 try/catch 告警），崩溃现场只剩 `journalctl` |
 | 静默安装 | OTA 需人工确认，覆盖安装后应用不自启 | 等上 RK3588 盒子再按环境选实现 |
 | 店铺独立账号 | 现平台 = 总部端，无账号体系 | 将来每店独立账号只看自己门店，落地时窗口/素材/设备查询都要带店铺隔离 |
