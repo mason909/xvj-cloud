@@ -5,43 +5,82 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>XVJ 云后台</title>
 <style>
+/* ===== 字号令牌 =====
+   全站只有这一套字号，每条都乘 --u。顶栏「字号」档位改的就是 --u：放大的是文字和它占的行高，
+   而不是 Ctrl+滚轮那种把 CSS 视口挤窄、害媒体查询误判成手机屏的整体缩放（那会顺带把编辑器侧栏折叠掉）。
+   micro 是硬下限：原先散在画布读数、角标、日志行里的 9px/10px 全并进这里，再小就得凑到屏幕跟前读了。 */
+:root{
+--u:1;
+--fs-micro:calc(11px * var(--u));
+--fs-meta:calc(12px * var(--u));
+--fs-dense:calc(13px * var(--u));
+--fs-ui:calc(14px * var(--u));
+--fs-body:calc(16px * var(--u));
+--fs-title:calc(18px * var(--u));
+--fs-h2:calc(20px * var(--u));
+--fs-h1:calc(22px * var(--u));
+--fs-icon:calc(24px * var(--u));
+--fs-hero:calc(48px * var(--u));
+--tap:28px;
+/* 编辑器高度 = 100vh 减去它上方那叠固定行（顶栏 + 内容内边距 + 房间卡 + 工作台开关行 + 场景行 + 文件夹 tab）。
+   280 是这几行的实测和，不是随手写的数：上面任何一行改了高度，都要回来对一次这个值。 */
+--editor-inset:280px;
+color-scheme:dark;
+}
+html[data-fs="s"]{--u:.9}
+html[data-fs="l"]{--u:1.15}
+html[data-fs="xl"]{--u:1.3}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1a1a1a;color:#e0e0e0;min-height:100vh}
+html{-webkit-text-size-adjust:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1a1a1a;color:#e0e0e0;min-height:100vh;font-size:var(--fs-body)}
+/* 键盘走查时至少看得见焦点；鼠标点击不抢焦点环 */
+:focus-visible{outline:2px solid #e94560;outline-offset:2px;border-radius:3px}
 .layout{display:flex;min-height:100vh}
 .sidebar{width:220px;background:#242424;border-right:1px solid #333;position:fixed;height:100vh}
-.brand{padding:20px;font-size:18px;font-weight:bold;border-bottom:1px solid #333;display:flex;align-items:center;gap:6px}
+.brand{padding:20px;font-size:var(--fs-title);font-weight:bold;border-bottom:1px solid #333;display:flex;align-items:center;gap:6px}
 .brand-star{color:#e94560}
 .brand-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden}
-.nav-toggle{margin-left:auto;background:#2a2a2a;border:1px solid #3a3a3a;color:#aaa;border-radius:4px;width:22px;height:22px;padding:0;cursor:pointer;font-size:14px;line-height:1;flex-shrink:0}
+.nav-toggle{margin-left:auto;background:#2a2a2a;border:1px solid #3a3a3a;color:#aaa;border-radius:4px;width:var(--tap);height:var(--tap);padding:0;cursor:pointer;font-size:var(--fs-body);line-height:1;flex-shrink:0}
 .nav-toggle:hover{color:#fff;border-color:#e94560}
 .menu li span{display:inline}
 body.nav-off .sidebar{width:46px}
 body.nav-off .main{margin-left:46px}
-body.nav-off .brand{padding:16px 6px;font-size:16px;gap:0}
+body.nav-off .brand{padding:16px 6px;font-size:var(--fs-body);gap:0}
 body.nav-off .brand-name{display:none}
 body.nav-off .mi-t{display:none}
-body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
+body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta)}
 .menu{list-style:none;padding:10px 0}
 .menu li{padding:12px 20px;cursor:pointer;color:#999;transition:all 0.2s}
 .menu li:hover{background:#2a2a2a;color:#fff}
 .menu li.active{background:#e94560;color:#fff}
 .main{margin-left:220px;flex:1}
-.header{background:#242424;padding:15px 24px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center}
-.header h1{font-size:18px}
-.btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:14px}
+/* 顶栏吸顶：工作台往下滚就看不到当前是哪个房间，改一次配置要滚回顶部确认一遍 */
+.header{position:sticky;top:0;z-index:40;background:#242424;padding:12px 24px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.header h1{font-size:var(--fs-title)}
+.btn{padding:7px 16px;border-radius:6px;border:none;cursor:pointer;font-size:var(--fs-ui);min-height:var(--tap);line-height:1.35}
+/* .btn-sm 原本只挂在 class 上、没有对应规则，尺寸全靠调用点内联 padding:3px 12px（实测高 22px，点不中）*/
+.btn-sm{padding:4px 12px;font-size:var(--fs-dense)}
 .btn-primary{background:#e94560;color:#fff}
 .btn-secondary{background:#3a3a3a;color:#aaa}
+/* 字号档位：改的是 --u（所有 --fs-* 的倍数），不是浏览器缩放 —— 后者会把 CSS 视口挤窄，
+   媒体查询当你是手机屏，编辑器当场堆叠。放大文字占的行高才是运维要看清日志时真正要的东西。 */
+.mm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px}
+.mm-foot{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:10px}
+.btn-sync{background:#28a745;color:#fff;padding:8px 18px}
+.toolbar{display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.fs-ctl{display:flex;align-items:center;gap:6px;color:#8d8d8d;font-size:var(--fs-dense)}
+.fs-ctl select{background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:4px;padding:3px 6px;font-size:var(--fs-dense);font-family:inherit;min-height:var(--tap)}
 .content{padding:24px}
 .folder-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
 .tabs{display:flex;flex-wrap:wrap;gap:8px;padding:10px}
-.tab{display:flex;align-items:center;gap:10px;padding:10px 20px;min-width:100px}
-.tab-n{font-size:14px;font-weight:bold}
-.tab-d{font-size:14px;color:#888;cursor:pointer}
-.tab{padding:8px 16px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:6px;cursor:pointer;display:inline-flex;flex-direction:column;align-items:center;min-width:50px}
+/* .tab 原先被拆在 76/79/83 三处声明，后一处盖前一处，读到第二处就以为知道长什么样。合成一条。 */
+.tab{position:relative;display:inline-flex;flex-direction:column;align-items:center;gap:2px;padding:8px 12px;min-width:50px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:6px;cursor:pointer}
+.tab-n{font-size:var(--fs-ui);font-weight:bold}
+.tab-d{font-size:var(--fs-ui);color:#888;cursor:pointer}
 .tab.active{background:#e94560;color:#fff;border-color:#e94560}
-.folder-name{padding:10px 20px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:8px;cursor:pointer}
-.folder-del{position:absolute;right:-8px;top:-8px;background:#dc3545;color:#fff;border:none;width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:12px;line-height:1;display:none}
-.tab{position:relative;display:inline-flex;flex-direction:column;align-items:center;padding:8px 12px;min-width:50px}
+/* 选中态整块翻红，副标签（文件夹备注名）还是 #888 就压在红底上糊掉了，而它正是选格子时要读的那一行 */
+.tab.active .tab-d{color:#ffd7de}
+.folder-del{position:absolute;right:-8px;top:-8px;background:#dc3545;color:#fff;border:none;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:var(--fs-meta);line-height:1;display:none}
 .tab:hover .folder-del{display:flex;align-items:center;justify-content:center}
 .folder-btn{padding:10px 20px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:8px;cursor:pointer}
 .folder-btn.active{background:#e94560;color:#fff}
@@ -50,12 +89,12 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
 .card.selected{border:2px solid #e94560}
 .card:hover{transform:translateY(-4px);box-shadow:0 8px 20px rgba(233,69,96,0.15)}
 .card img{width:100%;aspect-ratio:1;object-fit:cover}
-.card-thumb{width:100%;aspect-ratio:1;background:#2a2a2a;display:flex;align-items:center;justify-content:center;font-size:24px}
-.card-res{font-size:10px;color:#888;text-align:center;padding:2px;background:#222}
-.card-name{padding:12px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.card-check{position:absolute;top:8px;left:8px;z-index:5;width:20px;height:20px;cursor:pointer}
-.card-del{position:absolute;top:8px;right:8px;width:24px;height:24px;background:#dc3545;border:none;border-radius:4px;color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:12px}
-.card-preset{position:absolute;top:8px;right:40px;padding:4px 8px;background:#28a745;border:none;border-radius:4px;color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:11px}
+.card-thumb{width:100%;aspect-ratio:1;background:#2a2a2a;display:flex;align-items:center;justify-content:center;font-size:var(--fs-icon)}
+.card-res{font-size:var(--fs-micro);color:#888;text-align:center;padding:2px;background:#222}
+.card-name{padding:12px;font-size:var(--fs-ui);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-check{position:absolute;top:8px;left:8px;z-index:5;width:24px;height:24px;cursor:pointer;accent-color:#e94560}
+.card-del{position:absolute;top:8px;right:8px;width:24px;height:24px;background:#dc3545;border:none;border-radius:4px;color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:var(--fs-meta)}
+.card-preset{position:absolute;top:8px;right:40px;padding:4px 8px;background:#28a745;border:none;border-radius:4px;color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:var(--fs-micro)}
 .card:hover .card-del{display:flex}
 .card:hover .card-preset{display:flex}
 .card-presetted{border:2px solid #28a745 !important}
@@ -64,46 +103,51 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
 .modal.show{display:flex}
 .modal-content{position:relative;max-width:95%;max-height:95%;overflow:auto;background:#1a1a1a;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.5)}
 .modal img,.modal video{width:100%;height:auto;max-height:90vh;display:block}
-.modal-close{position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.5);color:#fff;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:18px;z-index:10}
+.modal-close{position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.5);color:#fff;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:var(--fs-title);z-index:10}
 .card-pv{cursor:pointer}
-.pv-err{padding:30px;text-align:center;color:#f44336;font-size:14px;min-width:300px}
-.pv-err-url{margin-top:8px;color:#666;font-size:11px;word-break:break-all}
+.pv-err{padding:30px;text-align:center;color:#f44336;font-size:var(--fs-ui);min-width:300px}
+.pv-err-url{margin-top:8px;color:#666;font-size:var(--fs-micro);word-break:break-all}
 .modal-close:hover{background:#e94560}
-.empty{text-align:center;padding:60px;color:#666}
+/* 空态文案会被塞进 repeat(auto-fill,minmax(150px,1fr)) 的网格当单项，不跨列就只占一条 150px 轨道
+   —— 实测「无素材，点击…」被压成一竖列每行三个字。跨列由 .mm-grid>.empty 管，这里只管排版。 */
+.empty{text-align:center;padding:40px 24px;color:#8d8d8d;font-size:var(--fs-meta);line-height:1.7}
+.mm-grid>.empty{grid-column:1/-1}
 .device-card{background:#242424;border-radius:10px;padding:16px;border:1px solid #333;margin-bottom:16px}
 .device-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
 .device-header span{word-break:break-all}
-.device-status{padding:4px 10px;border-radius:12px;font-size:12px}
-.device-info{color:#888;font-size:12px;margin-top:8px}
+.device-status{padding:4px 10px;border-radius:12px;font-size:var(--fs-meta)}
+.device-info{color:#888;font-size:var(--fs-meta);margin-top:8px}
 .device-actions{display:flex;gap:10px;margin-top:10px;align-items:center}
-.device-select{padding:5px;background:#333;color:#fff;border:1px solid #555;border-radius:4px}
+.device-select{padding:5px 8px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:var(--fs-dense);font-family:inherit;min-height:var(--tap)}
 .device-id{color:#ccc;word-break:break-all}
 .on{background:#28a745;color:#fff}
 .off{background:#666;color:#fff}
 /* 窄视口（含 Ctrl+滚轮放大后 CSS 宽度变小）的适配规则统一写在 style 末尾 */
 .progress-bar{height:6px;background:#333;border-radius:3px;overflow:hidden;margin-top:10px}
 .progress-fill{height:100%;background:linear-gradient(90deg,#e94560,#ff6b8a);width:0%;transition:width 0.2s}
-.progress-text{font-size:12px;color:#888;margin-top:5px}
+.progress-text{font-size:var(--fs-meta);color:#888;margin-top:5px}
 /* Phase2: 多窗口配置编辑器 */
-.win-editor-wrap{display:flex;gap:16px;margin-top:10px;height:calc(100vh - 280px);min-height:400px}
+.win-editor-wrap{display:flex;gap:16px;margin-top:10px;height:calc(100vh - var(--editor-inset));min-height:400px}
 .win-canvas-area{flex:1;background:#1a1a1a;border:1px solid #333;border-radius:8px;position:relative;overflow:hidden;min-width:0}
 .win-canvas{position:absolute;top:0;left:0;width:100%;height:100%}
 .win-device-frame{position:absolute;border:2px solid #444;border-radius:2px;background:rgba(255,255,255,0.03);box-sizing:border-box}
-.win-rect{position:absolute;box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;font-size:11px;color:#e94560;overflow:hidden;min-width:20px;min-height:20px;user-select:none}
+.win-rect{position:absolute;box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);background:rgba(233,69,96,0.08);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;font-size:var(--fs-micro);color:#e94560;overflow:hidden;min-width:20px;min-height:20px;user-select:none}
 .win-rect.selected{border-color:#e94560;background:rgba(233,69,96,0.18)}
 .win-rect:focus{outline:2px solid #e94560;outline-offset:1px}
-.win-rect .wr-name{position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}
-.win-rect .wr-type{position:absolute;bottom:3px;right:5px;font-size:9px;color:#888}
+.win-rect .wr-name{position:absolute;top:3px;left:5px;font-size:var(--fs-micro);color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}
+.win-rect .wr-type{position:absolute;bottom:3px;right:5px;font-size:var(--fs-micro);color:#888}
 .win-rect .wr-handle{position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;z-index:9}
+/* 点还是 8px，热区外扩 6px：8px 的圆点实测抓不住，而画布上摆 20px 的方块会互相盖住 */
+.win-rect .wr-handle::before{content:"";position:absolute;inset:-6px}
 .win-rect .wr-handle.tr{top:-4px;right:-4px}
 .win-rect .wr-handle.tl{top:-4px;left:-4px}
 .win-rect .wr-handle.br{bottom:-4px;right:-4px}
 .win-rect .wr-handle.bl{bottom:-4px;left:-4px}
 /* Arena InputRect 对标：独立的 16:9 输入截取画板（取景发生在"输入完整画面"上，不是输出窗口框内） */
-.crop-wrap{display:flex;gap:14px;margin-top:10px;height:calc(100vh - 280px);min-height:420px}
-.crop-side{width:210px;flex-shrink:0;display:flex;flex-direction:column;gap:6px;overflow-y:auto;min-height:0}
+.crop-wrap{display:flex;gap:14px;margin-top:10px;height:calc(100vh - var(--editor-inset));min-height:420px}
+.crop-side{width:clamp(176px,16vw,210px);flex-shrink:0;display:flex;flex-direction:column;gap:6px;overflow-y:auto;min-height:0}
 .crop-stage{flex:1;min-width:0;background:#151515;border:1px solid #333;border-radius:8px;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:12px;overflow:hidden}
-.crop-stage-head{display:flex;flex-wrap:wrap;gap:2px 12px;justify-content:center;font-size:11px;color:#777;line-height:1.6}
+.crop-stage-head{display:flex;flex-wrap:wrap;gap:2px 12px;justify-content:center;font-size:var(--fs-micro);color:#777;line-height:1.6}
 .crop-stage-head b{color:#eee;font-weight:normal}
 .crop-stage-head .sh-o{color:#e94560}
 .crop-stage-head .sh-c{color:#2ecc71}
@@ -111,6 +155,7 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
 .crop-frame{position:absolute;box-sizing:border-box;border:2px solid #2ecc71;box-shadow:0 0 0 9999px rgba(0,0,0,0.6);cursor:move;z-index:5}
 .crop-frame:focus{outline:2px solid #2ecc71;outline-offset:1px}
 .crop-frame .cf-h{position:absolute;width:12px;height:12px;background:#2ecc71;border:1px solid #0e4d2b;border-radius:2px;box-sizing:border-box;z-index:2}
+.crop-frame .cf-h::before{content:"";position:absolute;inset:-5px}
 .crop-frame .cf-nw{left:-6px;top:-6px;cursor:nwse-resize}
 .crop-frame .cf-n{left:50%;top:-6px;margin-left:-6px;cursor:ns-resize}
 .crop-frame .cf-ne{right:-6px;top:-6px;cursor:nesw-resize}
@@ -119,92 +164,120 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:12px}
 .crop-frame .cf-sw{left:-6px;bottom:-6px;cursor:nesw-resize}
 .crop-frame .cf-s{left:50%;bottom:-6px;margin-left:-6px;cursor:ns-resize}
 .crop-frame .cf-se{right:-6px;bottom:-6px;cursor:nwse-resize}
-.crop-board-tag{position:absolute;left:5px;top:5px;z-index:6;pointer-events:none;font-size:9px;color:#ddd;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.12);border-radius:3px;padding:1px 5px;letter-spacing:.04em}
-.crop-frame .cf-size{position:absolute;left:2px;top:2px;font-size:9px;line-height:1.5;color:#0a3d22;background:#2ecc71;border-radius:2px;padding:0 4px;white-space:nowrap;pointer-events:none;z-index:3}
-.crop-frame .cf-orien{position:absolute;left:50%;top:50%;margin:-10px 0 0 -10px;width:20px;height:20px;line-height:20px;text-align:center;font-size:13px;color:#2ecc71;text-shadow:0 0 4px rgba(0,0,0,.95);pointer-events:none;z-index:2}
+.crop-board-tag{position:absolute;left:5px;top:5px;z-index:6;pointer-events:none;font-size:var(--fs-micro);color:#ddd;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.12);border-radius:3px;padding:1px 5px;letter-spacing:.04em}
+.crop-frame .cf-size{position:absolute;left:2px;top:2px;font-size:var(--fs-micro);line-height:1.5;color:#0a3d22;background:#2ecc71;border-radius:2px;padding:0 4px;white-space:nowrap;pointer-events:none;z-index:3}
+.crop-frame .cf-orien{position:absolute;left:50%;top:50%;margin:-10px 0 0 -10px;width:20px;height:20px;line-height:20px;text-align:center;font-size:var(--fs-dense);color:#2ecc71;text-shadow:0 0 4px rgba(0,0,0,.95);pointer-events:none;z-index:2}
 .crop-tools{display:flex;align-items:center;gap:10px;width:100%}
 .crop-tools .crop-hint{flex:1;min-width:0}
 .crop-tools .win-crop-btn{width:auto;flex-shrink:0;padding:3px 8px}
-.crop-win-meta{color:#666;font-size:10px;flex-shrink:0;margin-left:6px}
+.crop-win-meta{color:#666;font-size:var(--fs-micro);flex-shrink:0;margin-left:6px}
 .crop-slice-list{display:flex;flex-direction:column;max-height:132px;overflow-y:auto;flex-shrink:0}
-.crop-out-cap{text-align:center;font-size:10px;color:#e94560;opacity:.75;margin-top:4px}
+.crop-out-cap{text-align:center;font-size:var(--fs-micro);color:#e94560;opacity:.75;margin-top:4px}
 .crop-out-preview{position:relative;overflow:hidden;background-color:#000;border:1px solid #e94560;border-radius:2px;margin:0 auto;flex-shrink:0}
 .crop-out-preview>div{position:absolute;left:50%;top:50%;background-image:url('/crop-board.png');background-repeat:no-repeat}
-.crop-hint{font-size:10px;color:#666;line-height:1.5}
-.win-crop-title{font-size:10px;color:#2ecc71;margin:2px 0 6px;font-weight:bold;letter-spacing:0.03em}
-.win-crop-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;width:100%}
+.crop-hint{font-size:var(--fs-micro);color:#666;line-height:1.5}
+.win-crop-title{font-size:var(--fs-micro);color:#2ecc71;margin:2px 0 6px;font-weight:bold;letter-spacing:0.03em}
+.win-crop-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:4px 8px;font-size:var(--fs-micro);cursor:pointer;width:100%}
 .win-crop-btn:hover{background:rgba(46,204,113,0.15);border-color:#2ecc71;color:#2ecc71}
-.win-sidebar{width:220px;flex-shrink:0;display:flex;flex-direction:column;gap:8px}
+.win-sidebar{width:clamp(176px,17vw,220px);flex-shrink:0;display:flex;flex-direction:column;gap:8px}
 .win-list{background:#242424;border-radius:8px;overflow:hidden;flex:1;min-height:0;display:flex;flex-direction:column}
 .win-list-header{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#252525;border-bottom:1px solid #333}
-.win-list-header span{font-size:12px;font-weight:bold;color:#ccc}
+.win-list-header span{font-size:var(--fs-meta);font-weight:bold;color:#ccc}
 .win-list-body{flex:1;overflow-y:auto;padding:6px}
-.win-item{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:6px;cursor:pointer;margin-bottom:4px;font-size:12px;color:#aaa;background:#2a2a2a;border:1px solid transparent}
+.win-item{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:6px;cursor:pointer;margin-bottom:4px;font-size:var(--fs-meta);color:#aaa;background:#2a2a2a;border:1px solid transparent}
 .win-item:hover{background:#333;color:#fff}
 .win-item.active{background:rgba(233,69,96,0.18);border-color:#e94560;color:#e94560}
 .win-item .win-item-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-.win-item .win-item-del{background:none;border:none;color:#888;cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0}
+.win-item .win-item-del{background:none;border:none;color:#888;cursor:pointer;font-size:var(--fs-dense);padding:0 2px;flex-shrink:0}
 .win-item .win-item-del:hover{color:#e94560}
 .win-prop-panel{background:#242424;border-radius:8px;padding:12px}
-.win-prop-title{font-size:11px;color:#888;margin-bottom:10px;font-weight:bold;text-transform:uppercase;letter-spacing:0.05em}
-.win-prop-row{display:flex;align-items:center;margin-bottom:8px;font-size:12px;gap:6px}
+.win-prop-title{font-size:var(--fs-micro);color:#888;margin-bottom:10px;font-weight:bold;text-transform:uppercase;letter-spacing:0.05em}
+.win-prop-row{display:flex;align-items:center;margin-bottom:8px;font-size:var(--fs-meta);gap:6px}
 .win-prop-row label{color:#888;min-width:52px;flex-shrink:0}
-.win-prop-row input,.win-prop-row select{flex:1;background:#2a2a2a;border:1px solid #3a3a3a;color:#fff;border-radius:4px;padding:4px 6px;font-size:12px;min-width:0}
+.win-prop-row input,.win-prop-row select{flex:1;background:#2a2a2a;border:1px solid #3a3a3a;color:#fff;border-radius:4px;padding:4px 6px;font-size:var(--fs-meta);min-width:0}
+.win-prop-row input[type=checkbox]{flex:0 0 auto;width:16px;height:16px;accent-color:#e94560;cursor:pointer}
 .win-prop-row input:focus,.win-prop-row select:focus{outline:none;border-color:#e94560}
-.win-prop-row .lock-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:3px 8px;font-size:11px;cursor:pointer}
+.win-prop-row .lock-btn{background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;padding:3px 8px;font-size:var(--fs-micro);cursor:pointer}
 .win-prop-row .lock-btn.active{background:rgba(233,69,96,0.2);border-color:#e94560;color:#e94560}
-.win-canvas-info{position:absolute;bottom:8px;left:10px;background:rgba(0,0,0,0.7);color:#888;font-size:10px;padding:3px 8px;border-radius:4px;pointer-events:none;z-index:10}
+.win-canvas-info{position:absolute;bottom:8px;left:10px;background:rgba(0,0,0,0.7);color:#888;font-size:var(--fs-micro);padding:3px 8px;border-radius:4px;pointer-events:none;z-index:10}
 /* 吸附：画布右上角的独立开关 + 命中时贴在目标线上的 1px 辅助线（只在拖动期间存在） */
 .win-snap-tools{position:absolute;top:8px;right:10px;z-index:11;display:flex;align-items:center;gap:6px}
 /* 自成一套：属性面板那两条 .lock-btn 规则挂在 .win-prop-row 下，画布上的按钮够不着，
    只写 background 会连文字颜色一起退回浏览器默认按钮样式（深字压黑底=看不清） */
 /* 吸附开关两处共用（窗口画布右上角 / 输入截取画板工具行），所以两套容器同一套样式 */
-.win-snap-tools .lock-btn,.crop-tools .lock-btn,.win-base-tools .lock-btn{font-size:10px;padding:2px 7px;cursor:pointer;border-radius:4px;border:1px solid #4a4a4a;background:rgba(0,0,0,.55);color:#bbb;flex-shrink:0}
+.win-snap-tools .lock-btn,.crop-tools .lock-btn,.win-base-tools .lock-btn{font-size:var(--fs-micro);padding:2px 7px;cursor:pointer;border-radius:4px;border:1px solid #4a4a4a;background:rgba(0,0,0,.55);color:#bbb;flex-shrink:0}
 .win-snap-tools .lock-btn.active,.crop-tools .lock-btn.active,.win-base-tools .lock-btn.active{border-color:#e94560;background:rgba(233,69,96,.22);color:#ff8fa3}
 /* 输出基准（房间级画布尺子）摆在画布右下角，与左下角的"画布尺寸"读数同一行高，一眼对上 */
-.win-base-tools{position:absolute;bottom:8px;right:10px;z-index:11;display:flex;align-items:center;gap:5px;font-size:10px;color:#888}
-.win-base-tools input{width:52px;font-size:10px;padding:2px 4px;background:#1a1a1a;border:1px solid #4a4a4a;border-radius:3px;color:#ccc}
+.win-base-tools{position:absolute;bottom:8px;right:10px;z-index:11;display:flex;align-items:center;gap:5px;font-size:var(--fs-micro);color:#888}
+.win-base-tools input{width:52px;font-size:var(--fs-micro);padding:2px 4px;background:#1a1a1a;border:1px solid #4a4a4a;border-radius:3px;color:#ccc}
 .win-base-tools input:focus{outline:1px solid #e94560;border-color:#e94560}
 .win-guide{position:absolute;background:#f5a623;pointer-events:none;z-index:20;box-shadow:0 0 3px rgba(245,166,35,.6)}
 .win-guide.vg{width:1px}
 .win-guide.hg{height:1px}
 .win-ratio-presets{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
-.win-ratio-btn{padding:2px 8px;background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;font-size:11px;cursor:pointer}
+.win-ratio-btn{padding:2px 8px;background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;font-size:var(--fs-micro);cursor:pointer}
 .win-ratio-btn.active,.win-ratio-btn:hover{background:rgba(233,69,96,0.18);border-color:#e94560;color:#e94560}
 .win-content-type-row{display:flex;gap:4px;margin-bottom:8px}
-.win-content-type-btn{flex:1;padding:5px;background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;font-size:11px;cursor:pointer;text-align:center}
+.win-content-type-btn{flex:1;padding:5px;background:#2a2a2a;border:1px solid #3a3a3a;color:#888;border-radius:4px;font-size:var(--fs-micro);cursor:pointer;text-align:center}
 .win-content-type-btn.active,.win-content-type-btn:hover{background:rgba(233,69,96,0.18);border-color:#e94560;color:#e94560}
-.win-save-btn{width:100%;padding:8px;background:#e94560;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;margin-top:10px}
+.win-save-btn{width:100%;padding:8px;background:#e94560;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:var(--fs-dense);margin-top:10px}
 .win-save-btn:hover{background:#ff6b6b}
 .win-save-btn.saving{opacity:0.6;pointer-events:none}
+/* 工作台开关行。轨道 44x24、滑块 18px、开位 left:23px —— 这三个数是 JS 里写死的，改这里要一起改 */
+.wb-panel{background:#2a2a2a;border-radius:8px;padding:9px 12px;margin-top:8px}
+.wb-cap{color:#8d8d8d;font-size:var(--fs-micro);margin-bottom:7px;font-weight:bold;letter-spacing:.06em}
+.wb-row{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.wb-cap-inline{color:#8d8d8d;font-size:var(--fs-dense);flex-shrink:0}
+.wb-sw{display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;color:#bbb;font-size:var(--fs-dense)}
+.wb-sw .tk{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0}
+.wb-sw input{position:absolute;opacity:0;width:0;height:0}
+.wb-sw .sl{position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:.2s}
+.wb-sw .kb{position:absolute;cursor:pointer;width:18px;height:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;pointer-events:none}
+.wb-sw input:focus-visible+.sl{outline:2px solid #e94560;outline-offset:2px}
 /* ===== 墙板配置表（工作台「墙板配置」模式）===== */
-/* 编号要横向比对才知道撞没撞，所以是一张 30 行的表，不是散在 30 个文件夹里的控件 */
+/* 码值表要一眼看全每格学过没有，所以是一张 30 行的表，不是散在文件夹列表里的控件 */
 .wp-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#252525;border:1px solid #333;border-radius:6px;padding:8px 10px;margin-top:10px}
-.wp-tbl{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}
-.wp-tbl th{background:#252525;color:#888;font-weight:normal;font-size:11px;padding:5px 6px;border-bottom:1px solid #333;text-align:left}
+.wp-tbl{width:100%;border-collapse:collapse;margin-top:8px;font-size:var(--fs-meta)}
+/* 码值表按内容收窄、靠左排：两个码框相邻，右侧整片留给后续功能，不把余量摊成超长输入框 */
+.wp-tbl.wp-codes{width:auto}
+.wp-tbl th{background:#252525;color:#888;font-weight:normal;font-size:var(--fs-micro);padding:5px 6px;border-bottom:1px solid #333;text-align:left}
 .wp-tbl td{padding:3px 6px;border-bottom:1px solid #2a2a2a;color:#ccc}
 .wp-tbl tr:hover td{background:#262626}
 .wp-fid{color:#e94560;font-weight:bold;width:52px}
 .wp-cnt{color:#666;width:58px}
 .wp-cnt.has{color:#4caf50}
-.wp-sel{background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:3px 5px;font-size:12px;width:76px}
+.wp-sel{background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:3px 5px;font-size:var(--fs-meta);width:76px}
 .wp-sel.bound{border-color:#f5a623;color:#f5a623}
-.wp-sel.conflict{border-color:#e94560;background:rgba(233,69,96,.14);color:#ff8fa3}
-.wp-warn{color:#f5a623;font-size:11px}
-.wp-err{color:#ff8fa3;font-size:11px}
-.wp-sub{color:#888;font-size:11px;margin:14px 0 2px;letter-spacing:1px}
+.wp-hint{color:#8a8a8a;font-size:var(--fs-micro);margin-top:6px}
+/* 每格两个码值框（点歌机/墙板）：可直接敲键盘改，也可点一下开始等对应总线的按键；有码时金边，等按键时呼吸高亮 */
+.wp-code-wrap{display:flex;align-items:center;gap:2px;width:120px}
+.wp-code{background:#1a1a1a;color:#8a8a8a;border:1px dashed #3a3a3a;border-radius:4px;padding:3px 6px;font-size:var(--fs-micro);font-family:Consolas,Menlo,monospace;letter-spacing:.5px;flex:1;min-width:0;cursor:text;outline:none}
+.wp-code::placeholder{color:#5a5a5a;letter-spacing:0}
+.wp-code:hover{border-color:#f5a623;color:#ddd}
+.wp-code:focus{border-color:#f5a623;color:#eee;border-style:solid}
+.wp-code.bound{border-style:solid;border-color:#f5a623;color:#f5a623}
+.wp-code.learning{border-style:solid;border-color:#e94560;color:#ff8fa3;animation:wpPulse 1s ease-in-out infinite}
+@keyframes wpPulse{0%,100%{opacity:1}50%{opacity:.45}}
+.wp-code-x{background:none;border:none;color:#666;font-size:var(--fs-meta);cursor:pointer;padding:0 3px;line-height:1}
+.wp-code-x:hover{color:#ff8fa3}
+.wp-warn{color:#f5a623;font-size:var(--fs-micro)}
 /* 播放设置表：沿用 .wp-tbl 的骨架，只把窄控制列居中，并在 A/B 两组之间画一道竖分隔 */
 .ps-tbl th,.ps-tbl td{text-align:center}
 .ps-tbl th:first-child,.ps-tbl td:first-child{text-align:left}
 .ps-sep{border-left:1px solid #3a3a3a}
+@media(max-width:1180px){
+.content{padding:18px}
+.wb-row{gap:12px}
+.folder-bar{gap:6px}
+}
 /* ===== 窄视口适配（Ctrl+滚轮放大后 CSS 视口宽度会变小，等价于窄屏）===== */
 /* 侧栏不能再整条隐藏（隐藏=没法切模块），改成顶部横排导航 */
 @media(max-width:768px){
 .layout{flex-direction:column}
 .sidebar{position:static;width:auto;height:auto;border-right:none;border-bottom:1px solid #333}
-.brand{padding:10px 16px;font-size:16px}
+.brand{padding:10px 16px;font-size:var(--fs-body)}
 .menu{display:flex;flex-wrap:wrap;padding:0 8px 10px}
-.menu li{padding:8px 12px;font-size:13px}
+.menu li{padding:8px 12px;font-size:var(--fs-dense)}
 .main{margin-left:0}
 .header{padding:12px 16px;flex-wrap:wrap;gap:8px}
 .content{padding:16px}
@@ -224,17 +297,31 @@ body.nav-off .brand-name{display:inline}
 .crop-slice-list{max-height:110px}
 }
 /* 工具栏控件与操作记录行：原先每个下拉都抄一遍内联样式，收成一个类 */
-.tfsel{padding:4px 8px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:12px}
+.tfsel{padding:4px 8px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:var(--fs-meta);min-height:var(--tap);font-family:inherit}
 .op-row{display:flex;gap:10px;align-items:baseline;padding:4px 6px;border-bottom:1px solid #242424}
 .op-row:hover{background:#202020}
 .op-time{color:#666;flex-shrink:0;width:132px}
-.op-act{flex-shrink:0;width:130px;padding:1px 6px;border-radius:10px;font-size:11px;text-align:center;background:#333;color:#bbb}
+.op-act{flex-shrink:0;width:140px;padding:2px 6px;border-radius:10px;font-size:var(--fs-meta);text-align:center;background:#333;color:#bbb}
 .op-act.danger{background:#5a1f26;color:#ffb3bd}
 .op-act.ok{background:#1f4d2e;color:#a7e8bd}
 .op-act.info{background:#1d3a4d;color:#a5d8f0}
 .op-tgt{flex-shrink:0;width:110px;color:#8ab4f8}
-.op-sum{color:#ccc;word-break:break-all}
+.op-sum{color:#ccc;font-size:var(--fs-dense);word-break:break-all}
 .op-detail{margin:2px 0 6px 142px;padding:8px;background:#111;border-radius:4px;color:#9cdcfe;white-space:pre-wrap;word-break:break-all;max-height:280px;overflow:auto}
+/* 「详情」是这行唯一的展开入口，原先 #555 比行分隔线还暗，看不见等于没有 */
+.op-exp{flex-shrink:0;display:inline-flex;align-items:center;min-height:var(--tap);margin:-4px -6px;padding:0 6px;border-radius:4px;color:#9aa4b2;font-size:var(--fs-meta);cursor:pointer}
+.op-exp:hover{color:#e94560;background:#262626}
+/* 设备日志一屏 200 行、每行六个 span，原先逐个内联，字号全散在 11px。
+   静态的颜色和字号收进类；级别色要按 log.level 变，留在内联。正文比元数据大一档，扫读时眼睛先落在它上面。 */
+.log-stats{display:flex;gap:16px;color:#8d8d8d;font-size:var(--fs-meta);margin-bottom:8px}
+.log-row{padding:6px 4px;border-bottom:1px solid #2a2a2a;line-height:1.55}
+.log-row .lg-time,.log-row .lg-id,.log-row .lg-lvl,.log-row .lg-mod,.log-row .lg-act{font-size:var(--fs-meta);margin-right:8px}
+.log-row .lg-time{color:#777}
+.log-row .lg-id{color:#4caf50}
+.log-row .lg-lvl{font-weight:bold}
+.log-row .lg-mod{color:#9c27b0;margin-right:4px}
+.log-row .lg-act{color:#2196f3}
+.log-row .lg-msg{color:#ccc;font-size:var(--fs-dense)}
 </style>
 </head>
 <body>
@@ -260,12 +347,13 @@ body.nav-off .brand-name{display:inline}
 </div>
 <div id="btns">
 <button class="btn btn-primary" onclick="document.getElementById('fi').click()">上传文件</button></div>
+<div class="fs-ctl"><label for="fsScale">字号</label><select id="fsScale" onchange="setFsScale(this.value)" title="只放大文字和它占的行高，不改布局宽度。Ctrl+滚轮那种放大是把整个页面塞进更窄的视口，编辑器会被迫上下堆叠，别用它调阅读大小。"><option value="s">小</option><option value="">标准</option><option value="l">大</option><option value="xl">特大</option></select></div>
 <div id="authbox" style="margin-left:auto"></div>
 </header>
 <div class="content">
 <div id="pm">
 <div class="folder-bar" id="fb"></div>
-<div id="folder-info" style="padding:10px 20px;background:#2a2a2a;margin-bottom:15px;border-radius:8px;color:#aaa;font-size:20px">
+<div id="folder-info" style="padding:10px 20px;background:#2a2a2a;margin-bottom:15px;border-radius:8px;color:#aaa;font-size:var(--fs-h2)">
 <span id="folder-info-name" style="font-weight:bold"></span>
 <span id="folder-info-note" style="color:#888;margin-left:10px"></span>
 </div>
@@ -283,13 +371,12 @@ body.nav-off .brand-name{display:inline}
 </div>
 <div id="pl" style="display:none">
 <div style="padding:20px">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
-  <h3>设备日志</h3>
+<div class="toolbar">
   <div style="display:flex;gap:8px;align-items:center">
-    <select id="logDeviceFilter" style="padding:4px 8px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:12px" onchange="loadDeviceLogs()">
+    <select id="logDeviceFilter" style="padding:4px 8px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:var(--fs-meta)" onchange="loadDeviceLogs()">
       <option value="">全部设备</option>
     </select>
-    <select id="logLevelFilter" style="padding:4px 8px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:12px" onchange="loadDeviceLogs()">
+    <select id="logLevelFilter" style="padding:4px 8px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:var(--fs-meta)" onchange="loadDeviceLogs()">
       <option value="">全部级别</option>
       <option value="error">ERROR</option>
       <option value="warn">WARN</option>
@@ -297,20 +384,19 @@ body.nav-off .brand-name{display:inline}
       <option value="debug">DEBUG</option>
     </select>
     <button class="btn btn-secondary" onclick="loadDeviceLogs()">刷新</button>
-    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#888;cursor:pointer">
+    <label style="display:flex;align-items:center;gap:4px;font-size:var(--fs-meta);color:#888;cursor:pointer">
       <input type="checkbox" id="logAutoRefresh" onchange="toggleLogAutoRefresh()"> 自动刷新
     </label>
   </div>
 </div>
-<div id="logList" style="font-family:monospace;font-size:12px;background:#1a1a1a;border-radius:8px;padding:12px;max-height:75vh;overflow-y:auto;line-height:1.6"></div>
+<div id="logList" style="font-family:monospace;font-size:var(--fs-meta);background:#1a1a1a;border-radius:8px;padding:12px;max-height:75vh;overflow-y:auto;line-height:1.6"></div>
 </div>
 </div>
 
 <!-- 操作记录：读 operation_logs（logAction 一直在写，此前只有 journalctl 能看） -->
 <div id="po" style="display:none">
 <div style="padding:20px">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
-  <h3>操作记录</h3>
+<div class="toolbar">
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <select id="opTargetFilter" class="tfsel" onchange="loadOpLogs()">
       <option value="all">全部对象</option>
@@ -353,13 +439,13 @@ body.nav-off .brand-name{display:inline}
     </select>
     <input id="opSearch" class="tfsel" style="width:190px" placeholder="按房间/设备/素材 id 搜" onkeydown="if(event.key==='Enter')loadOpLogs()">
     <button class="btn btn-secondary" onclick="loadOpLogs()">刷新</button>
-    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#888;cursor:pointer">
+    <label style="display:flex;align-items:center;gap:4px;font-size:var(--fs-meta);color:#888;cursor:pointer">
       <input type="checkbox" id="opAutoRefresh" onchange="toggleOpAutoRefresh()"> 自动刷新
     </label>
   </div>
 </div>
-<div id="opNote" style="color:#666;font-size:11px;margin-bottom:8px">服务端保留 30 天，心跳类事件已不再写入本表。</div>
-<div id="opList" style="font-family:monospace;font-size:12px;background:#1a1a1a;border-radius:8px;padding:12px;max-height:75vh;overflow-y:auto;line-height:1.6"></div>
+<div id="opNote" style="color:#8d8d8d;font-size:var(--fs-meta);margin-bottom:8px">服务端保留 30 天，心跳类事件不写入本表。</div>
+<div id="opList" style="font-family:monospace;font-size:var(--fs-meta);background:#1a1a1a;border-radius:8px;padding:12px;max-height:75vh;overflow-y:auto;line-height:1.6"></div>
 </div>
 </div>
 
@@ -389,7 +475,7 @@ body.nav-off .brand-name{display:inline}
 </main>
 </div>
 <input type="file" id="fi" multiple style="display:none" onchange="ul(this.files)">
-<div class="modal" id="m" onclick="if(event.target === this) closeModal()"><div class="modal-content"><button class="modal-close" onclick="closeModal()">×</button><div id="mc"></div></div></div>
+<div class="modal" id="m" onclick="if(event.target === this) closeModal()"><div class="modal-content"><button class="modal-close" title="关闭 (Esc)" onclick="closeModal()">×</button><div id="mc"></div></div></div>
 <script src="/mqtt.min.js"></script>
 <script>
 // 【F-00】写接口凭据：页面里不再有任何 API key（历史上那把 key 就写死在本文件第 395 行，
@@ -415,11 +501,11 @@ body.nav-off .brand-name{display:inline}
         // z-index 必须高于【.modal】的 100：登录框可能盖在任何业务弹窗之上（写请求就来自那次操作）
         _box.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;display:none;align-items:center;justify-content:center';
         _box.innerHTML = '<div style="background:#1a1a1a;border-radius:12px;padding:28px 30px;min-width:320px;max-width:90%;box-shadow:0 20px 60px rgba(0,0,0,.6)">' +
-            '<div style="font-size:18px;font-weight:bold;margin-bottom:6px">管理台登录</div>' +
-            '<div style="color:#888;font-size:13px;margin-bottom:16px">改数据需要口令，登录后 12 小时内免登</div>' +
+            '<div style="font-size:var(--fs-title);font-weight:bold;margin-bottom:6px">管理台登录</div>' +
+            '<div style="color:#888;font-size:var(--fs-dense);margin-bottom:16px">改数据需要口令，登录后 12 小时内免登</div>' +
             '<input id="xvjLoginPw" type="password" autocomplete="current-password" placeholder="管理口令" ' +
-            'style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #444;background:#242424;color:#eee;font-size:15px">' +
-            '<div id="xvjLoginErr" style="color:#ff6b6b;font-size:13px;margin-top:8px;min-height:18px"></div>' +
+            'style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #444;background:#242424;color:#eee;font-size:var(--fs-body)">' +
+            '<div id="xvjLoginErr" style="color:#ff6b6b;font-size:var(--fs-dense);margin-top:8px;min-height:18px"></div>' +
             '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">' +
             '<button class="btn btn-secondary" id="xvjLoginCancel">取消</button>' +
             '<button class="btn btn-primary" id="xvjLoginOk">登录</button></div></div>';
@@ -545,9 +631,9 @@ async function syncCurrentRoom() {
     if (!s.df) { alert('请先选择一个客户'); return; }
     if (!s.rf) { alert('请先选择一个房间'); return; }
     openModal('<div style="padding:30px;text-align:center">' +
-        '<div style="font-size:48px;margin-bottom:10px">🔄</div>' +
-        '<div style="font-size:16px;margin-bottom:6px">将向 <b>当前房间</b> 的所有设备发送同步命令</div>' +
-        '<div style="color:#888;font-size:13px;margin-bottom:20px">设备将自动下载最新素材</div>' +
+        '<div style="font-size:var(--fs-hero);margin-bottom:10px">🔄</div>' +
+        '<div style="font-size:var(--fs-body);margin-bottom:6px">将向 <b>当前房间</b> 的所有设备发送同步命令</div>' +
+        '<div style="color:#888;font-size:var(--fs-dense);margin-bottom:20px">设备将自动下载最新素材</div>' +
         '<div style="display:flex;gap:10px;justify-content:center">' +
         '<button class="btn btn-primary" id="do_sync_btn">确认发送</button>' +
         '<button class="btn btn-secondary" onclick="closeModal()">取消</button></div></div>');
@@ -632,12 +718,12 @@ function fmtBytes(n) {
 
 // 手工全量同步（唯一还走 POST /sync 的入口）：不判配置是否变化，强制让本房间设备重对账一遍
 function doSyncRoom(roomId) {
-    openModal('<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">📡 发送中...</div>');
+    openModal('<div style="padding:40px;text-align:center;color:#4caf50;font-size:var(--fs-body)">📡 发送中...</div>');
     fetch('/api/rooms/' + roomId + '/sync', { method: 'POST', headers: {'Content-Type': 'application/json'} })
         .then(function(r) { return r.json(); })
         .then(function(result) {
             if (result.success) {
-                setMc('<div style="padding:40px;text-align:center;color:#4caf50;font-size:16px">✅ 已发送同步命令到 <b>' + result.sent + '</b> 个设备</div>');
+                setMc('<div style="padding:40px;text-align:center;color:#4caf50;font-size:var(--fs-body)">✅ 已发送同步命令到 <b>' + result.sent + '</b> 个设备</div>');
             } else {
                 setMc('<div style="padding:30px;text-align:center;color:#f44336">❌ 失败: ' + esc(result.error || '未知错误') + '</div>');
             }
@@ -768,8 +854,10 @@ function createPlayer(url, type, container, poster) {
  * 【F-06】房间列表刷新 lr()   　【F-06b】选择房间渲染 sr()
  *         【F-06c】新建房间 createRoom()   　【F-06d】房间工作台 rmDevice()
  *         【F-06e】工作台模式开关与互斥 sfW()/sfCrop()/sfWP()/sfPS()（草稿确认统一在 _exitTableModes()）
- *         【F-06f】墙板配置表 renderWpEditor()/wpSave()（编号表 + 跟随一览 + 总闸/串口参数）
+ *         【F-06f】墙板配置表 renderWpEditor()/wpSave()（码值表 + 总闸/串口参数）
  *         【F-06g】播放设置表 renderPsEditor()/psSave()（每格随机/顺序循环；素材轮播交接一律硬切）
+ *         【F-06h】墙板学习 _wpCodeCellHtml()/wpLearnCell()/wpLearnDone()/wpSetCode()
+ *                 （码值框可直接敲键盘改/删；开「墙板学习」后点框 → 按键 → 码值填入并自动保存）
  * 【F-07】素材推送 showPushDialog() & doPushToRoom()
  * 【F-08】房间内素材删除 rmRoomMat()（只调一次 DELETE /materials，设备通知由服务端收敛点发；
  *         doSyncRoom() 现在只服务手工「🔄 同步当前房间」按钮）
@@ -810,7 +898,16 @@ var s = {
     _windowEditorActive: false,
     _cropMode: false,
     _wpMode: false,        // 工作台「墙板配置」编辑模式（纯前端态，不跨页面保留）
-    _wpDraft: null,        // 墙板表草稿 {roomId, enabled, defaultNo, path, baud, A:{}, B:{}, base:''}，只跟当前房间绑定
+    _wpDraft: null,        // 墙板表草稿 {roomId, enabled, path, baud, data_bits/parity/stop_bits, code:{'01':{player,panel}}, baseHw, baseCode}，只跟当前房间绑定
+    _wpLearnMode: false,   // 「墙板学习」总开关（纯界面闸）：打开后点码值框才会真的开窗
+    _wpLearnCell: null,    // 正在等按键的那一格 {fid, src}（src=player/panel）；同一时间只等一格
+    _wpBaseline: null,     // 开窗前已经在跑的帧 {hex:1}（点歌机常年广播，只有窗后新出现的才算候选）
+    _wpLearnTimeout: false,// 本次开窗到点没等到帧（提示用，不改数据）
+    _wpNote: '',           // 录码成功后的一行回执
+    _wpFrames: [],         // 这间房各设备的最近帧上报原样留着（GET /api/devices?room_id= 的 d.frames），渲染时再并一份
+    _wpLearnUntil: 0,      // 本地倒计时，只管界面；设备端窗长由 wallpanel_learn 自己管
+    _wpLearnTimer: null,   // 等按键时每秒拉一次帧的句柄（收窗/关表/换房间都要停）
+    _wpSaveQ: null,        // 码值自动保存的串行队列（两次录制挨得近时不至于后一次 GET 拿到前一次还没落库的 config）
     _psMode: false,        // 工作台「播放设置」编辑模式（同上，与窗口/截取/墙板三者互斥）
     _psDraft: null,        // 播放设置草稿 {roomId, A:{格:{order}}, B:{}, base:''}，只跟当前房间绑定
     _snap: localStorage.getItem('xsnap') !== '0',   // 窗口画布吸附开关（纯编辑辅助，本地偏好，默认开）
@@ -851,6 +948,17 @@ document.addEventListener('keydown', function(e) {
     if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyB') { e.preventDefault(); toggleNav(); }
 });
 
+// 【F-02a】字号档位：只改 <html data-fs>，全站 --fs-* 都乘同一个 --u，一步到位。
+// 存 localStorage 而不是房间配置：这是「我这台显示器」的偏好，不该跟着房间下发到别的机器。
+function setFsScale(v) {
+    if (v) document.documentElement.setAttribute('data-fs', v); else document.documentElement.removeAttribute('data-fs');
+    try { localStorage.setItem('xvj_fs_scale', v); } catch (e) {}
+}
+(function () {
+    var v = ''; try { v = localStorage.getItem('xvj_fs_scale') || ''; } catch (e) {}
+    if (v) document.documentElement.setAttribute('data-fs', v);
+    var sel = document.getElementById('fsScale'); if (sel) sel.value = v;
+})();
 // 【F-02】 菜单切换与各页初始化 // function sp(p)
 function sp(p) {
     if (_PAGES.indexOf(p) < 0) return;   // 白名单外的页标识不动页面（见【F-01】的 _PAGES）
@@ -908,7 +1016,6 @@ async function pd() {
         var list = await r.json();
         if (!Array.isArray(list)) return;
         s.ds = list;
-        refreshPanelBadges();
         // 窗口编辑器/墙板表/播放设置表打开时只静默更新数据，不重绘（避免打断正在进行的编辑）
         if (s.rf && !s._windowEditorActive && !s._wpMode && !s._psMode) rmDevice();
     } catch (e) {}
@@ -1039,10 +1146,10 @@ function rm() {
         }
         h += '<div class="card ' + (sel ? 'selected' : '') + (isPreset ? ' card-presetted' : '') + '">';
         h += '<input type="checkbox" class="card-check" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();tc(\'' + escJsA(x.id) + '\')">';
-        h += '<button class="card-del" onclick="dm(event,\'' + escJsA(x.id) + '\')">x</button>';
+        h += '<button class="card-del" title="删除素材（会先列出有多少预设和房间在用它）" onclick="dm(event,\'' + escJsA(x.id) + '\')">×</button>';
         h += '<button class="card-preset" onclick="event.stopPropagation();cp2p(\'' + escJsA(x.id) + '\')" title="复制到预设">预设</button>';
         h += '<div class="card-pv" title="单击预览（Esc 关闭）" data-pv-url="' + escA(x.url) + '" data-pv-type="' + escA(x.type) + '" data-pv-thumb="' + escA(x.thumbnail) + '">' + thumb + '</div>';
-        h += '<div class="card-name">' + esc(x.filename || x.name) + '</div>';
+        h += '<div class="card-name" title="' + escA(x.filename || x.name || '') + '">' + esc(x.filename || x.name) + '</div>';
         h += '</div>';
     });
     g.innerHTML = h;
@@ -1157,7 +1264,7 @@ async function dm(e, id) {
     var presets = asList(u.presets);
     var twins = asList(u.twin_materials);
     var lines = [];
-    lines.push('<div style="color:#fff;font-size:14px;margin-bottom:6px">' + esc(m.filename || m.name || id) + '</div>');
+    lines.push('<div style="color:#fff;font-size:var(--fs-ui);margin-bottom:6px">' + esc(m.filename || m.name || id) + '</div>');
     lines.push('<div style="color:#888">' + esc(m.type || '?') + ' · ' + esc(m.folder || '未归类') + ' 文件夹 · '
         + esc(fmtBytes(u.bytes)) + '（含缩略图），将同时删除磁盘文件</div>');
     if (rooms.length) {
@@ -1302,9 +1409,9 @@ function prm() {
         var t = kind === 'video' ? (thumbUrl ? '<img src="' + escA(thumbUrl) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">▶</div>')
             : kind === 'audio' ? '<div class="card-thumb">♪</div>'
             : (url ? '<img src="' + escA(url) + '" loading="lazy" decoding="async" alt="">' : '<div class="card-thumb">?</div>');
-        h += '<div class="card"><button class="card-del" onclick="dpm(event,\'' + escJsA(x.id) + '\')">x</button>';
+        h += '<div class="card"><button class="card-del" title="删除预设（会先列出有多少房间在用它）" onclick="dpm(event,\'' + escJsA(x.id) + '\')">×</button>';
         h += '<div class="card-pv" title="单击预览（Esc 关闭）" data-pv-url="' + escA(url) + '" data-pv-type="' + escA(kind) + '" data-pv-thumb="' + escA(thumbUrl) + '">' + t + '</div>';
-        h += '<div class="card-name">' + esc(x.filename) + '</div></div>';
+        h += '<div class="card-name" title="' + escA(x.filename || '') + '">' + esc(x.filename) + '</div></div>';
     });
     g.innerHTML = h;
 }
@@ -1325,7 +1432,7 @@ async function dpm(e, id) {
     var rooms = asList(u.rooms);
     var src = asList(u.src_materials);
     var lines = [];
-    lines.push('<div style="color:#fff;font-size:14px;margin-bottom:6px">' + esc(p.filename || id) + '</div>');
+    lines.push('<div style="color:#fff;font-size:var(--fs-ui);margin-bottom:6px">' + esc(p.filename || id) + '</div>');
     lines.push('<div style="color:#888">' + esc(p.folder_id || '?') + ' 文件夹 · ' + esc(fmtBytes(u.bytes))
         + '。只摘预设记录，磁盘文件和素材库那条都在，可随时重新「复制到预设」。</div>');
     if (rooms.length) {
@@ -1389,9 +1496,9 @@ async function lu() {
         var d = ds[i];
         var ft = d.first_seen ? new Date(d.first_seen).toLocaleString() : '-';
         var st;
-        if (d.status === 'online') st = '<span class="device-status on">在线</span><span style="font-size:11px;color:#888">|未授权</span>';
-        else if (d.status === 'deauthorized') st = '<span class="device-status off">离线</span><span style="font-size:11px;color:#e94560">|已废止</span>';
-        else st = '<span class="device-status off">离线</span><span style="font-size:11px;color:#888">|未授权</span>';
+        if (d.status === 'online') st = '<span class="device-status on">在线</span><span style="font-size:var(--fs-micro);color:#888">|未授权</span>';
+        else if (d.status === 'deauthorized') st = '<span class="device-status off">离线</span><span style="font-size:var(--fs-micro);color:#e94560">|已废止</span>';
+        else st = '<span class="device-status off">离线</span><span style="font-size:var(--fs-micro);color:#888">|未授权</span>';
         var fp = d.fingerprint ? String(d.fingerprint) : '';
         var fpShort = fp.length > 12 ? fp.substring(0, 12) + '…' : (fp || '-');
         h += '<div class="device-card"><div class="device-header"><span class="device-id" title="' + escA(d.id) + '">' + esc(String(d.id).substring(0, 16)) + '</span>' + st + '</div>';
@@ -1541,6 +1648,7 @@ async function sr(id) {
         // 切房间：窗口数据按房间隔离，不能带上一房间的缓存进来；防抖里最后一次编辑先落回旧房间
         await _resetWinEditorState();
         s._wpDraft = null;        // 墙板表草稿同样按房间隔离，重绘时按新房间的配置重建
+        _wpLearnReset();          // 等按键状态与倒计时也是这间房的：不换干净的话，旧房间的帧会顶在新房间的学习区里
         s._psDraft = null;        // 播放设置表同理
     }
     s.rf = id;
@@ -1599,6 +1707,17 @@ async function dr(e, id) {
 // 墙板模式下交给 renderWpEditor 并 return，文件夹模式下才继续画素材目录与同步按钮；
 // 各条早退路径都要调 updateRoomDebugToggle() 恢复调试开关显示态（开关 DOM 每次都是重建的，一律"关"）。
 // 无 s.rf 时只画"请选择或创建房间"，不碰其它状态。
+/**
+ * 工作台开关的统一模板。轨道 44x24、滑块 18px、开位 left:23px 这三个数与 sfCrop/sfWP/sfPS/
+ * _paintDebugToggle 里按 id 刷 style 的写法是同一套 —— 改尺寸要一起改，否则点击后滑块会跳位。
+ * ids 依次是 [checkbox, 轨道, 滑块]：调试模式那组前缀是 roomDebug，其余是 win/crop/wp/ps，不统一，所以显式传。
+ */
+function _wbSw(label, ids, on, color, onchange) {
+    return '<label class="wb-sw"><span>' + label + '</span><span class="tk">'
+        + '<input type="checkbox" id="' + ids[0] + '"' + (on ? ' checked' : '') + ' onchange="' + onchange + '">'
+        + '<span id="' + ids[1] + '" class="sl"' + (on ? ' style="background:' + color + '"' : '') + '></span>'
+        + '<span id="' + ids[2] + '" class="kb"' + (on ? ' style="left:23px"' : '') + '></span></span></label>';
+}
 function rmDevice() {
     var g = document.getElementById('dg');
     if (!s.rf) {
@@ -1613,23 +1732,21 @@ function rmDevice() {
     
     var h = '<h3 style="color:#e94560">' + esc(r.name || '') + ' (' + esc(r.store_name || '') + ')</h3>';
     // 工作台：调试模式 / 窗口配置 / 输入截取 / 墙板配置 / 播放设置 五个开关并排
-    h += '<div style="background:#2a2a2a;border-radius:8px;padding:8px 12px;margin-top:8px">';
-    h += '<div style="color:#888;font-size:11px;margin-bottom:6px;font-weight:bold">工作台</div>';
-    h += '<div style="display:flex;gap:18px;flex-wrap:wrap">';
-    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">调试模式</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="roomDebugToggle" onchange="toggleRoomDebug()" style="opacity:0;width:0;height:0"><span id="roomDebugSlider" style="position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:0.3s"></span><span id="roomDebugKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
-    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">窗口配置</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="winToggle" style="opacity:0;width:0;height:0" ' + (s._windowEditorActive ? 'checked' : '') + ' onchange="sfW()"><span id="winSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._windowEditorActive ? '#e94560' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="winKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._windowEditorActive ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
+    h += '<div class="wb-panel"><div class="wb-cap">工作台</div><div class="wb-row">';
+    h += _wbSw('调试模式', ['roomDebugToggle', 'roomDebugSlider', 'roomDebugKnob'], _roomDebugOn(), '#4caf50', 'toggleRoomDebug()');
+    h += _wbSw('窗口配置', ['winToggle', 'winSlider', 'winKnob'], s._windowEditorActive, '#e94560', 'sfW()');
     // 输入截取：进入所选切片独属的 16:9 取景画板（Arena InputRect 语义）
-    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">输入截取</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="cropToggle" style="opacity:0;width:0;height:0" ' + (s._cropMode ? 'checked' : '') + ' onchange="sfCrop()"><span id="cropSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._cropMode ? '#2ecc71' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="cropKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._cropMode ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
-    // 墙板配置：一张 01~30 × A/B 的编号绑定总表（编号要横向比对才知道撞没撞，所以不做成散在 30 个文件夹里的控件）
-    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">墙板配置</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="wpToggle" style="opacity:0;width:0;height:0" ' + (s._wpMode ? 'checked' : '') + ' onchange="sfWP()"><span id="wpSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._wpMode ? '#f5a623' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="wpKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._wpMode ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
+    h += _wbSw('输入截取', ['cropToggle', 'cropSlider', 'cropKnob'], s._cropMode, '#2ecc71', 'sfCrop()');
+    // 墙板配置：一张 01~30 × A/B 的码值总表（每格一个学到的帧码，横向一眼看全，学习开关在表头）
+    h += _wbSw('墙板配置', ['wpToggle', 'wpSlider', 'wpKnob'], s._wpMode, '#f5a623', 'sfWP()');
     // 播放设置：同样一张 01~30 × A/B 的总表（播放顺序按文件夹各设一份，A、B 是两套独立素材目录）
-    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><span style="font-size:12px;color:#aaa">播放设置</span><div style="position:relative;display:inline-block;width:44px;height:24px"><input type="checkbox" id="psToggle" style="opacity:0;width:0;height:0" ' + (s._psMode ? 'checked' : '') + ' onchange="sfPS()"><span id="psSlider" style="position:absolute;cursor:pointer;inset:0;background:' + (s._psMode ? '#4aa3df' : '#444') + ';border-radius:24px;transition:0.3s"></span><span id="psKnob" style="position:absolute;cursor:pointer;width:18px;height:18px;left:' + (s._psMode ? '23px' : '3px') + ';bottom:3px;background:#fff;border-radius:50%;transition:0.3s;pointer-events:none"></span></div></label>';
+    h += _wbSw('播放设置', ['psToggle', 'psSlider', 'psKnob'], s._psMode, '#4aa3df', 'sfPS()');
     h += '</div></div>';
 
     // 显示房间设备列表
     if (roomDevices.length > 0) {
         h += '<div style="margin-top:8px;background:#2a2a2a;border-radius:8px;overflow:hidden">';
-        h += '<div style="padding:6px 10px;background:#252525;border-bottom:1px solid #333"><span style="color:#888;font-size:11px">绑定设备</span></div>';
+        h += '<div style="padding:6px 10px;background:#252525;border-bottom:1px solid #333"><span style="color:#888;font-size:var(--fs-micro)">绑定设备</span></div>';
         roomDevices.forEach(function(d) {
             var shortId = d.id.substring(0, 8);
             var isOnline = d.status === 'online';
@@ -1639,28 +1756,23 @@ function rmDevice() {
             h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #2a2a2a">';
             h += '<div style="display:flex;align-items:center;gap:8px">';
             h += '<div style="width:7px;height:7px;border-radius:50%;background:' + dotColor + ';flex-shrink:0"></div>';
-            h += '<span style="color:#ccc;font-size:13px" title="' + escA(d.id) + '">' + esc(shortId) + '</span>';
-            h += '<span class="device-status ' + statusClass + '" style="font-size:11px;padding:1px 6px;border-radius:10px">' + statusText + '</span>';
-            // 这台机当前生效的墙板编号：随心跳上报、服务端只存内存（【S-06i】），没号就不显示。
-            // 挂在设备行而不是墙板表里 —— 一房多机时"每台各停在几号"才是排障要看的那一列；
-            // 节点常驻（没号只是藏起来），pd() 每轮按新心跳刷它，不用整屏重绘。
-            var panelNo = _wpNoOf(d);
-            h += '<span id="dpn-' + escA(d.id) + '" style="color:#f5a623;font-size:11px;padding:1px 6px;border:1px solid #4a3a1a;border-radius:10px;display:' + (panelNo ? '' : 'none') + '" title="这台机当前生效的墙板编号（随心跳上报，约 30s 一跳）">' + (panelNo ? panelNo + ' 号' : '') + '</span>';
+            h += '<span style="color:#ccc;font-size:var(--fs-dense)" title="' + escA(d.id) + '">' + esc(shortId) + '</span>';
+            h += '<span class="device-status ' + statusClass + '" style="font-size:var(--fs-micro);padding:1px 6px;border-radius:10px">' + statusText + '</span>';
             h += '</div>';
             // 手动命令：服务端 POST /api/devices/:id/command 只认 DEVICE_ACTIONS 白名单，且 update_windows /
             // delete_material / preview_* 已被拦在专用接口后面（载荷必须由服务端按房间配置生成），这里能裸发的就是剩下的几条。
             // 此前前端一个入口都没有，现场想"立刻停掉这台的画面"只能去改配置间接触发。只放三枚真正用得上的。
             h += '<div style="display:flex;gap:6px;align-items:center">';
-            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" title="停止该设备全部窗口的播放（不改配置，下次同步会恢复）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'stop\',\'停止播放\',' + (isOnline ? 'true' : 'false') + ')">停止</button>';
-            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" title="不看 rev 强制整房重新同步（素材清单 + 窗口 + 映射全量下发，会重建播放器）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'sync\',\'强制同步\',' + (isOnline ? 'true' : 'false') + ')">强制同步</button>';
-            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" title="把版本管理里的最新版推给这台设备（OTA）" onclick="pushUpdate(\'' + escJsA(d.id) + '\')">推最新版</button>';
-            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="unbindRoom(\'' + escJsA(d.id) + '\')">解绑</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="停止该设备全部窗口的播放（不改配置，下次同步会恢复）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'stop\',\'停止播放\',' + (isOnline ? 'true' : 'false') + ')">停止</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="不看 rev 强制整房重新同步（素材清单 + 窗口 + 映射全量下发，会重建播放器）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'sync\',\'强制同步\',' + (isOnline ? 'true' : 'false') + ')">强制同步</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="把版本管理里的最新版推给这台设备（OTA）" onclick="pushUpdate(\'' + escJsA(d.id) + '\')">推最新版</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="解除这台机与本房的绑定（设备回到「[U]未注册设备」，需要重新授权才能再绑）" onclick="unbindRoom(\'' + escJsA(d.id) + '\')">解绑</button>';
             h += '</div>';
             h += '</div>';
         });
         h += '</div>';
     } else {
-        h += '<div style="margin-top:15px;padding:15px;background:#2a2a2a;border-radius:8px;text-align:center;color:#666">等待设备中...</div>';
+        h += '<div class="empty" style="margin-top:8px;padding:22px">这间房还没有已授权设备。设备开机联网后会出现在「[U]未注册设备」里，在那里授权即可。</div>';
     }
     
     // 墙板表/播放设置表把 01~30 摊成行、A/B 摊成列，文件夹 tab 和场景切换在这两屏上是重复入口
@@ -1669,10 +1781,10 @@ function rmDevice() {
     // 场景选择器（第一幕/第二幕）
     var curS = s._curScene || 'A';
     h += '<div style="margin-top:8px;' + (hideTabs ? 'display:none' : 'display:flex;gap:8px;align-items:center;flex-wrap:wrap') + '">';
-    h += '<span style="color:#888;font-size:11px;flex-shrink:0">场景:</span>';
-    h += '<button class="btn btn-sm ' + (curS==='A'?'btn-primary':'btn-secondary') + '" onclick="switchScene(\'A\')" style="padding:3px 12px;font-size:11px">' + ((function(){
+    h += '<span class="wb-cap-inline">场景</span>';
+    h += '<button class="btn btn-sm ' + (curS==='A'?'btn-primary':'btn-secondary') + '" onclick="switchScene(\'A\')">' + ((function(){
         try{var c=typeof r.config==='string'?JSON.parse(r.config):(r.config||{});return(c.scenes&&c.scenes.A)?esc(c.scenes.A.name):'第一幕';}catch(e){return '第一幕';}})() + '</button>');
-    h += '<button class="btn btn-sm ' + (curS==='B'?'btn-primary':'btn-secondary') + '" onclick="switchScene(\'B\')" style="padding:3px 12px;font-size:11px">' + ((function(){
+    h += '<button class="btn btn-sm ' + (curS==='B'?'btn-primary':'btn-secondary') + '" onclick="switchScene(\'B\')">' + ((function(){
         try{var c=typeof r.config==='string'?JSON.parse(r.config):(r.config||{});return(c.scenes&&c.scenes.B)?esc(c.scenes.B.name):'第二幕';}catch(e){return '第二幕';}})() + '</button>');
     h += '</div>';
     
@@ -1695,7 +1807,8 @@ function rmDevice() {
     h += '<div id="winEditorArea" style="display:' + (s._windowEditorActive ? 'block' : 'none') + '"></div>';
     // 同步按钮
     var hideSync = (s._windowEditorActive || s._wpMode || s._psMode) ? 'display:none' : '';
-    h += '<button class="btn btn-primary" style="margin-top:10px;width:100%;background:#28a745;font-size:16px;padding:12px;' + hideSync + '" onclick="syncCurrentRoom()">🔄 同步当前房间</button>';
+    // 原先是 width:100% 的绿条，比它下面真正要看的素材区还抢戏；收成右下角一颗按钮，位置不变。
+    h += '<div class="mm-foot" style="' + hideSync + '"><button class="btn btn-sync" onclick="syncCurrentRoom()" title="让设备照着当前清单重新下一遍。配置改动一般会自己下发，这颗是手工补一次。">🔄 同步当前房间</button></div>';
     
     // 墙板模式：整块工作台换成配置表。和窗口/截取互斥（见 sfWP），素材目录的 DOM 不并存 ——
     // 两套「读整份 config → 改自己的键 → PUT 回去」的入口同屏，后保存的那个会把先保存的抹掉
@@ -1745,10 +1858,10 @@ function rmDevice() {
     // 下发是单向 MQTT，设备端的实情只在「日志」页上看得到（运维浮层仍只认 debug）。
     var h2 = '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><span style="font-weight:bold">已映射素材</span><span>'
         + '<span id="pvBar">' + _pvBarHtml() + '</span>'
-        + '<button class="btn btn-primary" style="padding:5px 15px;font-size:12px" title="只映射上方当前选中的 ' + esc(s.f || '') + ' 文件夹" onclick="mapPreset()">映射本文件夹预设</button>'
-        + '<button class="btn" style="padding:5px 10px;font-size:12px;margin-left:6px;background:#6c757d;color:#fff" title="把预设库 01-30 全部映射进当前这一幕（设备会照着清单整个下一遍）" onclick="mapPreset(\'ALL\')">整库</button>'
+        + '<button class="btn btn-primary" style="padding:5px 15px;font-size:var(--fs-meta)" title="只映射上方当前选中的 ' + esc(s.f || '') + ' 文件夹" onclick="mapPreset()">映射本文件夹预设</button>'
+        + '<button class="btn" style="padding:5px 10px;font-size:var(--fs-meta);margin-left:6px;background:#6c757d;color:#fff" title="把预设库 01-30 全部映射进当前场景，设备会照着清单整个下一遍（量大，会重建播放器）" onclick="mapPreset(\'ALL\')">映射整库</button>'
         + '</span></div>';
-    h2 += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px">';
+    h2 += '<div class="mm-grid">';
     if (all.length === 0) {
         // 分清楚"真没映射"和"映射了但查不到记录"：前者提示去映射，后者是悬空引用
         // （素材/预设被删而映射还在，或服务端读列表失败），显示成"无素材"会把人引去重复映射。
@@ -1756,7 +1869,7 @@ function rmDevice() {
             ? '<div class="empty">映射里有 ' + unresolved.length + ' 条记录在素材库和预设库里都查不到（悬空引用）：'
               + esc(unresolved.slice(0, 5).join('、')) + (unresolved.length > 5 ? ' 等' : '')
               + '。设备侧清单会跳过这些 id，点「🔄 同步当前房间」让它们对齐。</div>'
-            : '<div class="empty">无素材，点击"映射本文件夹预设"从预设库 ' + esc(s.f || '') + ' 添加</div>';
+            : '<div class="empty">这一格还没有映射素材。点右上角「映射本文件夹预设」，把预设库 ' + esc(s.f || '') + ' 灌进来。</div>';
     }
     else {
         // 单击视频卡片即在大屏上播一遍（2026-11-08 用户定调：不要专门按钮、不要弹窗、不挂调试模式）。
@@ -1776,7 +1889,7 @@ function rmDevice() {
             var playable = onDevice;
             h2 += '<div class="card"' + (playable
                 ? ' data-pv-mid="' + escA(m.id) + '" style="cursor:pointer" title="单击：在这扇窗对应的设备画面上播一遍，播完自动回到原画面（只播设备本机已有的素材，不改任何配置）" onclick="pvMat(\'' + escJsA(m.id) + '\')"'
-                : '') + '><button class="card-del" onclick="rmRoomMat(event,\'' + escJsA(m.id) + '\')">x</button><div>' + t + '</div><div class="card-name">' + esc(name) + '</div></div>';
+                : '') + '><button class="card-del" title="从这间房移除该素材（会通知设备）" onclick="rmRoomMat(event,\'' + escJsA(m.id) + '\')">×</button><div>' + t + '</div><div class="card-name" title="' + escA(name) + '">' + esc(name) + '</div></div>';
         });
     }
     h2 += '</div>';
@@ -1798,16 +1911,19 @@ function rmDevice() {
 //   scenes.A.windows：场景 A 的窗口布局列表（位置/尺寸/内容）
 //   scenes.B.windows：场景 B 的窗口布局列表
 //   scenes[X].master.brightness：该幕总亮度，与每扇窗自己的 brightness 相乘
-//   scenes[X].panel_no：该幕「文件夹 → 墙板编号」绑定表（编辑面见【F-06f】）
 //   scenes[X].play_settings：该幕「文件夹 → 播放顺序」设置表（编辑面见【F-06g】）
+//   config.wallpanel_bindings：房间级「帧码 → 文件夹」学习绑定表 [{frame, folder, source}]，
+//     一格最多两路码（点歌机 / 墙板），不分幕（编辑面见【F-06f】；没有编号体系，墙板上每按下一个键
+//     学到的码直接对一格文件夹）
 //
 // 【与外部信号的关系】
-// 墙板 RS485 信号 → 编号（1~32）→ 按 panel_no 反查那一格 → content.follow 的窗口切过去播放
-// 编号域是 1~32，文件夹是 01~30，两把尺不是一回事（DMX512 尚未实现）
+// 墙板/点歌机 RS485 帧 → 查 wallpanel_bindings 里学过的那条码 → content.follow 的窗口切到对应文件夹播放
+// （同一码在 A/B 两幕切同一格；source 只是给人看的分列标签，设备端只认帧→格）
+// 没学过的键 = 画面不动（没有按编号推算的兜底，学都没学过就无从知道该播哪格）
 // Scene A/B 是用户预先设定的内容标签，永久执行，不随外部信号切换
 //
 // 【scene-prefixed folder ID】
-// MQTT 发送时 folder_mappings / panel_no / play_settings 的文件夹键加幕前缀（A01, B01），
+// MQTT 发送时 folder_mappings / play_settings 的文件夹键加幕前缀（A01, B01），
 // APP 按前缀路由到 scenea/sceneb 子目录；windows 里的 content.folderId 仍是裸 "01"，由设备端解析时补前缀
 //
 // 【Bug 修复历史（2026-04-02）】
@@ -1830,7 +1946,7 @@ function rmDevice() {
 //     crop: { x, y, w, h },        // 输入截取 = Arena InputRect，素材画面内归一化 0..1 的取景区，
 //                                  // 该区域拉伸填满窗口框（允许变形）；缺省即全画面 {0,0,1,1}
 //     content: { type: 'SCENE_A'|'SCENE_B'|'HDMI'|'color', ... }   // 没有 IMAGE；颜色是小写 'color'
-//       SCENE_*：folderId（裸编号 "01"，没按过墙板时播的那格）+ follow（true = 播哪格由墙板编号决定）
+//       SCENE_*：folderId（裸文件夹号 "01"，没按过墙板时播的那格）+ follow（true = 播哪格由墙板学到的码决定）
 //       HDMI：inputIndex；color：color。字段全表以 server.js 头部 WinConfig 为准（服务端整体透传、不解析）
 //   }
 //
@@ -2027,21 +2143,41 @@ function sfCrop() {
 
 // ============================================================================
 // 【F-06f】墙板配置表（工作台「墙板配置」模式）
-// 表形：行 = 文件夹 01~30（与素材目录同一把键），列 = A幕素材数 / A幕编号 / B幕素材数 / B幕编号。
-// A、B 摊成同一行的两列才看得出撞没撞：唯一性口径是「同一幕内一个编号只能对一个文件夹」，
-// 跨幕同号合法（A 的 3 号和 B 的 3 号各切各的幕）。总闸（config.wallpanel_enabled）摆在表头，
-// 现场是一口气的三步：绑编号 → 开闸 → 保存。
-// 编号表下面还跟着两样：只读的「窗口跟随一览」（_wpFollowHtml，写入口只在窗口编辑器）
-// 和串口节点/波特率两格（与设备端 WallPanelLink 同一份白名单，填错保存时被服务端 400 拦下）。
+// 表形：行 = 文件夹 01~30（与素材目录同一把键），列 = A幕素材数 / B幕素材数 / 点歌机码 / 墙板码。
+// 录码有两条路：键盘直接敲，或打开「墙板学习」→ 点某一列的码值框 → 按对应那颗键 →
+// 码值自动填进那一列并当场保存。落库形状只有 config.wallpanel_bindings = [{frame, folder, source}]：
+// 编号（panel_no）与默认编号已于 2026-11-13 整条删除；分幕录码同日删掉。
+// 同一格可以录两个码（一路点歌机、一路墙板），谁按到都切到这一格，A/B 两幕通用。
+// 串口参数（节点/波特率/字符格式）与串口总闸仍走显式「保存」：它们决定收不收得到帧，改错要能回头。
 // ============================================================================
 
-var WP_PANEL_MAX = 32;
 // 串口硬件参数（与服务端 WALLPANEL_BAUDS / WALLPANEL_DEFAULT_PATH 同一份口径，改一边要改另一边）：
 // 不同主板的 485 适配板挂在不同节点（ttyUSB0 / ttyS1 / ttyHSL0），波特率则要等现网抓包定档，
 // 所以两个都做成房间级可配，填错在保存时就被服务端 400 拦下，不会静默回落成"设备自己猜"。
 var WP_SERIAL_BAUDS = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
 var WP_SERIAL_DEFAULT_PATH = '/dev/ttyUSB0';
 var WP_SERIAL_PATH_RE = /^\/dev\/[A-Za-z0-9_-]{1,64}$/;
+// 字符格式三档（与服务端 WALLPANEL_DATA_BITS/PARITIES/STOP_BITS、APK WallPanelLink 同一份）：
+// 这三样还决定设备端的空闲断帧阈值（2 个字符时间），厂家固件默认档各不相同，必须能改。
+var WP_SERIAL_DATA_BITS = [5, 6, 7, 8];
+var WP_SERIAL_PARITIES = [
+    { v: 'none', n: '无' }, { v: 'odd', n: '奇' }, { v: 'even', n: '偶' }
+];
+var WP_SERIAL_STOP_BITS = [1, 2];
+
+/**
+ * 学习绑定表（config.wallpanel_bindings，与服务端 normalizeWallpanelBindings / APK WallPanelBindings 同一份）：
+ * 一条规则 = 一个帧指纹（大写 hex）→ 一个文件夹，同一格允许两路码：点歌机一路、墙板一路。
+ * 谁按到都切到这一格（A/B 共用，不分幕）。来源只是分列标签，设备端不知道也不判断帧是谁发的。
+ * 帧指纹不认语义，所以别家厂家的帧也能学。上限与形状闸与服务端同尺（64 条、1~64 字节的偶数长度大写十六进制）。
+ * 最小 1 字节：小麦那族功能码就是单字节（D3、B5 这种），两位 hex 必须能录能学。
+ */
+var WP_FRAME_HEX_RE = /^([0-9A-F]{2}){1,64}$/;
+var WP_BINDINGS_MAX = 64;
+var WP_SOURCES = [{ v: 'player', n: '点歌机码' }, { v: 'panel', n: '墙板码' }];   // 一格的左右两列
+var WP_FOLDER_COUNT = 30;          // 格子只有 01~30（素材目录那一把尺）
+var WP_LEARN_S_DEFAULT = 20;       // 学习窗长度：够走到墙板前按一下键（上限 60s 由服务端与设备端把关）
+var WP_LEARN_POLL_MS = 1000;       // 等按键时的取帧间隔（设备侧每收到一帧就上报，1s 足够跟手）
 
 /** 串口节点显示值：非法形状（老数据/手填脏值）一律回落到默认节点，跟服务端 roomWallpanelFields 同口径 */
 function _wpPath(v) { return typeof v === 'string' && WP_SERIAL_PATH_RE.test(v) ? v : WP_SERIAL_DEFAULT_PATH; }
@@ -2052,50 +2188,78 @@ function _wpBaud(v) {
     return WP_SERIAL_BAUDS.indexOf(n) >= 0 ? n : null;
 }
 
-/** 设备心跳回传的当前墙板编号（服务端【S-06i】给的 d.panel_no）：越界/缺失一律当"不知道" */
-function _wpNoOf(d) {
-    var n = Number(d && d.panel_no);
-    return (Number.isInteger(n) && n >= 1 && n <= WP_PANEL_MAX) ? n : null;
+/** 档位整数（数据位/停止位）：不在档内当没设，回落默认 —— 与服务端 wallpanelBitChoice 同口径 */
+function _wpBit(v, allowed, dflt) {
+    var n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
+    return allowed.indexOf(n) >= 0 ? n : dflt;
 }
 
-/**
- * 只刷设备行上那枚「N 号」徽章，不整屏重绘：pd() 在窗口编辑器/墙板表开着时故意不重画
- * （见那里），而恰恰是这两块界面最想知道"按下去到没到"。DOM 节点由 rmDevice 常驻渲染，
- * 没号时 display:none，于是编号能跟着心跳自己出现/消失。
- */
-function refreshPanelBadges() {
-    (s.ds || []).forEach(function (d) {
-        var el = document.getElementById('dpn-' + d.id);
-        if (!el) return;
-        var no = _wpNoOf(d);
-        el.textContent = no ? (no + ' 号') : '';
-        el.style.display = no ? '' : 'none';
+/** 校验位：只收 none/odd/even 三个字面量，其余回落 none */
+function _wpParity(v) {
+    var s = typeof v === 'string' ? v.trim().toLowerCase() : '';
+    return WP_SERIAL_PARITIES.some(function (p) { return p.v === s; }) ? s : 'none';
+}
+
+/** 硬件那一段的快照（判「有没有未保存改动」用）：录码是即时保存的，不参与这一份 */
+function _wpHwSnap(d) {
+    return JSON.stringify([d.enabled, d.path, d.baud, d.dataBits, d.parity, d.stopBits]);
+}
+
+/** 码值表的快照（键排序后序列化）：整表写入顺序与两列的录入顺序都不该被当成内容差异 */
+function _wpCodeSnap(d) {
+    var m = d.code || {};
+    return JSON.stringify(Object.keys(m).sort().map(function (f) {
+        var c = m[f] || {};
+        return [f].concat(WP_SOURCES.map(function (x) { return c[x.v] || ''; }));
+    }));
+}
+
+/** 已录多少条码（一格最多两条：点歌机一路 + 墙板一路） */
+function _wpCodeCount(m) {
+    var n = 0;
+    Object.keys(m || {}).forEach(function (k) {
+        WP_SOURCES.forEach(function (x) { if ((m[k] || {})[x.v]) n++; });
     });
+    return n;
 }
 
 /**
- * 墙板表草稿是否有未保存改动（与 _wpDraftOf 建的基线比）。
+ * 墙板表草稿是否有未保存改动（硬件那行与码值表各比各的基线）。
  * 草稿只活在 s._wpDraft：不落库、也不进 s.rooms 那份 config，离开模式就没了。
  */
 function _wpDirty() {
     var d = s._wpDraft;
-    return !!(s._wpMode && d && d.roomId === s.rf && _wpSnap(d) !== d.base);
+    if (!(s._wpMode && d && d.roomId === s.rf)) return false;
+    return _wpHwSnap(d) !== d.baseHw || _wpCodeSnap(d) !== d.baseCode;
 }
 
 /** 有未保存草稿就问一句；返回 false = 用户要留下（调用方负责把刚拨的开关还原） */
 function _confirmDropWpDraft() {
     if (!_wpDirty()) return true;
-    return confirm('墙板表还有未保存的改动（编号/总闸/串口），离开这张表就丢了，不会自动落库。\n确定离开？');
+    return confirm('墙板串口/总闸还有未保存的改动，离开这张表就丢了，不会自动落库。\n确定离开？');
 }
 
 /** 退出墙板模式：草稿是没落库的编辑态，随模式一起丢，重开时按云端真值重建。确认框由调用方弹（见 _exitTableModes） */
 function _exitWpMode() {
     s._wpMode = false;
     s._wpDraft = null;
+    _wpLearnReset();
+}
+
+/** 学习区的界面态清场（关表 / 换房间都走这里）：倒计时停了设备端自己收窗 */
+function _wpLearnReset() {
+    _wpLearnTimer(false);
+    s._wpLearnCell = null;
+    s._wpLearnMode = false;
+    s._wpLearnUntil = 0;
+    s._wpLearnTimeout = false;
+    s._wpNote = '';
+    s._wpFrames = [];
+    s._wpBaseline = null;
 }
 
 /**
- * 「墙板配置」开关：打开 → 整块工作台换成 01~30 × A/B 的编号绑定总表。
+ * 「墙板配置」开关：打开 → 整块工作台换成 01~30 × A/B 的码值总表。
  * 与窗口配置/输入截取/播放设置互斥：各模式都有一套「读整份 config → 改自己的键 → PUT 回去」的入口，
  * 同屏开两个等于后保存的那个把先保存的抹掉（谁都不报错，配置就这么丢了）。
  */
@@ -2105,7 +2269,7 @@ async function sfWP() {
     // 关表：草稿只活在内存里，先问一句再丢（开表那个方向不会有本房间的草稿，不用问）
     if (!bt.checked && !_confirmDropWpDraft()) { bt.checked = true; return; }
     if (bt.checked && !_exitTableModes()) { bt.checked = false; return; }
-    await flushAutoSync();   // 墙板表保存是「GET 最新 config → 改编号 → 整份 PUT」，防抖里还压着一次窗口编辑的话，
+    await flushAutoSync();   // 墙板表保存是「GET 最新 config → 改码值/串口 → 整份 PUT」，防抖里还压着一次窗口编辑的话，
                              // 那份 GET 拿到的是编辑前的 windows，PUT 回去等于把刚改的跟随/文件夹抹掉（和切幕同一个坑）
     s._wpMode = !!bt.checked;
     if (s._wpMode) {
@@ -2114,60 +2278,79 @@ async function sfWP() {
         if (!s._curScene) s._curScene = 'A';
     } else {
         s._wpDraft = null;
+        _wpLearnReset();
     }
     rmDevice();
 }
 
+/** 帧指纹：大写、偶数长度、1~64 字节；脏值一律当"不是帧"（与服务端 WALLPANEL_FRAME_HEX_RE 同一把闸） */
+function _wpFrame(v) {
+    var s = typeof v === 'string' ? v.trim().toUpperCase().replace(/\s+/g, '') : '';
+    return WP_FRAME_HEX_RE.test(s) ? s : '';
+}
+
+/** 格子键 01~30（与素材目录同一把尺）；带幕前缀的旧写法（A01）折回裸格名 */
+function _wpCell(v) {
+    var s = typeof v === 'string' ? v.trim().replace(/^[AB](?=\d{2}$)/, '') : '';
+    return /^\d{2}$/.test(s) && s >= '01' && s <= String(WP_FOLDER_COUNT).padStart(2, '0') ? s : '';
+}
+
+/** 码值来源：player = 点歌机码、panel = 墙板码；没带（存量绑定）按历史学习路径归墙板列 */
+function _wpSrc(v) { return v === 'player' ? 'player' : 'panel'; }
+
+/** 来源的界面名（提示语/自动保存消息共用） */
+function _wpSrcName(v) { return v === 'player' ? '点歌机码' : '墙板码'; }
+
 /**
- * 某一幕的编号绑定表：只认 1~32 整数（脏值当没绑，与服务端 normalizePanelNos 同口径）。
- * 01~30 之外的键原样留着 —— 表只画 30 行，但保存是整表 PUT，丢了那些键等于替别人解绑。
+ * 云端/草稿里的一条规则 → 干净形状，脏的返回 null 丢掉。
+ * 与服务端 normalizeWallpanelRule 同尺：只认 frame + folder + source；存量规则里的 type/no 键直接忽略。
  */
-function _wpNums(cfg, k) {
-    var raw = ((cfg.scenes || {})[k] || {}).panel_no, out = {};
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        Object.keys(raw).forEach(function (fid) {
-            var v = raw[fid];
-            var n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
-            if (Number.isInteger(n) && n >= 1 && n <= WP_PANEL_MAX) out[fid] = n;
-        });
-    }
+function _wpRule(r) {
+    if (!r || typeof r !== 'object') return null;
+    var frame = _wpFrame(r.frame);
+    if (!frame) return null;
+    var fid = _wpCell(String(r.folder == null ? '' : r.folder));
+    return fid ? { frame: frame, folder: fid, source: _wpSrc(r.source) } : null;
+}
+
+/** 规则表：脏的当场丢、同帧/同格同列重复先到先得（与服务端 normalizeWallpanelBindings 同一处理） */
+function _wpRulesOf(raw) {
+    var out = [], seenF = {}, seenS = {};
+    if (!Array.isArray(raw)) return out;
+    raw.forEach(function (r) {
+        var ok = _wpRule(r);
+        if (!ok) return;
+        var slot = ok.folder + '|' + ok.source;
+        if (seenF[ok.frame] || seenS[slot]) return;
+        seenF[ok.frame] = 1;
+        seenS[slot] = 1;
+        out.push(ok);
+    });
     return out;
 }
 
-/** 同幕内撞车的格子 → {文件夹: 编号}。按编号归堆，两个文件夹抢同一个号就都标出来 */
-function _wpDups(nums) {
-    var owner = {}, hit = {};
-    Object.keys(nums || {}).sort().forEach(function (fid) {
-        var no = nums[fid];
-        if (owner[no]) { hit[owner[no]] = no; hit[fid] = no; }
-        else owner[no] = fid;
+/** config.wallpanel_bindings → 码值表 { '01': {player, panel} }（同列先到先得，缺键给空表） */
+function _wpCodeOf(cfg) {
+    var out = {};
+    _wpRulesOf(cfg && cfg.wallpanel_bindings).forEach(function (r) {
+        var cell = out[r.folder] || (out[r.folder] = {});
+        if (!cell[r.source]) cell[r.source] = r.frame;
     });
-    return hit;
+    return out;
 }
 
-/** 冲突文案（前端先拦一道，服务端 findPanelNoConflict 的 400 是兜底，不是给人看的界面） */
-function _wpConflicts(d) {
+/** 码值表 → 落库形状（按帧排序，指纹稳定，roomWallpanelDigest 不会虚报"配置变了"） */
+function _wpBindFromCode(d) {
     var out = [];
-    ['A', 'B'].forEach(function (k) {
-        var hit = _wpDups(d[k]), byNo = {};
-        Object.keys(hit).forEach(function (fid) { (byNo[hit[fid]] = byNo[hit[fid]] || []).push(fid); });
-        Object.keys(byNo).sort(function (a, b) { return a - b; }).forEach(function (no) {
-            out.push((k === 'A' ? '第一幕' : '第二幕') + ' ' + no + ' 号同时绑在 ' + byNo[no].join('、'));
+    Object.keys(d.code || {}).sort().forEach(function (fid) {
+        var cell = d.code[fid] || {};
+        WP_SOURCES.forEach(function (src) {
+            var f = _wpFrame(cell[src.v]);
+            if (f) out.push({ frame: f, folder: fid, source: src.v });
         });
     });
+    out.sort(function (a, b) { return a.frame < b.frame ? -1 : (a.frame > b.frame ? 1 : 0); });
     return out;
-}
-
-/** 规范化快照（键排序后序列化）：判「有没有未保存改动」用，编辑顺序不该被当成内容差异 */
-function _wpSnap(d) {
-    var srt = function (m) { var o = {}; Object.keys(m).sort().forEach(function (k) { o[k] = m[k]; }); return o; };
-    return JSON.stringify([d.enabled, d.defaultNo, d.path, d.baud, srt(d.A), srt(d.B)]);
-}
-
-/** 单个墙板编号：只认 1~WP_PANEL_MAX 的整数（数字或数字字符串），其余一律当"没设" */
-function _wpOne(v) {
-    var n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
-    return (Number.isInteger(n) && n >= 1 && n <= WP_PANEL_MAX) ? n : null;
 }
 
 /** 草稿：只认当前房间（切房间在 sr 里作废），数据取 s.rooms 缓存 —— 与窗口编辑器同一口径；
@@ -2177,28 +2360,16 @@ function _wpDraftOf() {
     var r = s.rooms.find(function (x) { return x.id === s.rf; });
     if (!r) return null;
     var cfg = _loadRoomCfg(r);
-    var d = { roomId: s.rf, enabled: cfg.wallpanel_enabled === true, defaultNo: _wpOne(cfg.wallpanel_default_no),
+    var d = { roomId: s.rf, enabled: cfg.wallpanel_enabled === true,
               path: _wpPath(cfg.wallpanel_serial_path), baud: _wpBaud(cfg.wallpanel_baud),
-              A: _wpNums(cfg, 'A'), B: _wpNums(cfg, 'B') };
-    d.base = _wpSnap(d);
+              dataBits: _wpBit(cfg.wallpanel_data_bits, WP_SERIAL_DATA_BITS, 8),
+              parity: _wpParity(cfg.wallpanel_parity),
+              stopBits: _wpBit(cfg.wallpanel_stop_bits, WP_SERIAL_STOP_BITS, 1),
+              code: _wpCodeOf(cfg) };
+    d.baseHw = _wpHwSnap(d);
+    d.baseCode = _wpCodeSnap(d);
     s._wpDraft = d;
     return d;
-}
-
-/** 一格下拉：选「—」= 不响应（删键，不是写 0）；撞车的格子标红，一眼看出是哪两格在抢 */
-function _wpSelHtml(sc, fid, nums, dups) {
-    var no = nums[fid];
-    var cls = 'wp-sel' + (dups[fid] ? ' conflict' : (no ? ' bound' : ''));
-    var tip = dups[fid] ? ('第' + sc + '幕 ' + dups[fid] + ' 号被两个文件夹同时占用，先改掉一个')
-        : ('第' + sc + '幕按这个文件夹时按几号键；不绑定 = 本幕这格不响应');
-    return '<select class="' + cls + '" name="wpno-' + sc + '-' + fid + '" aria-label="' + escA('第' + sc + '幕 文件夹' + fid + ' 的墙板编号') + '" title="' + escA(tip) + '" onchange="wpSet(\'' + sc + '\',\'' + fid + '\',this.value)">' + _wpNoOptions(no) + '</select>';
-}
-
-/** 编号选项（1~WP_PANEL_MAX，「—」= 没设）：表格每格与总闸旁那个默认编号下拉共用一份 */
-function _wpNoOptions(no) {
-    var o = '<option value="">—</option>';
-    for (var i = 1; i <= WP_PANEL_MAX; i++) o += '<option value="' + i + '"' + (no === i ? ' selected' : '') + '>' + i + '</option>';
-    return o;
 }
 
 /** 波特率选项：「驱动默认」= 不下发速率，设备端保持 open 时驱动给的那一档（现网抓包前不猜） */
@@ -2208,138 +2379,465 @@ function _wpBaudOptions(b) {
     return o;
 }
 
+/** 纯数字档位选项（数据位/停止位）：草稿里存的必然是档内值，不需要"没设"那一格 */
+function _wpOptNums(allowed, cur) {
+    return allowed.map(function (n) {
+        return '<option value="' + n + '"' + (cur === n ? ' selected' : '') + '>' + n + '</option>';
+    }).join('');
+}
+
+/** 校验位选项：界面说人话（无/奇/偶），落库仍是 none/odd/even 那三个字面量 */
+function _wpParityOptions(cur) {
+    return WP_SERIAL_PARITIES.map(function (p) {
+        return '<option value="' + p.v + '"' + (cur === p.v ? ' selected' : '') + '>' + p.n + '</option>';
+    }).join('');
+}
+
+/**
+ * 一格的码值框（点歌机码 / 墙板码各一只）：键盘直接敲（回车或点开别处即保存，清空即删掉这格），
+ * 打开「墙板学习」后点框则改为等按键——敲键盘的手输永远优先。
+ */
+function _wpCodeCellHtml(fid, src, d) {
+    var code = ((d.code || {})[fid] || {})[src] || '';
+    var name = _wpSrcName(src);
+    var waiting = !!(_wpLearning() && s._wpLearnCell && s._wpLearnCell.fid === fid && s._wpLearnCell.src === src);
+    var cls = 'wp-code' + (code ? ' bound' : '') + (waiting ? ' learning' : '');
+    var tip = waiting ? '正在等按键：敲键盘就是手输（会取消学习），点框可取消'
+        : (code ? '已录 ' + code + '（A/B 两幕通用）：直接改，回车或点开别处保存；打开「墙板学习」后点框可重学'
+                : (s._wpLearnMode ? '直接敲十六进制录码；或点一下再按' + (src === 'player' ? '点歌机' : '墙板') + '对应的那颗键'
+                                   : '直接敲十六进制录码，如 D3、F50521030000；打开「墙板学习」后点框可按键学'));
+    return '<span class="wp-code-wrap">'
+        + '<input class="' + cls + '" data-fid="' + fid + '" data-src="' + src + '" value="' + escA(code) + '"'
+        + ' placeholder="' + escA(waiting ? '等按键…' : '点此录码') + '"'
+        + ' aria-label="' + escA('文件夹' + fid + ' 的' + name) + '"'
+        + ' title="' + escA(tip) + '" spellcheck="false" autocomplete="off"'
+        + ' onclick="wpLearnCell(\'' + fid + '\', \'' + src + '\')"'
+        + ' onkeydown="wpCodeKey(event, \'' + fid + '\', \'' + src + '\')"'
+        + ' onchange="wpSetCode(\'' + fid + '\', \'' + src + '\', this.value, this)">'
+        + '<button class="wp-code-x" title="清掉这一列的码值（立刻保存）"'
+        + ' style="' + (code && !waiting ? '' : 'display:none') + '"'
+        + ' onclick="wpClearCode(\'' + fid + '\', \'' + src + '\')">×</button>'
+        + '</span>';
+}
+
+/** 手输的值该做什么：空 = 删这格，脏 = 不落库，同值 = 不动，合法 = 写入（纯函数，自检直接跑） */
+function _wpCodeIntent(raw, had) {
+    var text = typeof raw === 'string' ? raw.trim() : '';
+    if (!text) return { kind: had ? 'clear' : 'none' };
+    var hex = _wpFrame(text);
+    if (!hex) return { kind: 'bad' };
+    return hex === (had || '') ? { kind: 'none' } : { kind: 'set', hex: hex };
+}
+
+/** 码值框里按键：键盘永远优先——敲任何键都先取消这一格的学习窗；回车 = 保存并离开；Esc = 放弃这次输入 */
+function wpCodeKey(ev, fid, src) {
+    if (s._wpLearnCell && s._wpLearnCell.fid === fid && s._wpLearnCell.src === src) { _wpLearnCancel(); _wpPaintCodes(); }
+    if (ev.key === 'Enter') { ev.preventDefault(); ev.target.blur(); return; }
+    if (ev.key === 'Escape') {
+        ev.preventDefault();
+        var d = _wpDraftOf();
+        ev.target.value = ((d && d.code && d.code[fid]) || {})[src] || '';
+        ev.target.blur();
+    }
+}
+
+/** 手输一格：归一后落进草稿并立刻保存；脏值不静默吞掉（还原 + 说一句）。el = 这只输入框，改完把框里的字也摆正 */
+function wpSetCode(fid, src, raw, el) {
+    var d = _wpDraftOf();
+    if (!d || !s.rf) return;
+    var had = ((d.code || {})[fid] || {})[src] || '';
+    var act = _wpCodeIntent(raw, had);
+    if (act.kind === 'none') { if (el) el.value = had; _wpPaintCodes(); return; }
+    if (act.kind === 'bad') {
+        if (el) el.value = had;
+        alert('码值要是 1~64 字节的十六进制（如 D3、F50521030000），字符间的空格会被忽略。');
+        _wpPaintCodes();
+        return;
+    }
+    if (act.kind === 'clear') _wpDropCode(d, fid, src);
+    else _wpPutCode(fid, src, act.hex);
+    if (el) el.value = act.kind === 'clear' ? '' : act.hex;
+    _wpPaintCodes();
+    _wpAutoSaveCodes((act.kind === 'clear' ? '已清掉文件夹 ' + fid + ' 的' : '已录文件夹 ' + fid + ' 的')
+        + _wpSrcName(src) + (act.kind === 'clear' ? '' : '：' + act.hex), true)
+        .catch(function (e) {
+            alert('码值已改，但自动保存失败：' + e.message + '\n点右上「保存」也能把它存下去。');
+        });
+}
+
+/**
+ * 只把各格的框刷成草稿的样子（值/金边/清空键/已录计数）。
+ * 手输不走整表重画：连续敲几格时外层 DOM 一换，焦点和刚敲的字就没了。
+ */
+function _wpPaintCodes() {
+    var d = _wpDraftOf();
+    if (!d) return;
+    var m = d.code || {};
+    var list = document.querySelectorAll('.wp-code');
+    var active = document.activeElement;
+    for (var i = 0; i < list.length; i++) {
+        var fid = list[i].getAttribute('data-fid');
+        var src = _wpSrc(list[i].getAttribute('data-src'));
+        var code = ((m[fid] || {})[src]) || '';
+        if (list[i] !== active) list[i].value = code;   // 正在敲的那一格不碰它已敲的字
+        list[i].classList.toggle('bound', !!code);
+        list[i].placeholder = '点此录码';
+        var x = list[i].parentNode && list[i].parentNode.querySelector('.wp-code-x');
+        if (x) x.style.display = code ? '' : 'none';
+    }
+    var n = _wpCodeCount(m);
+    var c = document.getElementById('wpBound');
+    if (c) c.textContent = '已录 ' + n + ' 个码';
+    var w = document.getElementById('wpEmptyWarn');
+    if (w && n) w.remove();
+}
+
 function _wpTableHtml() {
     var d = _wpDraftOf();
     if (!d) return '<div class="empty" style="margin-top:10px">房间数据还没加载完，关掉「墙板配置」再开一次</div>';
     var r = s.rooms.find(function (x) { return x.id === s.rf; }) || {};
     var cfg = _loadRoomCfg(r);
     var fmA = cfg.scenes.A.folder_mappings, fmB = cfg.scenes.B.folder_mappings;
-    var dupA = _wpDups(d.A), dupB = _wpDups(d.B);
-    var bound = Object.keys(d.A).length + Object.keys(d.B).length;
+    var bound = _wpCodeCount(d.code);
 
     var h = '<div class="wp-bar">';
-    h += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none"><input type="checkbox" id="wpGate" ' + (d.enabled ? 'checked' : '') + ' onchange="wpSetGate(this.checked)"><span style="font-size:12px;color:#ccc">墙板串口总闸</span></label>';
-    // 默认编号：没人按过墙板时（开机/重连）跟随墙板的窗口播哪一格 —— 设备端拿它反查本幕 panel_no，
-    // 查不到才退回窗口自己的 folderId / 自动选择（口径见 MainActivity resolveWindowFolder）
-    var _dn = d.defaultNo;
-    var _dnWhere = _dn ? ['A', 'B'].map(function (k) {
-        var f = Object.keys(d[k]).find(function (x) { return d[k][x] === _dn; });
-        return f ? (k + '幕 ' + f) : '';
-    }).filter(Boolean).join('/') : '';
-    h += '<label style="display:flex;align-items:center;gap:6px"><span style="font-size:12px;color:#ccc">默认编号</span><select class="wp-sel" id="wpDefault" style="width:64px" title="' + escA('没按过墙板时，跟随墙板的窗口播这一号绑定的那一格（A、B 幕各查各的表）；不选 = 各窗退回自己的文件夹') + '" onchange="wpSetDefault(this.value)">' + _wpNoOptions(_dn) + '</select></label>';
-    if (_dn) h += _dnWhere ? '<span style="font-size:11px;color:#666">现在是 ' + esc(_dnWhere) + '</span>'
-        : '<span class="wp-warn">' + _dn + ' 号两幕都没绑格：默认编号暂时不会有效果</span>';
+    // 两个开关都与工作台那排同构（_wbSw 的 44x24 轨道 + 18px 滑块），重绘由各自的 handler 负责
+    h += '<span title="' + escA('设备是否打开 485 串口收帧；关着时串口根本不开，学习也收不到任何帧') + '">'
+        + _wbSw('墙板串口总闸', ['wpGate', 'wpGateSlider', 'wpGateKnob'], d.enabled, '#4caf50', 'wpSetGate(this.checked)')
+        + '</span>';
+    // 学习开关只影响这块界面（点框 → 等按键），与串口总闸是两件事：总闸决定设备收不收 485；
+    // 但收帧是学习的前提，所以开学习时若总闸关着，wpLearnMode 会先问一句要不要顺手开闸
+    h += '<span title="' + escA('打开后点任意一个码值框，再按墙板上对应的键，码值就会填进那个框并立刻保存') + '">'
+        + _wbSw('墙板学习', ['wpLearnMode', 'wpLearnModeSlider', 'wpLearnModeKnob'], s._wpLearnMode, '#f5a623', 'wpLearnMode(this.checked)')
+        + '</span>';
     // 串口硬件参数（房间级，只在这间房的设备上生效）：节点名各板不同，波特率要等现网抓包定档，
     // 两个都得能改；填错在保存时由服务端 400 拦下，不会静默回落成"设备自己猜一个口"
-    h += '<label style="display:flex;align-items:center;gap:6px"><span style="font-size:12px;color:#ccc">串口</span>'
+    h += '<label style="display:flex;align-items:center;gap:6px"><span style="font-size:var(--fs-meta);color:#ccc">串口</span>'
         + '<input id="wpPath" value="' + escA(d.path) + '" size="12" spellcheck="false" autocomplete="off"'
         + ' title="' + escA('485 适配板在设备上的节点名，形如 /dev/ttyUSB0；不确定的话在设备上 ls /dev/tty* 看一眼') + '"'
         + ' onchange="wpSetPath(this.value)"></label>';
-    h += '<label style="display:flex;align-items:center;gap:6px"><span style="font-size:12px;color:#ccc">波特率</span>'
+    h += '<label style="display:flex;align-items:center;gap:6px"><span style="font-size:var(--fs-meta);color:#ccc">波特率</span>'
         + '<select class="wp-sel" id="wpBaud" style="width:88px"'
         + ' title="' + escA('485 总线速率；「驱动默认」= 设备不改串口参数，沿用系统给这个节点的默认速率') + '"'
         + ' onchange="wpSetBaud(this.value)">' + _wpBaudOptions(d.baud) + '</select></label>';
+    // 字符格式：数据位/校验/停止位三格并排（合起来就是常说的 8N1）。设备端的空闲断帧阈值由这三位数
+    // 算出（2 个字符时间），中控厂家固件各家默认档不同，填错的表现是"帧被切成两半"或"两帧并成一帧"
+    var _fmt = d.dataBits + (d.parity === 'odd' ? 'O' : d.parity === 'even' ? 'E' : 'N') + d.stopBits;
+    h += '<label style="display:flex;align-items:center;gap:4px"><span style="font-size:var(--fs-meta);color:#ccc">格式</span>'
+        + '<select class="wp-sel" id="wpDataBits" style="width:52px"'
+        + ' title="' + escA('数据位（' + _fmt + '）：常见 8；只在这些档位里选，填错保存会被服务端拒') + '"'
+        + ' onchange="wpSetBits(this.value)">' + _wpOptNums(WP_SERIAL_DATA_BITS, d.dataBits) + '</select>'
+        + '<select class="wp-sel" id="wpParity" style="width:56px"'
+        + ' title="' + escA('校验位（' + _fmt + '）：无/奇/偶， none 最常见；这一档还参与设备端断帧时间计算') + '"'
+        + ' onchange="wpSetParity(this.value)">' + _wpParityOptions(d.parity) + '</select>'
+        + '<select class="wp-sel" id="wpStopBits" style="width:52px"'
+        + ' title="' + escA('停止位（' + _fmt + '）：常见 1') + '"'
+        + ' onchange="wpSetStop(this.value)">' + _wpOptNums(WP_SERIAL_STOP_BITS, d.stopBits) + '</select></label>';
     if (!WP_SERIAL_PATH_RE.test(d.path)) h += '<span class="wp-warn">串口节点形状不对（要 /dev/ 下的设备名）</span>';
-    h += '<span style="font-size:11px;color:#666">已绑 ' + bound + ' 格</span>';
-    if (_wpSnap(d) !== d.base) h += '<span class="wp-warn">● 有未保存改动</span>';
+    h += '<span id="wpBound" style="font-size:var(--fs-micro);color:#666">已录 ' + bound + ' 个码</span>';
+    if (_wpDirty()) h += '<span class="wp-warn">● 有未保存改动</span>';
     h += '<span style="flex:1"></span>';
-    h += '<button class="btn btn-primary" id="wpSaveBtn" style="padding:5px 18px;font-size:12px" onclick="wpSave()">保存</button>';
-    h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:12px;margin-left:6px" title="丢掉未保存的改动，按云端当前配置重画" onclick="wpReload()">重读</button>';
+    h += '<button class="btn btn-sync" id="wpCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的总闸、串口节点/波特率/字符格式与码值表覆盖到其余所有房间（其它配置一概不碰）" onclick="wpCopyAll()">全局复制</button>';
+    h += '<button class="btn btn-primary" id="wpSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="保存串口参数与总闸（码值是录完立刻保存的，不用点这里）" onclick="wpSave()">保存</button>';
+    h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未保存的串口/总闸改动，按云端当前配置重画" onclick="wpReload()">重读</button>';
     h += '</div>';
 
-    var conf = _wpConflicts(d);
-    if (conf.length) h += '<div class="wp-err" style="margin-top:6px">保存会被服务端拒绝（一键只能对一个文件夹）：' + esc(conf.join('；')) + '</div>';
-    else if (d.enabled && bound === 0) h += '<div class="wp-warn" style="margin-top:6px">总闸已开但一格都没绑：按任何键都不会有反应</div>';
+    if (!s._wpLearnMode) {
+        h += '<div class="wp-hint">两列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。</div>';
+    } else if (_wpLearning()) {
+        var left = Math.max(0, Math.ceil((s._wpLearnUntil - Date.now()) / 1000));
+        var cell = s._wpLearnCell;
+        h += '<div class="wp-hint" style="color:#f5a623">正在等按键（还剩 ' + left + ' 秒）：请按「'
+            + esc(cell ? ('文件夹 ' + cell.fid + ' 的' + _wpSrcName(cell.src)) : '') + '」对应的那颗键；点同一个框可取消。'
+            + (_wpMergeFrames(s._wpFrames || []).length ? ''
+                : (d.enabled ? '　还没收到过帧：先确认串口节点/波特率/字符格式与中控一致。'
+                             : '　还没收到过帧。' + _wpGateHint(d) + '。'))
+            + '</div>';
+    } else {
+        // 学习开着但总闸关着是唯一一个"开了也白开"的组合：这里给的是动作，不是重复下面那句警告
+        h += '<div class="wp-hint" style="color:#f5a623">' + (d.enabled
+            ? '墙板学习已开：点一个码值框（点歌机码或墙板码），再按对应的那颗键。'
+            : '墙板学习已开，但总闸关着：设备不会收帧，先去上面打开总闸。') + '</div>';
+    }
+    if (s._wpLearnTimeout && !_wpLearning()) {
+        h += '<div class="wp-warn" style="margin-top:4px">这次没等到任何帧：确认串口节点/波特率/字符格式与中控一致，以及设备装的是带墙板学习的新版本（旧版不会上报帧）。</div>';
+    }
+    if (s._wpNote) h += '<div class="wp-hint" style="color:#4caf50">✓ ' + esc(s._wpNote) + '</div>';
+    // 关闸是最容易踩的坑（设备连串口都不开），所以不是只在点学习时拦一次，而是常驻一句；
+    // 学习已开时上面那条提示负责说清楚并给动作，这里不重复
+    if (!d.enabled && !s._wpLearnMode) h += '<div class="wp-warn" style="margin-top:6px">' + esc(_wpGateHint(d)) + '</div>';
+    if (d.enabled && bound === 0) h += '<div class="wp-warn" id="wpEmptyWarn" style="margin-top:6px">串口总闸已开但一个码都没录：按任何键都不会有反应</div>';
 
-    h += '<table class="wp-tbl"><thead><tr><th>文件夹</th><th>A幕素材</th><th>A幕编号</th><th>B幕素材</th><th>B幕编号</th></tr></thead><tbody>';
-    for (var i = 1; i <= 30; i++) {
+    // 一格可录两个码（点歌机一路、墙板一路），A/B 两幕通用：按不按得动只看这格在"当前这一幕"里有没有素材
+    h += '<table class="wp-tbl wp-codes"><thead><tr><th>文件夹</th><th>A幕素材</th><th>B幕素材</th><th>点歌机码</th><th>墙板码</th></tr></thead><tbody>';
+    for (var i = 1; i <= WP_FOLDER_COUNT; i++) {
         var f = String(i).padStart(2, '0');
         var ca = (fmA[f] || []).length, cb = (fmB[f] || []).length;
         h += '<tr><td class="wp-fid">' + f + '</td>'
-            + '<td class="wp-cnt' + (ca ? ' has' : '') + '" title="这一幕这格里有几个素材（0 个的话按过去是黑屏）">' + (ca || '—') + '</td>'
-            + '<td>' + _wpSelHtml('A', f, d.A, dupA) + '</td>'
-            + '<td class="wp-cnt' + (cb ? ' has' : '') + '">' + (cb || '—') + '</td>'
-            + '<td>' + _wpSelHtml('B', f, d.B, dupB) + '</td></tr>';
+            + '<td class="wp-cnt' + (ca ? ' has' : '') + '" title="A 幕这格里有几个素材（0 个的话按过去是黑屏）">' + (ca || '—') + '</td>'
+            + '<td class="wp-cnt' + (cb ? ' has' : '') + '" title="B 幕这格里有几个素材（0 个的话按过去是黑屏）">' + (cb || '—') + '</td>'
+            + '<td>' + _wpCodeCellHtml(f, 'player', d) + '</td>'
+            + '<td>' + _wpCodeCellHtml(f, 'panel', d) + '</td></tr>';
     }
     h += '</tbody></table>';
-    h += _wpFollowHtml(cfg, d);
     return h;
+}
+
+/** 多台机的上报并成一份：hex 相同就合计数，age 取最小（最近那次）；脏项与超长的直接丢 */
+function _wpMergeFrames(devList) {
+    var m = {};
+    (devList || []).forEach(function (one) {
+        (one.frames || []).forEach(function (f) {
+            if (!f || typeof f !== 'object') return;
+            var hex = _wpFrame(f.hex);
+            if (!hex) return;
+            var n = Number(f.n), age = Number(f.age);
+            var hit = m[hex];
+            if (hit) { hit.n += Number.isInteger(n) && n > 0 ? n : 1; hit.age = Math.min(hit.age, Number(age) || 0); }
+            else m[hex] = { hex: hex, n: Number.isInteger(n) && n > 0 ? n : 1, age: Math.max(0, Number(age) || 0) };
+        });
+    });
+    return Object.keys(m).map(function (k) { return m[k]; })
+        .sort(function (a, b) { return a.age - b.age || (a.hex < b.hex ? -1 : 1); });
+}
+
+function _wpLearning() { return !!(s._wpLearnUntil && s._wpLearnUntil > Date.now()); }
+
+/** 总闸关着时的提示语（空串 = 已开）：常驻警告与学习窗空帧提示共用同一句，自检直接跑 */
+function _wpGateHint(d) {
+    return (d && d.enabled === true) ? '' : '串口总闸关着：设备不会打开 485 串口，按墙板不会有反应，学习也收不到帧';
+}
+
+/** 「墙板学习」开关：只是这块界面的闸；真开学习窗是点某个码值框那一刻的事 */
+function wpLearnMode(on) {
+    s._wpLearnMode = !!on;
+    if (!on) {
+        _wpLearnCancel();
+        renderWpEditor();
+        return;
+    }
+    // 收帧是学习的前提：总闸关着就顺手打开并落库，不弹窗打断（开学习本身就是"我要录码"的意图）
+    var d = _wpDraftOf();
+    if (d && !d.enabled) {
+        d.enabled = true;
+        wpSave();
+        return;
+    }
+    renderWpEditor();
 }
 
 /**
- * 窗口跟随一览（只读）：这张表让人看清"哪扇窗会被墙板编号带着走、不跟的窗钉死在哪个编号上"。
- * 写入口只有窗口编辑器那个勾选 —— 两处都能写就会互相覆盖（整幕 windows 是覆盖式落库），
- * 所以这里刻意不放输入控件。
- * 编号取的是当前草稿而非云端：改完编号还没保存时，这张表也跟着草稿走，省一次"存了才发现对不上"。
+ * 点码值框（哪一列就是哪一路）：开学习窗，等操作员按下对应的那颗键；再点同一个框 = 取消。
+ * 开窗后设备端会清空帧台账，所以"窗后第一条到达的帧"就是这一下按键。
+ * 学习开关没开时什么也不做——框本身可编辑，点进来是手输。
  */
-function _wpFollowHtml(cfg, d) {
-    var rows = [], orphan = [];
-    ['A', 'B'].forEach(function (sc) {
-        var wins = (cfg.scenes[sc] || {}).windows || [];
-        if (!Array.isArray(wins)) return;
-        wins.forEach(function (w) {
-            if (!w || typeof w !== 'object') return;
-            var ct = w.content || {};
-            var t = String(ct.type || '').toUpperCase();
-            if (t !== 'SCENE_A' && t !== 'SCENE_B') return;   // HDMI/测试背景播的不是文件夹，没有可跟的东西
-            // 挂在 A 幕却播 B 幕的窗口，设备端和试播解析都不认（两边都按"所在幕 + 本幕类型"筛）
-            if (t !== 'SCENE_' + sc) { orphan.push((w.name || w.id) + '（在' + sc + '幕，内容却是' + t + '）'); return; }
-            rows.push({ sc: sc, id: String(w.id), name: w.name || w.id, ct: ct });
-        });
-    });
-    var h = '<div class="wp-sub">窗口跟随一览</div>';
-    if (orphan.length) h += '<div class="wp-err" style="margin-bottom:4px">这些窗口所在幕与内容类型不符，设备端不认，去窗口编辑器改回来：' + esc(orphan.join('；')) + '</div>';
-    if (!rows.length) return h + '<div style="color:#555;font-size:11px">这房间还没有播场景的窗口</div>';
-    h += '<table class="wp-tbl"><thead><tr><th>窗口</th><th>幕</th><th>播哪个文件夹</th><th>该格编号</th><th>跟随墙板</th></tr></thead><tbody>';
-    rows.forEach(function (r) {
-        var follow = r.ct.follow === true;
-        var fid = String(r.ct.folderId || '').trim();
-        var no = fid ? (d[r.sc] || {})[fid] : null;
-        h += '<tr><td>' + esc(r.name) + '<span class="wp-fid" style="margin-left:6px">' + esc(r.id) + '</span></td>'
-            + '<td>' + r.sc + '</td>'
-            + '<td>' + (follow ? '按编号切换' + (fid ? '（默认 ' + esc(fid) + '）' : '（默认自动）')
-                                : fid ? '固定 ' + esc(fid) : '自动（首个有素材文件夹）') + '</td>'
-            // 跟随窗的「该格编号」= 默认那格的编号：没绑就说明按任何键都切不回这格，只有没人按过墙板时才播它
-            + '<td>' + (!fid ? '—' : no ? esc(String(no)) + ' 号' + (follow ? '（默认）' : '')
-                                       : follow ? '<span class="wp-warn">未绑，切不回</span>' : '<span class="wp-warn">未绑</span>') + '</td>'
-            + '<td class="wp-cnt' + (follow ? ' has' : '') + '">' + (follow ? '开' : '关') + '</td></tr>';
-    });
-    h += '</tbody></table>';
-    h += '<div style="color:#666;font-size:11px;margin-top:4px">「跟随墙板」在窗口编辑器里勾选，本表只读。</div>';
-    return h;
+async function wpLearnCell(fid, src) {
+    if (!_wpDraftOf() || !s.rf) return;
+    src = _wpSrc(src);
+    if (s._wpLearnCell && s._wpLearnCell.fid === fid && s._wpLearnCell.src === src) { _wpLearnCancel(); renderWpEditor(); return; }
+    if (!s._wpLearnMode) return;
+    // 同一时间只等一格：设备端只有一个台账，两格一起等会抢同一帧
+    if (s._wpLearnCell) _wpLearnCancel();
+    s._wpLearnCell = { fid: fid, src: src };
+    s._wpLearnUntil = Date.now() + WP_LEARN_S_DEFAULT * 1000;
+    s._wpLearnTimeout = false;
+    s._wpNote = '';
+    s._wpFrames = [];
+    s._wpBaseline = {};
+    // 先记一份"开窗前就在跑的帧"（点歌机常年广播）：只有窗后新出现的帧才算候选
+    try {
+        s._wpFrames = asList(await apiGet('/api/devices?room_id=' + encodeURIComponent(s.rf)));
+    } catch (e) {}
+    if (!s._wpLearnCell || s._wpLearnCell.fid !== fid || s._wpLearnCell.src !== src) return;   // 等帧期间被取消（点框/敲键盘）就不要再开窗
+    _wpMergeFrames(s._wpFrames).forEach(function (f) { s._wpBaseline[f.hex] = 1; });
+    try {
+        await apiPost('/api/rooms/' + encodeURIComponent(s.rf) + '/wallpanel/learn',
+            { on: true, seconds: WP_LEARN_S_DEFAULT });
+    } catch (e) {
+        s._wpLearnCell = null;
+        s._wpLearnUntil = 0;
+        alert('开学习窗失败：' + e.message);
+        renderWpEditor();
+        return;
+    }
+    if (!s._wpLearnCell || s._wpLearnCell.fid !== fid || s._wpLearnCell.src !== src) {   // 开窗请求飞在路上时被取消：顺手把设备窗收掉
+        apiPost('/api/rooms/' + encodeURIComponent(s.rf) + '/wallpanel/learn', { on: false }).catch(function () {});
+        return;
+    }
+    renderWpEditor();
+    _wpLearnTimer(true);
 }
 
-/** 重画配置表（整表自替换：下拉只在 change 后才重绘，没有输入焦点被打断的问题） */
+/** 取消正在等的框（设备端有自带倒计时，最迟 60s 自己收窗；这里顺手告诉它一声） */
+function _wpLearnCancel() {
+    _wpLearnTimer(false);
+    var was = !!s._wpLearnCell;
+    s._wpLearnCell = null;
+    s._wpLearnUntil = 0;
+    if (was && s.rf) {
+        apiPost('/api/rooms/' + encodeURIComponent(s.rf) + '/wallpanel/learn', { on: false }).catch(function () {});
+    }
+}
+
+/** 等按键时的取帧节拍：1s 一次，够跟手又不至于把接口刷爆；只在等按键时跑 */
+function _wpLearnTimer(on) {
+    clearInterval(s._wpLearnTimer);
+    s._wpLearnTimer = null;
+    if (on) s._wpLearnTimer = setInterval(_wpLearnTick, WP_LEARN_POLL_MS);
+}
+
+async function _wpLearnTick() {
+    if (!s._wpLearnCell) { _wpLearnTimer(false); return; }
+    if (!_wpLearning()) {
+        // 窗到点了还没有帧：收窗，提示留给界面（操作员这时可能正走回电脑前，弹窗反而挡手）
+        s._wpLearnTimeout = true;
+        _wpLearnCancel();
+        renderWpEditor();
+        return;
+    }
+    var list;
+    try { list = asList(await apiGet('/api/devices?room_id=' + encodeURIComponent(s.rf))); }
+    catch (e) { return; }
+    if (!s._wpLearnCell) return;   // 请求飞行途中被取消（点框/敲键盘）：不能再用这一拍去重画，手输的字会被吞
+    s._wpFrames = list;
+    var fresh = _wpFreshFrames(list);
+    if (!fresh.length) { renderWpEditor(); return; }
+    // 取窗后"最早到"的那一帧：设备开窗时清了台账，age 最大的那条就是操作员按的第一下
+    fresh.sort(function (a, b) { return b.age - a.age; });
+    wpLearnDone(fresh[0].hex);
+}
+
+/** 窗后新出现的帧（多台设备按 hex 合并） */
+function _wpFreshFrames(devList) {
+    return _wpMergeFrames(devList).filter(function (f) { return !(s._wpBaseline && s._wpBaseline[f.hex]); });
+}
+
+/** 录到一帧：填进点中的那一列、立刻保存、收窗 */
+function wpLearnDone(hex) {
+    var cell = s._wpLearnCell;
+    if (!_wpDraftOf() || !cell) return;
+    _wpLearnCancel();
+    _wpPutCode(cell.fid, cell.src, hex);
+    s._wpFrames = [];
+    renderWpEditor();
+    _wpAutoSaveCodes('已录文件夹 ' + cell.fid + ' 的' + _wpSrcName(cell.src) + '：' + hex).catch(function (e) {
+        alert('码值已填进框，但自动保存失败：' + e.message + '\n点右上「保存」也能把它存下去。');
+    });
+}
+
+/** 写一格码值：一个码只能落一格（含两列之间），原来占这个码的那一列让位 */
+function _wpPutCode(fid, src, hex) {
+    var d = _wpDraftOf();
+    if (!d) return;
+    var m = d.code = d.code || {};
+    Object.keys(m).forEach(function (k) {
+        var c = m[k] || {};
+        WP_SOURCES.forEach(function (x) { if (c[x.v] === hex) delete c[x.v]; });
+        if (!c.player && !c.panel) delete m[k];
+    });
+    (m[fid] = m[fid] || {})[_wpSrc(src)] = hex;
+}
+
+/** 删掉一格某一列的码（整个文件夹空到没码就把键也去掉） */
+function _wpDropCode(d, fid, src) {
+    var m = (d && d.code) || {};
+    var c = m[fid];
+    if (!c) return;
+    delete c[_wpSrc(src)];
+    if (!c.player && !c.panel) delete m[fid];
+}
+
+/** 清掉一格某一列的码值（立刻保存；只刷框，不整表重画，焦点留在原处） */
+function wpClearCode(fid, src) {
+    var d = _wpDraftOf();
+    src = _wpSrc(src);
+    if (!d || !((d.code || {})[fid] || {})[src]) return;
+    _wpDropCode(d, fid, src);
+    _wpPaintCodes();
+    _wpAutoSaveCodes('已清掉文件夹 ' + fid + ' 的' + _wpSrcName(src), true).catch(function (e) {
+        alert('清掉了，但自动保存失败：' + e.message + '\n点右上「保存」也能把它存下去。');
+    });
+}
+
+/**
+ * 码值改动后的自动保存：读云端最新 config → 只把学习表换成草稿里的 → PUT。
+ * 只写学习表，串口/总闸/窗口一概不碰（那些还有自己的「保存」）。
+ * 串行化：连录几格时后一次要等前一次落库，否则两次 GET→PUT 会互相覆盖。
+ * soft = 手输路径：落库后不整表重画（框已经刷过），免得打断连续敲格子。
+ */
+function _wpAutoSaveCodes(okMsg, soft) {
+    var d = _wpDraftOf();
+    if (!d || !s.rf) return Promise.resolve();
+    var want = _wpCodeSnap(d), binds = _wpBindFromCode(d);
+    var job = function () {
+        return flushAutoSync()
+            .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(s.rf)); })
+            .then(function (roomObj) {
+                if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
+                var cfg = _loadRoomCfg(roomObj);
+                cfg.wallpanel_bindings = binds;
+                delete cfg.wallpanel_default_no;   // 旧字段顺手清掉（设备端已不读）
+                return apiCall('/api/rooms/' + encodeURIComponent(s.rf), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: JSON.stringify(cfg) })
+                }).then(function () { return cfg; });
+            })
+            .then(function (cfg) {
+                var idx = s.rooms.findIndex(function (x) { return x.id === s.rf; });
+                if (idx >= 0) {
+                    var room = JSON.parse(JSON.stringify(s.rooms[idx]));
+                    room.config = JSON.stringify(cfg);
+                    s.rooms[idx] = room;
+                }
+                var cur = _wpDraftOf();
+                if (cur) cur.baseCode = want;   // 这一份已落库，"未保存"标记只跟串口/总闸走
+                if (soft) { _wpPaintCodes(); return; }
+                if (okMsg) s._wpNote = okMsg;
+                renderWpEditor();
+            });
+    };
+    s._wpSaveQ = (s._wpSaveQ || Promise.resolve()).then(job, job);   // 前一次失败也要接着排
+    return s._wpSaveQ;
+}
+
+/** 保存前自检：条数上限（服务端同一道闸），形状在 _wpRule 那关已经丢干净了 */
+function _wpBindErrors(d) {
+    var n = _wpBindFromCode(d || {}).length;
+    return n > WP_BINDINGS_MAX ? ['录了 ' + n + ' 个码，超过上限 ' + WP_BINDINGS_MAX + ' 个'] : [];
+}
+
+/**
+ * 重画配置表（整表自替换：下拉只在 change 后才重绘，没有输入焦点被打断的问题）。
+ * 码值框例外——点框开学习窗也会走这里，焦点不还回去的话就没法接着改成手输；
+ * 学到的帧到达时也重画一次，这时焦点早已不在框里，还回去也无害。
+ */
 function renderWpEditor() {
     var g = document.getElementById('dg');
     if (!g) return;
+    var ae = document.activeElement;
+    var keep = ae && ae.classList && ae.classList.contains('wp-code')
+        ? { fid: ae.getAttribute('data-fid'), src: ae.getAttribute('data-src') } : null;
+    var caret = keep ? (ae.selectionStart | 0) : 0;
     var html = '<div id="wpWrap">' + _wpTableHtml() + '</div>';
     var old = document.getElementById('wpWrap');
     if (old) old.outerHTML = html;
     else g.insertAdjacentHTML('beforeend', html);
+    if (keep) {
+        var again = g.querySelector('.wp-code[data-fid="' + keep.fid + '"][data-src="' + keep.src + '"]');
+        if (again) {
+            again.focus();
+            try { again.setSelectionRange(caret, caret); } catch (e) {}
+        }
+    }
 }
 
-/** 改一格草稿（只动内存，点「保存」才落库）；选「—」= 解绑，删键 */
-function wpSet(sc, fid, v) {
-    var d = _wpDraftOf();
-    if (!d) return;
-    var n = _wpOne(v);
-    if (n) d[sc][fid] = n; else delete d[sc][fid];
-    renderWpEditor();
-}
-
+/** 改总闸（只动草稿，点「保存」才落库）；关闸时设备会停链路收不到帧，正在等的框顺势取消 */
 function wpSetGate(on) {
     var d = _wpDraftOf();
     if (!d) return;
     d.enabled = !!on;
-    renderWpEditor();
-}
-
-/** 默认编号（同样只改草稿）：「—」= 清空，落库存 null，设备端把"没设"当 0 处理 */
-function wpSetDefault(v) {
-    var d = _wpDraftOf();
-    if (!d) return;
-    d.defaultNo = _wpOne(v);
+    if (!d.enabled) _wpLearnCancel();
     renderWpEditor();
 }
 
@@ -2358,6 +2856,28 @@ function wpSetBaud(v) {
     renderWpEditor();
 }
 
+/** 字符格式三格：档位都在白名单里，直接归一收进草稿（越界当没设，回落 8N1 = 历史行为） */
+function wpSetBits(v) {
+    var d = _wpDraftOf();
+    if (!d) return;
+    d.dataBits = _wpBit(v, WP_SERIAL_DATA_BITS, 8);
+    renderWpEditor();
+}
+
+function wpSetParity(v) {
+    var d = _wpDraftOf();
+    if (!d) return;
+    d.parity = _wpParity(v);
+    renderWpEditor();
+}
+
+function wpSetStop(v) {
+    var d = _wpDraftOf();
+    if (!d) return;
+    d.stopBits = _wpBit(v, WP_SERIAL_STOP_BITS, 1);
+    renderWpEditor();
+}
+
 /** 丢掉草稿、现读云端最新配置重画（重读不写库，任何设备都不被打扰） */
 async function wpReload() {
     if (!s.rf) return;
@@ -2372,17 +2892,32 @@ async function wpReload() {
 }
 
 /**
- * 整表保存：先 GET 云端最新 config（s.rooms 可能已经是几分钟前的快照），只改这三样再 PUT，
- * 与调试开关同一套读后写。panel_no 必须 A/B 两幕都带 —— 服务端 mergeSceneConfig 是
- * 「带键即按传入落库、没带才继承」，少带一幕那一幕的解绑就永远落不下去；
- * 全空时带 {} 也安全：buildPrefixedScenes 不给空表落键，rev 不动，设备不会白重同步一次。
+ * 当前草稿里的墙板字段：保存与「全局复制」共用这一份口径，别处不要再手抄一遍键名。
+ * 总闸严格布尔（与 roomWallpanelFields 同尺），学习表归一成平铺数组。
+ */
+function _wpFieldsOf(d) {
+    return {
+        wallpanel_enabled: d.enabled === true,
+        wallpanel_serial_path: d.path,
+        wallpanel_baud: d.baud,              // null = 驱动默认，设备端不改串口速率
+        wallpanel_data_bits: d.dataBits,
+        wallpanel_parity: d.parity,
+        wallpanel_stop_bits: d.stopBits,
+        wallpanel_bindings: _wpBindFromCode(d)
+    };
+}
+
+/**
+ * 保存这一页：先 GET 云端最新 config（s.rooms 可能已经是几分钟前的快照），
+ * 只改墙板字段再 PUT，与调试开关同一套读后写。
+ * 码值平时是录完立刻自动保存的，这里再写一遍是为了兜住"自动保存那一次失败"的情况。
  */
 async function wpSave() {
     var d = _wpDraftOf();
     if (!d || !s.rf) return;
-    var conf = _wpConflicts(d);
-    if (conf.length) { alert('先解开撞车的墙板编号：\n' + conf.join('\n')); return; }
     if (!WP_SERIAL_PATH_RE.test(d.path)) { alert('串口节点要写成 /dev/ 下的设备名，例如 ' + WP_SERIAL_DEFAULT_PATH); return; }
+    var bindErr = _wpBindErrors(d);
+    if (bindErr.length) { alert('先处理码值：\n' + bindErr.join('\n')); return; }
     var btn = document.getElementById('wpSaveBtn');
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
     var cfg;
@@ -2394,19 +2929,16 @@ async function wpSave() {
         var roomObj = await apiGet('/api/rooms/' + encodeURIComponent(s.rf));
         if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
         cfg = _loadRoomCfg(roomObj);
-        cfg.wallpanel_enabled = d.enabled;
-        cfg.wallpanel_default_no = d.defaultNo;   // null = 没设，服务端与设备端都按"没有默认编号"处理
-        cfg.wallpanel_serial_path = d.path;
-        cfg.wallpanel_baud = d.baud;              // null = 驱动默认，设备端不改串口速率
-        cfg.scenes.A.panel_no = d.A;
-        cfg.scenes.B.panel_no = d.B;
+        var fields = _wpFieldsOf(d);
+        Object.keys(fields).forEach(function (k) { cfg[k] = fields[k]; });
+        delete cfg.wallpanel_default_no;          // 旧字段顺手清掉（设备端已不读）
         await apiCall('/api/rooms/' + encodeURIComponent(s.rf), {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ config: JSON.stringify(cfg) })
         });
     } catch (e) {
-        // 失败时草稿基线没动：重绘后那几格仍然标着「有未保存改动」，不会给人已经存好的假象
+        // 失败时草稿基线没动：重绘后仍然标着「有未保存改动」，不会给人已经存好的假象
         if (btn) { btn.disabled = false; btn.textContent = '保存'; }
         alert('墙板配置保存失败: ' + e.message);
         renderWpEditor();
@@ -2421,6 +2953,63 @@ async function wpSave() {
     }
     s._wpDraft = null;
     renderWpEditor();
+}
+
+/**
+ * 全局复制：把当前房间的墙板字段（总闸/串口/字符格式/码值表）覆盖到其余所有房间。
+ * 每间房都走读后写、只动 wallpanel_* 七项，其它配置（场景/窗口/播放设置/调试）一概不碰；
+ * 复制完把当前房间也存一次，保证"复制出去的"就是"这里留下的"。
+ * 一间失败不拦后面：最后报出成功数与失败名单。
+ */
+async function wpCopyAll() {
+    var d = _wpDraftOf();
+    if (!d || !s.rf || s._wpCopying) return;
+    if (!WP_SERIAL_PATH_RE.test(d.path)) { alert('串口节点要写成 /dev/ 下的设备名，例如 ' + WP_SERIAL_DEFAULT_PATH); return; }
+    var bindErr = _wpBindErrors(d);
+    if (bindErr.length) { alert('先处理码值：\n' + bindErr.join('\n')); return; }
+    var btn = document.getElementById('wpCopyBtn');
+    if (btn) btn.disabled = true;
+    var list;
+    try { list = asList(await apiGet('/api/rooms')); }
+    catch (e) { if (btn) btn.disabled = false; alert('取房间列表失败: ' + e.message); return; }
+    var others = list.filter(function (r) { return r && r.id !== s.rf; });
+    if (!others.length) { if (btn) btn.disabled = false; alert('没有其它房间可覆盖。'); return; }
+    if (!confirm('把当前房间的墙板设置（总闸、串口节点/波特率/字符格式、码值表）覆盖到其余 '
+        + others.length + ' 间房？\n\n它们原本的墙板设置会被整体替换，其它配置不受影响。')) {
+        if (btn) btn.disabled = false;
+        return;
+    }
+    s._wpCopying = true;
+    var fields = _wpFieldsOf(d);
+    var ok = 0, bad = [];
+    try {
+        await flushAutoSync();   // 这次连发 GET→PUT 会整份覆盖各房 config，先落掉窗口编辑的防抖改动
+        for (var i = 0; i < others.length; i++) {
+            var r = others[i];
+            if (btn) btn.textContent = '复制中 ' + (i + 1) + '/' + others.length + '…';
+            try {
+                var roomObj = await apiGet('/api/rooms/' + encodeURIComponent(r.id));
+                if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
+                var cfg = _loadRoomCfg(roomObj);
+                Object.keys(fields).forEach(function (k) { cfg[k] = fields[k]; });
+                delete cfg.wallpanel_default_no;
+                await apiCall('/api/rooms/' + encodeURIComponent(r.id), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: JSON.stringify(cfg) })
+                });
+                ok++;
+            } catch (e) { bad.push((r.name || r.id) + '：' + e.message); }
+        }
+        await wpSave();          // 当前房间自己也落一份（顺带按落库真值重画）
+    } finally {
+        s._wpCopying = false;
+        if (btn) btn.disabled = false;
+        if (btn) btn.textContent = '全局复制';
+    }
+    s._wpNote = '已把墙板设置覆盖到 ' + ok + ' 间房' + (bad.length ? '，' + bad.length + ' 间失败' : '');
+    renderWpEditor();
+    if (bad.length) alert('有 ' + bad.length + ' 间房没覆盖成功：\n' + bad.join('\n'));
 }
 
 // ============================================================================
@@ -2559,14 +3148,14 @@ function _psTableHtml() {
     var set = Object.keys(d.A).length + Object.keys(d.B).length;
 
     var h = '<div class="wp-bar">';
-    h += '<span style="font-size:12px;color:#ccc">按文件夹设置播放行为</span>';
-    h += '<span style="font-size:11px;color:#666">已设 ' + set + ' 格</span>';
+    h += '<span style="font-size:var(--fs-meta);color:#ccc">按文件夹设置播放行为</span>';
+    h += '<span style="font-size:var(--fs-micro);color:#666">已设 ' + set + ' 格</span>';
     if (_psSnap(d) !== d.base) h += '<span class="wp-warn">● 有未保存改动</span>';
     h += '<span style="flex:1"></span>';
-    h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:12px" onclick="psSave()">保存</button>';
-    h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:12px;margin-left:6px" title="丢掉未保存的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
+    h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" onclick="psSave()">保存</button>';
+    h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未保存的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:11px;margin-top:6px">素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环。</div>';
+    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
         + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th></tr>'
@@ -2747,7 +3336,7 @@ function _designToolsHtml() {
 /**
  * 保存/撤掉输出基准。口径同 wpSave：先 flushAutoSync 把防抖里的窗口编辑落库，
  * 再 GET 房间真值改这一个键、整份 PUT 回去 —— config PUT 是整体替换，
- * 拿 s.rooms 里那份旧的覆盖过去会抹掉别人刚改的素材映射/墙板编号。
+ * 拿 s.rooms 里那份旧的覆盖过去会抹掉别人刚改的素材映射/墙板码值。
  * w、h 都给 0 = 撤掉基准，回到 1920×1080 设计稿；越界或非整数由前端先挡、服务端再挡一道（400）。
  * 服务端收敛点按 rev 差异发 update_windows，设备原地重排，不打断正在播的视频。
  */
@@ -2817,7 +3406,7 @@ function _winGeomRowsHtml(w, asCrop) {
     h += '<div class="win-ratio-presets">';
     ratioPresets.forEach(function(p) { h += '<button class="win-ratio-btn" onclick="' + (asCrop ? 'setCropRatio' : 'setWinRatio') + '(\'' + p.w + ',' + p.h + '\')">' + p.label + '</button>'; });
     h += '</div>';
-    h += '<div style="color:#666;font-size:10px;padding:2px 0 6px">点一下框体即聚焦，之后按 ← ↑ → ↓ 微调位置 1px，Shift + 方向键 10px'
+    h += '<div style="color:#666;font-size:var(--fs-micro);padding:2px 0 6px">点一下框体即聚焦，之后按 ← ↑ → ↓ 微调位置 1px，Shift + 方向键 10px'
         + (asCrop ? '' : '；拖动与拖角默认吸附画布/其它窗口的边和中心，按住 Shift 临时不吸（开关在画布右上角）') + '</div>';
     return h;
 }
@@ -2828,7 +3417,7 @@ function _winFlipRotRowsHtml(w) {
     var _wrot = w.rotation || 0;
     var h = '<div class="win-prop-row"><label>镜像</label><select onchange="updWinField(\'flip\',this.value)"><option value="none"' + (_wflip==='none'?' selected':'') + '>无</option><option value="h"' + (_wflip==='h'?' selected':'') + '>水平</option><option value="v"' + (_wflip==='v'?' selected':'') + '>垂直</option></select></div>';
     h += '<div class="win-prop-row"><label>旋转</label><div style="display:flex;gap:4px;flex:1">';
-    [0,90,180,270].forEach(function(_r) { h += '<button class="win-content-type-btn' + (_wrot===_r?' active':'') + '" onclick="updWinRot(' + _r + ')" style="flex:1;padding:3px 0;font-size:11px">' + _r + '°</button>'; });
+    [0,90,180,270].forEach(function(_r) { h += '<button class="win-content-type-btn' + (_wrot===_r?' active':'') + '" onclick="updWinRot(' + _r + ')" style="flex:1;padding:3px 0;font-size:var(--fs-micro)">' + _r + '°</button>'; });
     h += '</div></div>';
     return h;
 }
@@ -2878,9 +3467,9 @@ function renderWinEditorFull() {
     h += _designToolsHtml();
     h += '</div>';
     h += '<div class="win-sidebar">';
-    h += '<div class="win-list"><div class="win-list-header"><span>窗口</span><button class="btn btn-primary" style="padding:2px 8px;font-size:11px" onclick="addWin()">+ 添加</button></div><div class="win-list-body" id="winListBody">';
-    if (wins.length === 0) { h += '<div style="color:#555;font-size:11px;text-align:center;padding:20px 0">暂无窗口</div>'; }
-    else { wins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="event.stopPropagation();selWin(\'' + escJsA(w.id) + '\')"><span class="win-item-name">' + esc(w.name||w.id) + '</span><button class="win-item-del" onclick="delWin(event,\'' + escJsA(w.id) + '\')">×</button></div>'; }); }
+    h += '<div class="win-list"><div class="win-list-header"><span>窗口</span><button class="btn btn-primary btn-sm" title="新建一个窗口，名称自动接着编号" onclick="addWin()">+ 添加</button></div><div class="win-list-body" id="winListBody">';
+    if (wins.length === 0) { h += '<div style="color:#555;font-size:var(--fs-micro);text-align:center;padding:20px 0">暂无窗口</div>'; }
+    else { wins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="event.stopPropagation();selWin(\'' + escJsA(w.id) + '\')"><span class="win-item-name">' + esc(w.name||w.id) + '</span><button class="win-item-del" title="删除这个窗口" onclick="delWin(event,\'' + escJsA(w.id) + '\')">×</button></div>'; }); }
     h += '</div></div>';
     h += '<div class="win-prop-panel" id="winPropPanel"><div class="win-prop-title">属性</div>';
     if (s._selWin) {
@@ -2900,18 +3489,18 @@ function renderWinEditorFull() {
             var _scCfg = (cfg.scenes && cfg.scenes[folderScene]) ? cfg.scenes[folderScene] : null;
             var _scFM = (_scCfg && _scCfg.folder_mappings) ? _scCfg.folder_mappings : {};
             var _fids = Object.keys(_scFM || {});
-            h += '<div class="win-prop-row"><label>文件夹</label><select id="wpFolder" onchange="updWinContent(\'folderId\',this.value)" style="flex:1;background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:4px 6px;font-size:12px">';
+            h += '<div class="win-prop-row"><label>文件夹</label><select id="wpFolder" onchange="updWinContent(\'folderId\',this.value)" style="flex:1;background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:4px 6px;font-size:var(--fs-meta)">';
             h += '<option value=""' + (!ct.folderId ? ' selected' : '') + '>自动（首个有素材文件夹）</option>';
             _fids.forEach(function(_fid) {
                 var _cnt = (_scFM[_fid] && _scFM[_fid].length) ? _scFM[_fid].length : 0;
                 h += '<option value="' + escA(_fid) + '"' + (String(ct.folderId) === _fid ? ' selected' : '') + '>文件夹 ' + esc(_fid) + (_cnt > 0 ? '（' + _cnt + '个素材）' : '（无素材）') + '</option>';
             });
             h += '</select></div>';
-            // 墙板跟随：本窗口播哪一格由墙板编号决定（设备端拿 scenes[幕].panel_no 反查）。
+            // 墙板跟随：本窗口播哪一格由墙板学到的码值决定（设备端查平铺的 wallpanel_bindings，不分幕）。
             // 与上面的文件夹不打架 —— folderId 是"这台机还没人按过墙板时的默认那格"
             var _fol = ct.follow === true;
             h += '<div class="win-prop-row"><label>跟随墙板</label><input type="checkbox"' + (_fol ? ' checked' : '') + ' onchange="updWinContent(\'follow\',this.checked)" style="width:auto">';
-            h += '<span style="color:#888;font-size:10px;margin-left:6px">' + (_fol ? '按墙板编号切本窗口的文件夹，上面=没按过时的默认' : '固定播上面选的文件夹，不受墙板影响') + '</span></div>';
+            h += '<span style="color:#888;font-size:var(--fs-micro);margin-left:6px">' + (_fol ? '按墙板学到的码切换本窗口的文件夹，上面=没按过时的默认' : '固定播上面选的文件夹，不受墙板影响') + '</span></div>';
         }
         if (ctType === 'color') {
             h += '<div class="win-prop-row"><label>颜色</label><input type="color" id="wpColor" value="' + escA(ct.color||'#000000') + '" oninput="updWinContent(\'color\',this.value)" style="width:60px;height:28px;border-radius:4px;border:1px solid #3a3a3a;background:#2a2a2a;cursor:pointer"></div>';
@@ -2922,19 +3511,19 @@ function renderWinEditorFull() {
         var _wop = (w.opacity == null) ? 1 : w.opacity;
         var _wbr = (w.brightness == null) ? 1 : w.brightness;
         var _wen = (w.enabled == null) ? true : w.enabled;
-        h += '<div class="win-prop-row"><label>透明度</label><input type="range" min="0" max="100" value="' + Math.round(_wop*100) + '" oninput="updWinFieldLocal(\'opacity\',this.value/100);document.getElementById(\'wpOpacityV\').textContent=this.value+\'%\'" onchange="autoSyncWinConfig()" style="flex:1"><span id="wpOpacityV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wop*100) + '%</span></div>';
-        h += '<div class="win-prop-row"><label>亮度</label><input type="range" min="0" max="100" value="' + Math.round(_wbr*100) + '" oninput="updWinFieldLocal(\'brightness\',this.value/100);document.getElementById(\'wpBrightnessV\').textContent=this.value+\'%\'" onchange="autoSyncWinConfig()" style="flex:1"><span id="wpBrightnessV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_wbr*100) + '%</span></div>';
+        h += '<div class="win-prop-row"><label>透明度</label><input type="range" min="0" max="100" value="' + Math.round(_wop*100) + '" oninput="updWinFieldLocal(\'opacity\',this.value/100);document.getElementById(\'wpOpacityV\').textContent=this.value+\'%\'" onchange="autoSyncWinConfig()" style="flex:1"><span id="wpOpacityV" style="color:#888;font-size:var(--fs-micro);width:32px;text-align:right">' + Math.round(_wop*100) + '%</span></div>';
+        h += '<div class="win-prop-row"><label>亮度</label><input type="range" min="0" max="100" value="' + Math.round(_wbr*100) + '" oninput="updWinFieldLocal(\'brightness\',this.value/100);document.getElementById(\'wpBrightnessV\').textContent=this.value+\'%\'" onchange="autoSyncWinConfig()" style="flex:1"><span id="wpBrightnessV" style="color:#888;font-size:var(--fs-micro);width:32px;text-align:right">' + Math.round(_wbr*100) + '%</span></div>';
         h += '<div class="win-prop-row"><label>显示</label><input type="checkbox"' + (_wen?' checked':'') + ' onchange="updWinField(\'enabled\',this.checked)" style="width:auto"></div>';
         h += _winFlipRotRowsHtml(w);
         // 输入截取不在此处编辑：见工作台「输入截取」开关 → 每切片独属的 16:9 取景画板
     } else {
-        h += '<div style="color:#555;font-size:12px;text-align:center;padding:20px 0">选择或添加窗口以编辑属性</div>';
+        h += '<div style="color:#555;font-size:var(--fs-meta);text-align:center;padding:20px 0">选择或添加窗口以编辑属性</div>';
     }
     h += '</div>';
     // 场景总亮度（Arena 屏级总控对标：A=HDMI1 屏，B=HDMI2 屏，各自独立）
     var _curScene = s._curScene || 'A';
     var _masterB = (cfg.scenes && cfg.scenes[_curScene] && cfg.scenes[_curScene].master && cfg.scenes[_curScene].master.brightness != null) ? cfg.scenes[_curScene].master.brightness : 1;
-    h += '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#222;border-radius:6px;margin-bottom:8px"><span style="color:#aaa;font-size:11px;flex-shrink:0">本幕总亮度</span><input type="range" min="0" max="100" value="' + Math.round(_masterB*100) + '" oninput="updSceneMasterLive(this.value/100)" onchange="updSceneMaster(this.value/100)" style="flex:1"><span id="winMasterV" style="color:#888;font-size:10px;width:32px;text-align:right">' + Math.round(_masterB*100) + '%</span></div>';
+    h += '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#222;border-radius:6px;margin-bottom:8px"><span style="color:#aaa;font-size:var(--fs-micro);flex-shrink:0">本幕总亮度</span><input type="range" min="0" max="100" value="' + Math.round(_masterB*100) + '" oninput="updSceneMasterLive(this.value/100)" onchange="updSceneMaster(this.value/100)" style="flex:1"><span id="winMasterV" style="color:#888;font-size:var(--fs-micro);width:32px;text-align:right">' + Math.round(_masterB*100) + '%</span></div>';
     h += '<button class="win-save-btn" id="winSaveBtn" onclick="saveWindows()">💾 保存并推送</button>';
     h += '</div></div>';
     area.innerHTML = h;
@@ -2985,7 +3574,7 @@ function renderWinCanvas(wins) {
         _applyWinTransform(el, w);
         var _wc = _cropOf(w);
         var _cropMark = (_wc.w >= 0.999 && _wc.h >= 0.999) ? '' : '✂ ';
-        el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:10px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + _cropMark + esc(w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:9px;color:#888">' + esc(typeLabel) + '</span>';
+        el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:var(--fs-micro);color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%">' + _cropMark + esc(w.name||w.id) + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:var(--fs-micro);color:#888">' + esc(typeLabel) + '</span>';
         el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px;z-index:9" data-dir="br"></div>';
         el.dataset.winId = w.id;
         el.tabIndex = 0;   // 可聚焦：聚焦=方向键当前作用于这个窗口框
@@ -3321,9 +3910,9 @@ function renderCropEditor(wins, area) {
     var _sc = (s._curScene || 'A') === 'A' ? '第一幕' : '第二幕';
     var h = '<div class="crop-wrap">';
     h += '<div class="crop-side">';
-    h += '<div style="color:#888;font-size:11px;font-weight:bold">切片（' + _sc + '）</div>';
+    h += '<div style="color:#888;font-size:var(--fs-micro);font-weight:bold">切片（' + _sc + '）</div>';
     h += '<div class="crop-slice-list">';
-    if (!wins.length) h += '<div style="color:#555;font-size:11px;padding:6px 0">当前幕暂无窗口，先关闭本开关到「窗口配置」里添加</div>';
+    if (!wins.length) h += '<div style="color:#555;font-size:var(--fs-micro);padding:6px 0">当前幕暂无窗口，先关闭本开关到「窗口配置」里添加</div>';
     wins.forEach(function(w) {
         var _wc2 = _cropOf(w);
         var _mk2 = (_wc2.w >= 0.999 && _wc2.h >= 0.999) ? '' : '✂ ';
@@ -4248,10 +4837,10 @@ function _pvHere() {
 function _pvBarHtml() {
     var p = _pvHere();
     if (!p) return '';
-    if (p.err) return '<span style="color:#f44336;font-size:12px;margin-right:10px" title="' + escA(p.err) + '">试播没发出去：' + esc(p.err) + '</span>';
-    return '<span style="color:#e94560;font-size:12px;margin-right:8px">▶ ' + esc(p.filename || '')
+    if (p.err) return '<span style="color:#f44336;font-size:var(--fs-meta);margin-right:10px" title="' + escA(p.err) + '">试播没发出去：' + esc(p.err) + '</span>';
+    return '<span style="color:#e94560;font-size:var(--fs-meta);margin-right:8px">▶ ' + esc(p.filename || '')
         + (p.win_name ? ' → ' + esc(p.win_name) : '') + '</span>'
-        + '<button class="btn" style="padding:3px 10px;font-size:12px;margin-right:10px" title="让大屏现在就回到原画面（不等到播完）" onclick="stopPv()">提前结束</button>';
+        + '<button class="btn" style="padding:3px 10px;font-size:var(--fs-meta);margin-right:10px" title="让大屏现在就回到原画面（不等到播完）" onclick="stopPv()">提前结束</button>';
 }
 
 function refreshPvBar() {
@@ -4322,15 +4911,15 @@ function rd() {
         var act = s.df === sn ? 'active' : '';
         var det = (s.storeDetails || []).find(function(x) { return x.name === sn; });
         var tip = det ? (det.room_count + ' 个房间 · ' + det.device_count + ' 台设备') : '';
-        h += '<div class="tab ' + act + '" title="' + escA(tip) + '" onclick="sd(\'' + escJsA(sn) + '\')" oncontextmenu="rs(event,\'' + escJsA(sn) + '\');return false;"><span class="tab-n">' + esc(sn) + '</span><span class="folder-del" onclick="ds(event,\'' + escJsA(sn) + '\')">×</span></div>';
+        h += '<div class="tab ' + act + '" title="' + escA(tip) + '" onclick="sd(\'' + escJsA(sn) + '\')" oncontextmenu="rs(event,\'' + escJsA(sn) + '\');return false;"><span class="tab-n">' + esc(sn) + '</span><span class="folder-del" title="删除这个店铺" onclick="ds(event,\'' + escJsA(sn) + '\')">×</span></div>';
     });
-    h += '<div class="tab" onclick="as()" style="border-style:dashed">+</div></div>';
+    h += '<div class="tab" title="新建店铺" onclick="as()" style="border-style:dashed">+</div></div>';
     h += '<div class="tabs" style="margin-top:10px">';
     s.rooms.forEach(function(rn) {
         var act = s.rf === rn.id ? 'active' : '';
-        h += '<div class="tab ' + act + '" onclick="sr(\'' + escJsA(rn.id) + '\')" oncontextmenu="rr(event,\'' + escJsA(rn.id) + '\',\'' + escJsA(rn.name) + '\');return false;"><span class="tab-n">' + esc(rn.name) + '</span><span class="folder-del" onclick="dr(event,\'' + escJsA(rn.id) + '\')">×</span></div>';
+        h += '<div class="tab ' + act + '" onclick="sr(\'' + escJsA(rn.id) + '\')" oncontextmenu="rr(event,\'' + escJsA(rn.id) + '\',\'' + escJsA(rn.name) + '\');return false;"><span class="tab-n">' + esc(rn.name) + '</span><span class="folder-del" title="删除这个房间" onclick="dr(event,\'' + escJsA(rn.id) + '\')">×</span></div>';
     });
-    h += '<div class="tab" onclick="createRoom()" style="border-style:dashed">+</div></div>';
+    h += '<div class="tab" title="新建房间" onclick="createRoom()" style="border-style:dashed">+</div></div>';
     document.getElementById('df').innerHTML = h;
     if (s.rf) { rmDevice(); return; }
     g.innerHTML = '<div class="empty">请选择或创建房间</div><button class="btn btn-primary" style="margin-top:10px" onclick="createRoom()">+ 新建房间</button>';
@@ -4389,10 +4978,10 @@ async function showPushDialog() {
         return s.selected.includes(x.id) && x.id && x.id.length > 5;
     });
     console.log('pushMs:', s.pushMs);
-    var h = '<div style="padding:24px;min-width:500px;font-size:18px"><h3 style="font-size:24px">推送到房间</h3><p style="color:#888;margin:10px 0">已选' + s.pushMs.length + '个素材（按原文件夹归属）</p>';
+    var h = '<div style="padding:24px;min-width:500px;font-size:var(--fs-title)"><h3 style="font-size:var(--fs-icon)">推送到房间</h3><p style="color:#888;margin:10px 0">已选' + s.pushMs.length + '个素材（按原文件夹归属）</p>';
     // 店铺选择
-    h += '<div style="margin-bottom:15px"><label style="color:#e94560;font-weight:bold;font-size:20px">选择店铺：</label>';
-    h += '<select id="pushStore" style="padding:12px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;width:100%;margin-top:5px;font-size:16px" onchange="loadPushRooms()">';
+    h += '<div style="margin-bottom:15px"><label style="color:#e94560;font-weight:bold;font-size:var(--fs-h2)">选择店铺：</label>';
+    h += '<select id="pushStore" style="padding:12px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;width:100%;margin-top:5px;font-size:var(--fs-body)" onchange="loadPushRooms()">';
     if (s.stores && s.stores.length > 0) {
         s.stores.forEach(function(store) {
             h += '<option value="' + escA(store) + '">' + esc(store) + '</option>';
@@ -4402,10 +4991,10 @@ async function showPushDialog() {
     }
     h += '</select></div>';
     // 场景选择（A/B）
-    h += '<div style="margin-bottom:15px"><label style="color:#e94560;font-weight:bold;font-size:20px;display:block;margin-bottom:8px">目标场景：</label>';
+    h += '<div style="margin-bottom:15px"><label style="color:#e94560;font-weight:bold;font-size:var(--fs-h2);display:block;margin-bottom:8px">目标场景：</label>';
     h += '<div id="pushSceneSel" style="display:flex;gap:10px">';
-    h += '<button class="folder-btn active" id="pushSceneA" onclick="selectPushScene(\'A\')" style="flex:1;padding:10px 0;font-size:15px;border-radius:6px">第一幕</button>';
-    h += '<button class="folder-btn" id="pushSceneB" onclick="selectPushScene(\'B\')" style="flex:1;padding:10px 0;font-size:15px;border-radius:6px">第二幕</button>';
+    h += '<button class="folder-btn active" id="pushSceneA" onclick="selectPushScene(\'A\')" style="flex:1;padding:10px 0;font-size:var(--fs-body);border-radius:6px">第一幕</button>';
+    h += '<button class="folder-btn" id="pushSceneB" onclick="selectPushScene(\'B\')" style="flex:1;padding:10px 0;font-size:var(--fs-body);border-radius:6px">第二幕</button>';
     h += '</div></div>';
     h += '<div id="pushRoomsDiv"><p style="color:#888">加载中...</p></div>';
     openModal(h);
@@ -4433,9 +5022,9 @@ async function loadPushRooms() {
         // 只存弹窗自己的副本：以前这里写 s.rooms，等于把"全局房间列表"换成了"本店铺房间列表"，
         // 弹窗还开着时任何读 s.rooms 的代码（工作台/设备列表回写）都会找不到别的房间
         _pushRooms = rooms;
-        var h = '<div><label style="color:#e94560;font-weight:bold;font-size:20px">选择房间（可多选）：</label></div>';
+        var h = '<div><label style="color:#e94560;font-weight:bold;font-size:var(--fs-h2)">选择房间（可多选）：</label></div>';
         rooms.forEach(function(room) {
-            h += '<label style="display:block;padding:14px;border:1px solid #444;margin:8px 0;border-radius:4px;cursor:pointer;background:#2a2a2a;font-size:16px">';
+            h += '<label style="display:block;padding:14px;border:1px solid #444;margin:8px 0;border-radius:4px;cursor:pointer;background:#2a2a2a;font-size:var(--fs-body)">';
             h += '<input type="checkbox" class="room-check" value="' + escA(room.id) + '" data-name="' + escA(room.name) + '" style="margin-right:10px;width:18px;height:18px">';
             h += '<span>' + esc(room.name) + '</span>';
             h += '</label>';
@@ -4541,8 +5130,8 @@ document.onkeydown = function(e) { if (e.key === 'Escape') { closeModal(); } };
 
 // 通用输入弹窗（替代原生 prompt，避免被浏览器拦截）
 function inputModal(title, placeholder, defaultValue, cb) {
-    var h = '<div style="padding:24px;min-width:360px"><h3 style="font-size:22px;margin-bottom:14px">' + esc(title) + '</h3>';
-    h += '<input id="imInput" type="text" value="' + escA(defaultValue || '') + '" placeholder="' + escA(placeholder || '') + '" style="width:100%;padding:12px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:16px;box-sizing:border-box">';
+    var h = '<div style="padding:24px;min-width:360px"><h3 style="font-size:var(--fs-h1);margin-bottom:14px">' + esc(title) + '</h3>';
+    h += '<input id="imInput" type="text" value="' + escA(defaultValue || '') + '" placeholder="' + escA(placeholder || '') + '" style="width:100%;padding:12px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;font-size:var(--fs-body);box-sizing:border-box">';
     h += '<div style="margin-top:18px;text-align:right"><button class="btn" onclick="closeModal()">取消</button> <button class="btn btn-primary" id="imOk">确定</button></div></div>';
     openModal(h);
     var inp = document.getElementById('imInput');
@@ -4567,8 +5156,8 @@ function inputModal(title, placeholder, defaultValue, cb) {
  * Esc / 点取消都不会触发 cb，与 confirm 返回 false 同义。
  */
 function confirmModal(title, bodyHtml, okText, cb) {
-    var h = '<div style="padding:24px;min-width:380px;max-width:600px"><h3 style="font-size:20px;margin-bottom:12px">' + esc(title) + '</h3>';
-    h += '<div style="font-size:13px;color:#ccc;line-height:1.75">' + bodyHtml + '</div>';
+    var h = '<div style="padding:24px;min-width:380px;max-width:600px"><h3 style="font-size:var(--fs-h2);margin-bottom:12px">' + esc(title) + '</h3>';
+    h += '<div style="font-size:var(--fs-dense);color:#ccc;line-height:1.75">' + bodyHtml + '</div>';
     h += '<div style="margin-top:18px;text-align:right"><button class="btn" onclick="closeModal()">取消</button> <button class="btn btn-primary" id="cmOk">' + esc(okText || '确定') + '</button></div></div>';
     openModal(h);
     var done = false;
@@ -4625,14 +5214,14 @@ async function lv() {
     catch (e) { if (box) box.innerHTML = '<div style="color:#f44336;padding:20px">版本列表读取失败: ' + esc(e.message) + '</div>'; return; }
     var h = '';
     versions.forEach(function(v) {
-        var badge = v.is_latest ? '<span style="background:#28a745;padding:2px 8px;border-radius:4px;font-size:12px;margin-left:10px">最新</span>' : '';
+        var badge = v.is_latest ? '<span style="background:#28a745;padding:2px 8px;border-radius:4px;font-size:var(--fs-meta);margin-left:10px">最新</span>' : '';
         // size 可能为 null（历史行/上传时没量到）：null/1024/1024 是 0，不是报错，但会显示成
         // "0.00 MB" 让人以为包是空文件，这里直接标"大小未知"
         var sizeText = fmtBytes(v.size);
         h += '<div style="background:#1a1a1a;padding:15px;border-radius:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">';
-        h += '<div><div style="font-weight:bold;font-size:16px">v' + esc(v.version) + ' (Code: ' + esc(v.version_code) + ')' + badge + '</div>';
-        h += '<div style="color:#888;font-size:12px;margin-top:5px">' + sizeText + ' | ' + esc(v.changelog || '无更新日志') + '</div>';
-        h += '<div style="color:#666;font-size:11px">' + esc(v.created_at) + '</div></div>';
+        h += '<div><div style="font-weight:bold;font-size:var(--fs-body)">v' + esc(v.version) + ' (Code: ' + esc(v.version_code) + ')' + badge + '</div>';
+        h += '<div style="color:#888;font-size:var(--fs-meta);margin-top:5px">' + sizeText + ' | ' + esc(v.changelog || '无更新日志') + '</div>';
+        h += '<div style="color:#666;font-size:var(--fs-micro)">' + esc(v.created_at) + '</div></div>';
         h += '<div><button onclick="pushVersionToAll(' + escJsA(v.id) + ')" style="background:#e94560;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;margin-right:8px">推送</button>';
         h += '<a href="' + escA(v.filepath) + '" target="_blank" style="color:#e94560;margin-right:10px">下载</a>';
         h += '<button onclick="dv(' + escJsA(v.id) + ')" style="background:#dc3545;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">删除</button></div>';
@@ -4781,7 +5370,7 @@ async function loadDeviceLogs(keepScroll) {
     try {
         var logs = asList(await apiGet(url));
         if (logs.length === 0) {
-            container.innerHTML = '<div style="padding:30px;text-align:center;color:#666">暂无日志</div>';
+            container.innerHTML = '<div class="empty">这个筛选下还没有日志。设备联网并开启上报后才会往这里写。</div>';
             return;
         }
 
@@ -4792,11 +5381,11 @@ async function loadDeviceLogs(keepScroll) {
             if (stats[lvl] !== undefined) stats[lvl]++;
         });
 
-        var h = '<div style="color:#888;font-size:11px;margin-bottom:8px;display:flex;gap:16px">';
+        var h = '<div class="log-stats">';
         h += '<span>共 ' + logs.length + ' 条</span>';
         h += '<span style="color:#f44336">ERROR ' + stats.error + '</span>';
         h += '<span style="color:#ff9800">WARN ' + stats.warn + '</span>';
-        h += '<span style="color:#888">INFO ' + stats.info + '</span>';
+        h += '<span>INFO ' + stats.info + '</span>';
         h += '<span style="color:#4caf50">DEBUG ' + stats.debug + '</span>';
         h += '</div>';
 
@@ -4824,13 +5413,13 @@ async function loadDeviceLogs(keepScroll) {
             var lvlColor = lvl === 'error' ? '#f44336' : (lvl === 'warn' ? '#ff9800' : (lvl === 'debug' ? '#4caf50' : '#888'));
             var lvlBg = lvl === 'error' ? 'rgba(244,67,54,0.1)' : (lvl === 'warn' ? 'rgba(255,152,0,0.1)' : 'transparent');
 
-            h += '<div style="border-bottom:1px solid #2a2a2a;padding:6px 4px;background:' + lvlBg + ';border-left:3px solid ' + lvlColor + '">';
-            h += '<span style="color:#555;font-size:10px;margin-right:8px">' + esc(time) + '</span>';
-            h += '<span style="color:#4caf50;font-size:10px;margin-right:8px" title="' + escA(tid) + '">' + esc(shortId) + '</span>';
-            h += '<span style="color:' + lvlColor + ';font-size:10px;font-weight:bold;margin-right:8px">[' + esc(lvl.toUpperCase()) + ']</span>';
-            if (module) h += '<span style="color:#9c27b0;font-size:10px;margin-right:4px">' + esc(module) + '</span>';
-            if (action) h += '<span style="color:#2196f3;font-size:10px;margin-right:8px">' + esc(action) + '</span>';
-            h += '<span style="color:#ccc">' + esc(message) + '</span>';
+            h += '<div class="log-row" style="background:' + lvlBg + ';border-left:3px solid ' + lvlColor + '">';
+            h += '<span class="lg-time">' + esc(time) + '</span>';
+            h += '<span class="lg-id" title="' + escA(tid) + '">' + esc(shortId) + '</span>';
+            h += '<span class="lg-lvl" style="color:' + lvlColor + '">[' + esc(lvl.toUpperCase()) + ']</span>';
+            if (module) h += '<span class="lg-mod">' + esc(module) + '</span>';
+            if (action) h += '<span class="lg-act">' + esc(action) + '</span>';
+            h += '<span class="lg-msg">' + esc(message) + '</span>';
             h += '</div>';
         });
         container.innerHTML = h;
@@ -4943,7 +5532,7 @@ async function loadOpLogs(keepScroll) {
             + '<span class="op-act' + _opTone(r.action) + '">' + esc(r.action || '-') + '</span>'
             + '<span class="op-tgt">' + esc(r.target || '-') + '</span>'
             + '<span class="op-sum">' + esc(_opSummary(d)) + '</span>'
-            + '<span style="color:#555;cursor:pointer;flex-shrink:0" onclick="toggleOpDetail(' + i + ')">详情</span>'
+            + '<span class="op-exp" onclick="toggleOpDetail(' + i + ')">详情</span>'
             + '</div>';
         // details 原文（美化后）单独一行；整段走 esc()，里面可能是设备上报的任意字符串
         h += '<pre class="op-detail" id="opd' + i + '" style="display:none">' + esc(JSON.stringify(d, null, 2)) + '</pre>';

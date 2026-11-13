@@ -1,8 +1,8 @@
 # XVJ 系统架构文档
 
-> 最后更新：2026-11-10
-> 代码规模：前端 `public/index.html` **4777 行** · 后端 `server.js` **3704 行** · APK `MainActivity.kt` **4332 行**
-> （另：`ShareCanvasView.kt` 419 行、`serial/WallPanelLink.kt` 212 行、`serial/WallPanelParser.kt` 93 行）
+> 最后更新：2026-11-13
+> 代码规模：前端 `public/index.html` **5365 行** · 后端 `server.js` **4014 行** · APK `MainActivity.kt` **4266 行**
+> （另：`ShareCanvasView.kt` 511 行、`serial/WallPanelLink.kt` 272 行、`serial/WallPanelFrames.kt` 147 行、`serial/WallPanelParser.kt` 156 行）
 >
 > **本文是导览，不是契约。** 三端源码头部注释才是权威口径：
 > `server.js` L1–154（表结构 / MQTT 主题 / 场景与 WinConfig 字段 / 同步触发口径）、
@@ -18,7 +18,7 @@
 | | 前端 (Web) | 后端 (Node.js) | APK (Android) |
 |---|---|---|---|
 | 文件 | `public/index.html` | `server.js` | `MainActivity.kt` + `ShareCanvasView.kt` + `serial/` |
-| 规模 | 4777 行，单文件 SPA | 3704 行 | 4332 行 + 419 行 |
+| 规模 | 5365 行，单文件 SPA | 4014 行 | 4266 行 + 511 行 |
 | 技术 | 原生 JS + HTML + CSS，无框架无构建 | Express + mysql2 + mqtt | Kotlin + media3 ExoPlayer + Paho + GLES20（同格共享解码那层） |
 | 职责 | 素材/客户/房间配置、窗口编辑、运维控制台 | 唯一真相源：落库、校验、下发、审计 | 瘦执行器：下素材、渲染窗口、上报状态 |
 | 通信 | 只走 HTTP `/api/*`，**不直连 MQTT** | HTTP + MQTT broker | MQTT + HTTP GET（素材/清单/APK） |
@@ -63,7 +63,7 @@
 
 借鉴 Resolume Arena 的部分概念，但**不是两块独立 HDMI 输出**（旧文档这么写，代码从来不是）：
 
-- A/B 是**两套互相独立的素材命名空间**（各自的 `folder_mappings` / `panel_no` / `play_settings`）与各自的窗口列表。
+- A/B 是**两套互相独立的素材命名空间**（各自的 `folder_mappings` / `play_settings`）与各自的窗口列表。
 - 设备端 `mergeSceneWindows(scenes)` 把 **A 和 B 的 windows 合并成一个数组**，按 `zIndex` 升序全部渲染进
   **同一个合成容器**（`flSurface`）。一扇窗播哪一套素材由它自己的 `content.type`（`SCENE_A` / `SCENE_B`）决定。
 - 没有"当前幕"概念：切幕只是前端编辑视角，设备侧两幕的窗口同时活着。485 墙板走独立链路（见 §五.7）。
@@ -82,7 +82,7 @@
 ### 2.2 文件夹编号前缀与物理目录
 
 DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` 下发给设备的
-`folder_mappings` / `panel_no` / `play_settings` 三张表，键一律变成 `"A01"` / `"B01"`。
+`folder_mappings` / `play_settings` 两张表，键一律变成 `"A01"` / `"B01"`。
 **`windows` 原样透传**，`content.folderId` 仍是裸 `"01"`，由设备端按 `A01`/`01` 双键回退查表。
 
 | 下发键 | 设备物理目录（素材根 = `getFilesDir()`，内部存储免权限） |
@@ -99,11 +99,14 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 | 域 | 范围 | 含义 |
 |---|---|---|
 | 文件夹编号 | `01`~`30` | 素材分组，前端目录签写死 30 个 |
-| 墙板编号 | `1`~`32` | 485 墙板「编号切换」帧的 NN，经 `scenes[X].panel_no` 反查到某一格文件夹 |
+| 帧指纹 | 1~64 字节的十六进制串 | 学习绑定表（`wallpanel_bindings`）的键：整帧原样字节，不含任何厂家语义（§五.8） |
 | 输出基准宽高 | `16`~`7680` px | 窗口坐标那把尺（`config.output`），见 §二.4 |
 
-`panel_no` 是「文件夹 → 墙板编号」的绑定表，同幕内编号不得重复、同格不得挂两个编号（写库前校验，冲突 400）。
-没列出的键 = 那一格不响应墙板。DMX512 尚未实现。
+**墙板没有"编号"这一层了**（2026-11-13 整条下线）。配置页是一张 `01`~`30` × A/B 的码值表，
+每行两个独立输入框：**点歌机码**与**墙板码**（同一格允许两路码各一个，谁按到都切到这一格）。
+点进某一列、按一下对应的键，这一帧的指纹就落进那一格并自动保存；留空 = 那一列不响应。
+原来那套「帧 → 编号 → 格子」的两跳映射只认得视翰 QB 一族，跨厂家就得再加一层；
+现在的口径是**只认字节**：帧长帧头随厂家变，字节不会。DMX512 尚未实现。
 
 ### 2.4 输出基准（`config.output`，任务 #177）
 
@@ -117,10 +120,10 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 - **没设 = `1920×1080` 设计稿**（历史口径）。两轴分母不等时形状会变形：20:9 的手机上 `sx/sy = 1.25`，
   数据里的正方形落屏就是长方形。
 - **设成这台屏的真实像素 ⇒ 两轴相等 ⇒ 编辑器里画成正方形，屏上就是正方形**（不用在拉伸/黑边/裁边里挑）。
-  设备心跳自报 `screen_w/screen_h`（内存 90s 缓存，同 `panel_no` 那样无 DDL），前端画布右下角一键「取本机」。
+  设备心跳自报 `screen_w/screen_h`（内存 90s 缓存，无 DDL），前端画布右下角一键「取本机」。
 - 非法值（非整数、越界、非 `{w,h}` 对象）在写库前 400，绝不静默回落成设计稿——那等于替运营改了整间房的版式。
 - 进 `roomSceneDigest`（rev），但**只在真设了时才计入**：存量房间全部没设，部署瞬间指纹逐字节不变，
-  不会把全库设备判成落后各补发一次素材同步（`panel_no` / `play_settings`「空表不落键」的同一条教训）。
+  不会把全库设备判成落后各补发一次素材同步（`play_settings`「空表不落键」的同一条教训）。
 - ⚠️ 改基准是**重排**不是**倒带**：已存在的窗口坐标不会被换算，原来 1920×1080 铺满整屏的窗，
   换成 2400×1080 的尺后只占画布左边一截，要手动拉大或删了重画。旧版 APK 不认这个字段（仍按 1920×1080
   理解坐标），给没升级的设备设基准反而更宽出截——前端在按钮上写明了。
@@ -159,7 +162,7 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 | F-05 | 设备授权 | `ar()` → `confirmAuth()`（一次 POST 同时授权与绑房） |
 | F-06 ~ F-06d | 房间列表 / 选房 / 新建 / 工作台 | `lr()` / `sr()` / `createRoom()` / `rmDevice()` |
 | F-06e | 工作台模式开关与互斥 | `sfW()` / `sfCrop()` / `sfWP()` / `sfPS()`，草稿确认统一在 `_exitTableModes()` |
-| F-06f | 墙板配置表 | `renderWpEditor()` / `wpSave()` |
+| F-06f | 墙板配置表（含学习区） | `renderWpEditor()` / `wpSave()` / `wpLearnStart()` / `wpBindFrame()` / `wpUnbind()` |
 | F-06g | 播放设置表 | `renderPsEditor()` / `psSave()` |
 | F-07 | 素材推送 | `showPushDialog()` / `doPushToRoom()` |
 | F-08 / F-08b / F-08d | 删房间素材 / 调试开关 / 大屏试播 | `rmRoomMat()` / `toggleRoomDebug()` / `pvMat()` |
@@ -185,6 +188,7 @@ var s = {
     _windowEditorActive: false,                  // 工作台「窗口配置」模式
     _cropMode: false,                            // 「输入截取」模式（依附于窗口配置）
     _wpMode: false,  _wpDraft: null,             // 「墙板配置」模式 + 草稿（只跟当前房间绑定）
+    _wpTgt: null,    _wpFrames: [],  _wpLearnUntil: 0,   // 学习区界面态：这帧落到哪 / 设备上报的最近帧 / 本地倒计时
     _psMode: false,  _psDraft: null,             // 「播放设置」模式 + 草稿（同上）
     _snap: true,                                 // 画布吸附开关（localStorage 本地偏好）
     fs: [], ms: [], pm: [], ds: [],              // 文件夹 / 素材 / 预设素材 / 设备
@@ -302,7 +306,8 @@ GET / OPTIONS / HEAD 开放（设备端只做 GET）。前端由【F-00】负责
 | 方向 | 主题 | 说明 |
 |---|---|---|
 | 入 | `xvj/device/register` | 注册（`deviceId` 在 payload，无第二段） |
-| 入 | `xvj/device/{id}/status` | 心跳：`version` / `model` / `mac` / `panel_no`（当前墙板编号）/ `rev`（已应用配置指纹）/ `syncing` |
+| 入 | `xvj/device/{id}/status` | 心跳：`version` / `model` / `mac` / `rev`（已应用配置指纹）/ `syncing` / `frames`（最近收到的 485 帧，见 §五.8） |
+| 入 | `xvj/device/{id}/frames` | 学习窗内的帧候选快照 `{learning, frames:[{hex,n,age}]}`，只进服务端内存台账（`DEVICE_FRAMES_TTL` 120s，无 DDL） |
 | 入 | `xvj/device/{id}/request` | 设备主动请求配置 |
 | 入 | `xvj/device/{id}/log` | 设备日志上报（远程 DEBUG 通道） |
 | 入 | `xvj/auth/response` | 设备回复 deauthorize |
@@ -320,23 +325,23 @@ GET / OPTIONS / HEAD 开放（设备端只做 GET）。前端由【F-00】负责
 | 变化 | 下发 |
 |---|---|
 | 素材映射变了（`roomMappingDigest`） | `sync_room_materials`（全量对账） |
-| 窗口 / 总亮度 / 编号绑定 / 播放设置 / 输出基准变了（`roomSceneDigest`） | `update_windows`（轻通道，设备原地改视图；只改基准也是在这一跳按新分母重排几何） |
+| 窗口 / 总亮度 / 播放设置 / 输出基准变了（`roomSceneDigest`） | `update_windows`（轻通道，设备原地改视图；只改基准也是在这一跳按新分母重排几何） |
 | `debug` 变了 | `set_debug` |
 | `wallpanel_*` 变了 | `set_wallpanel` |
 | 什么都没变 | 一条不发 |
 
-同一次 PUT 既改编号又开总闸就两条都发；命中全量同步时轻枪省掉（它的载荷已带这些字段）。
+同一次 PUT 既改学习绑定又开总闸就两条都发；命中全量同步时轻枪省掉（它的载荷已带这些字段）。
 日志前缀 `🔔`。
 
 **兜底是 rev 对账**：命令带 `rev = roomSceneDigest(config)`，设备心跳回传已应用的 rev，
 服务端发现落后就补发一次（**3 分钟/台节流**），所以设备离线期间的变更会在上线后收敛。
 
-⚠️ **两个故意不进指纹的例外**：`debug` 与 `wallpanel_*`（总闸/默认编号/串口节点/波特率）都不参与 `roomSceneDigest`
+⚠️ **两个故意不进指纹的例外**：`debug` 与 `wallpanel_*`（总闸/串口节点与字符格式/学习绑定表）都不参与 `roomSceneDigest`
 —— 开个开关不该惊动素材同步。代价是它们对不上账、**不会被心跳对账补发**；命令是 QoS1 非 retain，
 设备正好掉线那一跳就会丢，靠下次重连的 `auth_result`（或手工 sync 载荷）里的同名字段自愈。
 > 现场口径：「云端开了开关但大屏没反应」→ 先让设备重连一次或点一次手工同步，别急着怀疑开关本身。
 
-⚠️ **空表落键口径**：`folder_mappings` 恒在（空表也是 `{}`），`panel_no` / `play_settings`
+⚠️ **空表落键口径**：`folder_mappings` 恒在（空表也是 `{}`），`play_settings`
 **空表不落键** —— 否则新增字段会让每间存量房间的 rev 漂移，触发一轮无谓全量同步、现场视频集体从头播。
 
 ### 4.5 config 写库口径
@@ -346,10 +351,10 @@ GET / OPTIONS / HEAD 开放（设备端只做 GET）。前端由【F-00】负责
 ```
 JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余继承 DB」
 → 墙板字段按下发口径归一 → 播放设置校验 → 逐幕合并
-→ 编号校验（同幕一键一文件夹 + 同格不两个编号）
+→ 学习绑定校验（帧形状 + 格子号 + 来源取值，最多 64 条；同格两列各一条）
 ```
 
-任一步不过就 **400，绝不带病入库**：脏值一旦落库，后续不带 `panel_no` 的 PUT 会继承它再撞上同一道校验，
+任一步不过就 **400，绝不带病入库**：脏值一旦落库，后续不带 `wallpanel_bindings` 的 PUT 会继承它再撞上同一道校验，
 这间房就再也存不进配置了。顶层继承同时挡 `__proto__` / `constructor` / `prototype`（原型污染）。
 
 `PUT /rooms/:id` 只接受 `name` / `config`（房间不跨客户迁移）。
@@ -398,7 +403,8 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 其余 `.kt` 文件（`BootReceiver` / `SettingsActivity` / `FolderManagerActivity` / `hdmi/*` / `serial/Hdmi*` /
 `serial/Serial*`）都只有一行 `// disabled`，是历史遗留占位；`android_serialport_api/SerialPort.kt`（180 行）
 全文无人引用（墙板链路改用 `Os.open` + `stty`，不走 JNI）。
-**真正活着的只有 `MainActivity.kt`、`ShareCanvasView.kt`（同格共享解码的 GL 画布，见 §5.7）与 `serial/WallPanelLink.kt` + `WallPanelParser.kt`。**
+**真正活着的只有 `MainActivity.kt`、`ShareCanvasView.kt`（同格共享解码的 GL 画布，见 §5.7）与 `serial/` 三件
+（`WallPanelLink.kt` + `WallPanelParser.kt` + `WallPanelFrames.kt`）。**
 ⚠️ 但 Manifest 仍声明着那三个不存在的类，见 §七。
 
 ### 5.2 模块索引（与代码里的 `【A-XX】` 标签对应）
@@ -416,8 +422,8 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | A-10 | 系统 UI | `hideSystemUI` |
 | A-11 | 工具方法 | `logToFile` / `sha256` / `generateDeviceFingerprint` / `calculateMd5` |
 | A-12 | 播放设置 | `playSettingsOf` / `playSettingsJson` |
-| A-13 | 大屏试播 | `startGroupPreview` / `previewTargets` / `startWindowPreview` / `restorePreviewGroup` / `restoreWindowPreview` / `abortAllPreviews`；接管那一刻的正片位置按 `groupClock` / `folderPlaylists` / `previewClocks` 记 |
-| A-14 | 墙板 485 链路 | `applyWallPanelEnabled` / `applyWallPanelFields` / `handleWallPanelEvent` / `handleWallPanelNumber` / `effectivePanelNo` / `folderForPanelNo` |
+| A-13 | 大屏试播 | `startGroupPreview` / `previewTarget` / `armPreview` / `endPreview` / `endPreviewCovering` / `abortAllPreviews`；**账按格子记**（`previews[folderKey]`），接管那一刻的正片位置抄进 `PreviewState` |
+| A-14 | 墙板 485 链路 | `applyWallPanelEnabled` / `applyWallPanelFields` / `applyWallPanelBindings` / `handleWallPanelEvent` / `applyPanelSource` / `panelFolderFor` / `startWallPanelLearn` / `publishFrameSnapshot` |
 
 > **A-05 是空号**：单播放器点播时代的 `playFromUrl()` / `playLocalVideo()` 早已删除，标签保留不复用。
 > `syncRoomMaterialsAllScenes()` 也已改名，旧文档里的这两个名字都不存在了。
@@ -433,7 +439,8 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | `delete_material` | 删单个本地素材文件 |
 | `update` | OTA：带 `url` / `version` / `md5` → `downloadAndInstall` |
 | `set_debug` | 立即开关 `debug_mode`（临时值，下次带该字段的载荷会覆盖） |
-| `set_wallpanel` | 立即开关 485 链路 + 默认编号/串口节点/波特率（同样是临时值） |
+| `set_wallpanel` | 立即开关 485 链路 + 串口节点与字符格式 / 学习绑定表（同样是临时值） |
+| `wallpanel_learn` | 开/关学习窗（`on` + `seconds` 1~60）：开窗即清空帧台账，此后每一帧到达都上报 `frames` 快照 |
 | `preview_material` | 整组接管：把**这一格的所有窗口**同时换成那只素材，播完同时回到正片同一位置 |
 | `preview_stop` | 收掉试播（带 `folder_id` 收那一格整组，不带则全收） |
 
@@ -463,11 +470,14 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 比例恒为 1，达到所见即所得；基准与屏比例不符时会按轴拉伸，这是选择不是缺陷（§二.4）。
 心跳把 `displayMetrics.widthPixels/heightPixels` 作为 `screen_w/screen_h` 回传，供后台「取本机」一键对齐基准。
 
-**窗口该播哪一格**由 `resolveWindowFolder()` 单一入口决定（全量重建与墙板切换共用，两处各写一份口径必漂）：
+**窗口该播哪一格**由 `resolveWindowFolder()` 单一入口决定（全量重建与墙板切换共用，两处各写一份口径必漂），
+其中墙板那一层再经 `panelFolderFor()` 收口（只看学习绑定表，全房间只有这一条来源）：
 
 ```
-content.follow=true → effectivePanelNo() 反查 panel_no 得到那一格
-   ↓ 反查不中（没按过 / 无默认编号 / 这一号没绑）就退回下面，不劫持
+content.follow=true → panelFolderFor()：
+      最近一帧命中的是学习帧 → 查 wallpanelBindings（这一幕没绑这一帧 = 退回下面，不劫持）
+      没按过 / 未绑 / 绑的那格没素材 → 退回下面
+   ↓
 content.folderId 非空 → 只播指定那格；不在映射或那格空 → null（不偷偷换播别的格）
    ↓ 两者都空
 本幕第一个「有素材」的文件夹（不是固定 01）
@@ -534,7 +544,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 |---|---|
 | 每扇窗进格时独立 `items.shuffled()` → 随机顺序两两不同 | `folderPlaylists[folderKey]` 按格缓存，同格共用一份清单（随机只洗一次；缓存是否在效按 URI 逐个比 `sameItems`，素材增删过自然作废） |
 | 进格就从 index 0 起播 → 重进同一格等于整组倒带 | `groupClock(folderKey)` 取这一格此刻的（第几只，第几毫秒），清单对得上就 `setMediaItems(playlist, index, positionMs)` 接着走 |
-| 试播只接管一扇，播完只回它自己的快照位置 | `startGroupPreview` 一次接管这一格的全部窗口，`restorePreviewGroup` 一次归还，整组共用接管前那份 `previewClocks[folderKey]` |
+| 试播只接管一扇，播完只回它自己的快照位置 | `startGroupPreview` 一次接管这一格、`endPreview` 一次归还；#175 后一格只有一路解码，同格其余窗跟着同一张画布一起回去 |
 
 - **`groupClock` 的基准 = 组内 ID 最小、真有播放器在跑、且没在试播的那一路**，与 `ShareGroup.leaderId` 同一口径。
   #175 之后一格只有一路播放器，所以它**不再排除"正要起播的那扇自己"**：那是多路时代的口径（新起的窗停在第 1 只 0ms，
@@ -552,13 +562,17 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   天生同帧（§5.7.1）。剩下的 0.1~0.5s 级别误差只出现在"两个不同格子并排"那种情形 —— 两路独立解码，
   各自的首帧凝滞不同，那本来就不是同一只片子，不需要同帧。
 
-**整组试播**（这套与"几路解码"无关，#175 前后口径一致）：
+**整格试播**（接管范围与"几路解码"无关；#175 后一格只有一路解码，账因此按格子记）：
 
 - 设备端**不认云端算好的 `win_ids`**：云端按库里那份配置算窗，设备却可能刚应用过更新的一版，
-  那一刻"谁在播这一格"只有设备知道。`previewTargets()` 按本机 `VideoSurface.folderKey` 认成员，
+  那一刻"谁在播这一格"只有设备知道。`previewTarget()` 按本机 `VideoSurface.folderKey` 认那一路解码，
   `win_ids` 只在 `folderKey` 还没落上时兜底，**且兜底名单也要按幕筛过**（`sceneOfWindow()`：
   先认 folderKey 的幕前缀，落不上再查生效配置里的 `content.type`）；云端 `resolvePreviewTarget`
   因此返回**整组名单**（`winIds` 按 zIndex 降序，第一扇留作旧包的 `win_id` 兜底与日志显示）。
+- **试播的账按格子（`folder_id`）记，归还也只认 `folder_id`**：`previews[folderKey]` 里那一格只有条账，
+  账上记的是那一路解码（共享组的基准窗）。云端点名的 `win_id` 是 zIndex 最高那扇，往往正是没有播放器的成员，
+  拿它去设备上找账会一声不响地找不到 —— 页面却已经清了状态条，看起来就像「提前结束」按了没反应
+  （#175 之后共享解码组才有的这条断链，2026-11-13 改按格子记账后按构造不存在）。
 - **手动试播 = 最高权限（2026-11-11 用户定调）**：点任意一格的素材都要立即接管、播一遍、回到原位，
   不再要求"恰好有窗口绑定/跟随这一格"。`resolvePreviewTarget` 命中这一格的窗口优先；一格都没绑定时
   退回接管**本幕全部启用窗口**（设备只落真在屏上的那些），没配窗口的房间则落 APK 自建的默认窗 `win_1`。
@@ -585,11 +599,11 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   复制发生在 GPU 上，代价与窗口数基本无关。
 - **成员窗不再有自己的播放器**：`windowPlayers[leaderId]` 是唯一真值，基准 = 组内 ID 最小那扇（与 `groupClock` 同一口径）。
   `playFolderInWindow` 里跟随那几扇只代记 `folderKey` / `settings`，试播范围、墙板认成员、日志扇数都按这张账找到整组
-  （`previewTargets` 只认有播放器的基准那一路，扇数由 `winShareGroup` 换算）。
+  （`previewTarget` 只认有播放器的基准那一路，扇数由 `winShareGroup` 换算）。
 - 单窗房间、以及一格只有一扇窗的房间**完全不走这条路**，渲染链路逐字节照旧。
 - 代价（已与用户确认）：整组是一块画布（成员矩形的并集），跨组的 z 交错没了；音频只剩一路。
-- 组构成变化只由全量重建负责（`update_windows` 轻路径只重排几何 `refreshShareGroup`）；墙板编号若把成员分到不同格子，
-  `handleWallPanelNumber` 检测到就回退全量重建。
+- 组构成变化只由全量重建负责（`update_windows` 轻路径只重排几何 `refreshShareGroup`）；墙板绑定若把成员分到不同格子，
+  `applyPanelSource` 检测到就回退全量重建。
 - ⚠️ **未真机验证**：GL/EGL 在 RK3588 盒子上首次跑这条路，三处必须上机看 —— `bindWindow` 把解码端
   （离屏 `SurfaceTexture` + `Surface`）生在常驻上下文里、经 `onDecoderSurface` 回主线程喂播放器；
   帧驱动（`onFrameAvailable` → GL 线程 `updateTexImage`）跟不跟手；切后台再回来，承载 st 换了一块而
@@ -597,23 +611,43 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 
 ### 5.8 墙板 485 链路（A-14 + `serial/`）
 
-三层字段各司其职：
+**上游不是墙板，是中控**：它把点歌机和墙板两家的流量合进同一根 485（同一只后面板 RJ45），
+所以这一条链路必须同时吃「认识的帧族」和「从没见过的帧」——字节先收下、含义后判定。
+
+两层字段各司其职（编号那一层已于 2026-11-13 整条下线，现口径见 §二.3）：
 
 | 层 | 字段 | 作用 |
 |---|---|---|
-| 房间 config 顶层 | `wallpanel_enabled` / `wallpanel_default_no` / 串口节点 / 波特率 | 链路总闸与串口参数（**严格 `true` 才算开**；非法默认编号下发 `null`） |
-| 幕内 | `scenes[X].panel_no` | 文件夹 → 墙板编号（1~32）绑定表 |
-| 窗口 | `content.follow` | 这一窗是否跟着墙板编号切文件夹（只对 `SCENE_*` 有意义） |
+| 房间 config 顶层 | `wallpanel_enabled` | 链路总闸（**严格 `true` 才算开**） |
+| 房间 config 顶层 | `wallpanel_serial_path` / `_baud` / `_data_bits` / `_parity` / `_stop_bits` | 串口节点 + 波特率 + 字符格式（各家面板默认值不同，白名单与 `WallPanelLink` 同一份；非法值写库前 400，不静默回落） |
+| 房间 config 顶层 | `wallpanel_bindings` | **学习绑定表**：`[{frame, folder, source}]`，`source ∈ player/panel`（点歌机/墙板，缺省 `panel`）；同一格最多两码（每列一个），同一帧只能对一个格，不分幕，上限 64 条。`source` 只供界面分列，设备端忽略 |
+| 窗口 | `content.follow` | 这一窗是否跟着墙板切文件夹（只对 `SCENE_*` 有意义） |
 
-- **`WallPanelParser.kt`**：纯字节状态机，无 Android 依赖。QB 帧 6 字节 `F5 05 <按键> <家族> <数据> 00`，
-  家族 `0x21` → `NumberSelect(NN)`；C5 / VOD 方向帧原样 `Raw` 上抛。未知帧头逐字节滑动重同步，容忍噪声与粘包。
-- **`WallPanelLink.kt`**：用 `android.system.Os` 直接开 `/dev/tty`（`O_RDWR|O_NOCTTY`），不依赖 `.so`。
-  termios 交给 toybox `stty`（公开 SDK 没有 termios 结构体）；设不上只告警继续收帧，不为波特率杀掉整条链路。
-  打开失败/中途断掉按 **5s→10s→20s→30s** 退避自动重开（大屏设备基本不重启，一次失败就放弃等于永久失灵）。
-  单一 fd 持有者 + 代数守卫，避免关掉刚重开好的串口。
-- 编号生效次序：`effectivePanelNo()` = 最近一次墙板编号 → `wallpanel_default_no` → 无。
-  设备心跳把当前编号回传（`status.panel_no`），前端在墙板表显示。
-- **墙板字段全部不进 rev**，自愈口径同 `debug`（见 §四.4）。
+- **`WallPanelParser.kt`**：纯字节状态机，无 Android 依赖（时间戳由调用方给，便于逐行移植成 JS 跑用例）。
+  已知帧族查 `PROFILES` 表按定长切帧 + 校验（QB 6 字节、VOD 方向帧 5 字节…，`0x21` 家族解成 `NumberSelect`，
+  其余只当指纹）；**帧头不认识就攒进 64 字节缓冲，等线路安静过 `gapMs` 整段吐出一个 `Unknown`** —— 即 Modbus/DMX
+  那套空闲断帧，不需要知道别家帧长，只需要它一帧之内不静默。`gapMsOf(baud, 数据位, 校验位, 停止位)` = 2 个字符时间，
+  速率没下发按 9600 估（估小了一帧会被切成两半，估大了只推迟几毫秒）。读线程按 `parser.busy()` 加密轮询、
+  空闲慢轮询省电；校验不过逐字节滑动重同步，容忍噪声与粘包。
+  ⚠️ 已知代价：中控把两帧零间隔转发过来会切成一长帧 —— 所以每台机都要能把实际收到的字节亮给人看。
+- **`WallPanelLink.kt`**：`android.system.Os` 直接开 `/dev/tty`（`O_RDWR|O_NOCTTY`），不依赖 `.so`。
+  termios 交给 toybox `stty`（公开 SDK 没有 termios 结构体）：`raw -echo cs<N>` + 校验位三档
+  （none=`-parenb` / odd=`parenb parodd` / even=`parenb -parodd`，**必须是多个 argv**）；
+  设不上只告警继续收帧，不为参数杀掉整条链路。打开失败/中途断掉按 **5s→10s→20s→30s** 退避自动重开
+  （大屏设备基本不重启，一次失败就放弃等于永久失灵）。单一 fd 持有者 + 代数守卫，避免关掉刚重开好的串口。
+- **`WallPanelFrames.kt`**：`WallPanelHex`（大写偶数长度 hex，1~64 字节，与服务端 `WALLPANEL_FRAME_HEX_RE` 同闸）、
+  `WallPanelFrameLedger`（容量 24 条 / TTL 60s，`{hex, n, age}`，学习窗开始时清空）、
+  `WallPanelBindings.parse`（一张按帧查的表，脏规则当场丢，同帧后写的覆盖；`source` 不读）与 `PanelSource` / `PanelAction`。
+- **判义次序**（`handleWallPanelEvent`，一处收口）：帧先记进台账 → **学习绑定表命中就切格**（跟随窗问同一张表，
+  不分幕；同一格可能挂着点歌机与墙板两路码，设备不区分来源，谁按到都切这一格）→ 没命中就只留痕（日志带 hex 与帧族标签），不动画面。已知帧族解析出来的编号**再没有下游可查**，
+  只用于日志里标一下"这一帧是编号键"。
+- **帧的可见性**（学习与排障都靠它）：每一帧都进台账，随心跳带最近 8 条（`status.frames`，空则整段不带）；
+  学习窗内每一帧到达额外发一次 `xvj/device/{id}/frames` 快照（≤8 条，`{learning, frames, timestamp}`）。
+  服务端只存内存（`DEVICE_FRAMES_TTL` 120s / `DEVICE_FRAMES_MAX` 8，无 DDL），经 `GET /api/devices` 的 `d.frames`
+  给前端「这一分钟总线上飞过什么」的学习区。学习窗由 `POST /api/rooms/:id/wallpanel/learn`（`seconds` 1~60）开闸。
+- **墙板字段全部不进 rev**（含字符格式与学习表），自愈口径同 `debug`（见 §四.4）：
+  「按一鍵学一条」绝不该引发全量素材重下；变更走轻量 `set_wallpanel`，其判据是 `roomWallpanelDigest`
+  （= `JSON.stringify(roomWallpanelFields(cfg))`，学习表按帧排序后入指纹，同批规则换个录入顺序不算改动）。
 
 ### 5.9 OTA
 
@@ -643,8 +677,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
       name: '第一幕',
       folder_mappings: { "01": [materialId, ...], "02": [...] },
       // 键是未加前缀的两位编号；值是素材库 id 或预设素材 id，两种都合法
-      panel_no:      { "01": 3, "02": 7 },        // 文件夹 → 墙板编号 1~32；没列出的键=不响应
-      play_settings: { "01": { order: 'shuffle' } },
+      play_settings: { "01": { order: 'shuffle' } },   // 全默认的格子不落键
       windows: [ WinConfig, ... ],
       master: { brightness: 1.0 }                // 场景总亮度 0..1，与窗口 brightness 相乘
     },
@@ -653,9 +686,16 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   debug: false,                    // 运维层闸门（进度条/状态文字上屏）；不进 rev
   output: { w: 2400, h: 1080 },    // 输出基准（§二.4）：窗口坐标那把尺；没设=不落这个键，设备按 1920×1080 设计稿；进 rev
   wallpanel_enabled: false,        // 串口监听总闸，严格 true 才算开；不进 rev
-  wallpanel_default_no: null       // 开机/无信号默认编号 1~32，非法值下发 null；不进 rev
-  // 另有串口节点 / 波特率两个字段，与设备端 WallPanelLink 同一份白名单
-}
+  wallpanel_serial_path: '/dev/ttyUSB0',   // 串口节点，只收 /dev/ 下的设备名；非法值写库前 400
+  wallpanel_baud: null,            // 1200~115200 白名单，留空 = 用驱动默认档
+  wallpanel_data_bits: 8,          // 5/6/7/8 ┐
+  wallpanel_parity: 'none',        // none/odd/even ├ 字符格式三档，全留空回落 8N1
+  wallpanel_stop_bits: 1,          // 1/2           ┘
+  wallpanel_bindings: [            // 学习绑定表：帧指纹 → 格号（判义只有这一条来源），不分幕
+    { frame: 'D3', folder: '05', source: 'player' },  // 点歌机码（单字节功能码也合法）
+    { frame: 'B5', folder: '05', source: 'panel' }    // 墙板码：同格两列各一个，谁按到都切到 05
+  ]                                // source 缺省 = panel；上限 64 条，同帧绑多格 / 同格同列多码写库前 400
+}                                  // 不进 rev；空格子 = 这一列不响应
 ```
 
 ### 6.2 WinConfig（服务端整体透传，不解析渲染字段，新增字段无需改后端代码）
@@ -686,7 +726,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 
 > 旧文档里的 `COLOR`（大写）/ `IMAGE` / `VIDEO` 取值**都不存在**。设备端对 type 做 `uppercase()`，
 > 所以前端写小写 `color` 能命中 `COLOR` 分支。
-> `follow` 与 `folderId` 不打架：`folderId` 是"没按过墙板时的默认那格"。
+> `follow` 与 `folderId` 不打架：`folderId` 是"墙板没按过 / 这一帧没绑这一幕时的默认那格"。
 
 ### 6.4 素材三层架构
 
@@ -717,7 +757,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 | broker 阶段3 | mosquitto ACL 未启用（`allow_anonymous true` 仍在） | 已在临时实例做过正/负对照验证；**前置条件是所有设备都装了 `clientId == deviceId` 的 167+**，提前开会把老包挡死 |
 | HDMI 输入 | `content.type = HDMI` 只有占位视图 | `HdmiManager` / `HdmiProcessor` 仍是 `// disabled`，真采集未实现 |
 | **开机自启** | Manifest 声明了 `.BootReceiver`（`BOOT_COMPLETED`，`exported=true`），但 `BootReceiver.kt` 只有一行 `// disabled`，**类不存在** → 广播投递时 `ClassNotFoundException`，开机自启这条链路是断的 | 未修。`MainActivity` 带 `HOME` category，盒子设成默认桌面时仍能起；要真自启得补回 receiver 类（需构建）。另有 `.SettingsActivity` / `.FolderManagerActivity` 两条同样悬空的声明，无人启动，属可删的死条目 |
-| 墙板真机验证 | 485 物理层（波特率/电气）未抓包 | 「按键→切窗」「试播抢占跟随窗」只过了纯函数用例 |
+| 墙板真机验证 | 485 物理层（波特率/字符格式/电气）未抓包，未知厂家帧的空闲断帧阈值（2 字符时间）只在盒子上才算得准 | 「按键→切窗」「学习绑定→切窗」「试播抢占跟随窗」只过了纯函数用例；真机第一眼要看的是设备列表里回传的 `frames`（分帧对不对全靠它）。另：编号层已于 2026-11-13 下线，但带编号的 APK 还没出过包，现场装的仍是旧口径 |
 | 同帧精度 | 一格只挂一扇窗、或不同格并排：各路首帧凝滞不同（实测 0.12~0.55s），切点落不到同一帧 | 同格 ≥2 扇已改成 1 路解码 + GL 合成多视图（§5.7.1，任务 #175），天生同帧；**代码已就位、真机未验**（GL/EGL 首次在盒子上跑）。叠化那条路已于 2026-11-12 整条删除，同步巡检校正层已于 2026-11-13 随它一起删除 |
 | 故障记录路径 | `FAULT_LOG = '/workspace/xvj-backup/故障记录.md'` 是容器时代遗留绝对路径 | 裸机上该目录不存在则写入失败（已有 try/catch 告警），崩溃现场只剩 `journalctl` |
 | 静默安装 | OTA 需人工确认，覆盖安装后应用不自启 | 等上 RK3588 盒子再按环境选实现 |
@@ -794,7 +834,8 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 |---|---|
 | `config-funnel-selftest.js` | config 净化漏斗 + 同步收敛（可对部署后文件跑） |
 | `preview-selftest.js` | 大屏试播全链路（自建自删临时数据 + 订阅 MQTT 抓真实载荷） |
-| `wp-selftest.js` / `wp-table-selftest.js` | 墙板字段与前端表格口径 |
+| `wp-selftest.js` / `wp-table-selftest.js` | 墙板字段（含字符格式、学习表、帧台账）与前端表格口径 |
+| `../wp-follow-selftest.js`（**工作区根目录**，不在 `xvj-cloud/`） | 设备端那条链逐行移植的 JS：`resolveWindowFolder` / `panelFolderFor` / `handleWallPanelEvent` / `applyPanelSource` + 学习表解析 |
 | `ps-settings-selftest.js` / `ps-table-selftest.js` | 播放设置字段与表格 |
 | `win-queue-selftest.js` | 窗口编辑串行化 |
 | `esc-selftest.js` | 转义三件套（**只存在于本地仓库，生产没有，别在服务器上跑**） |

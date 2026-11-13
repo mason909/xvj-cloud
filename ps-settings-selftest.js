@@ -49,15 +49,18 @@ const src = fs.readFileSync('server.js', 'utf8');
 function grab(name) {
   const i = src.indexOf('function ' + name + '(');
   if (i < 0) throw new Error('未找到函数 ' + name);
+  // 单行函数按行取，否则会吞到下一个多行函数的结尾（同 config-funnel-selftest）
+  const nl = src.indexOf('\n', i);
+  if (src.slice(i, nl).indexOf('}') >= 0) return src.slice(i, nl) + '\n';
   const j = src.indexOf('\n}\n', i);
   if (j < 0) throw new Error('未找到函数结尾 ' + name);
   return src.slice(i, j + 2);
 }
 const depNames = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isSceneKey', 'isPlainObject',
-  'normalizeFolderMappings', 'panelNoValue', 'normalizePanelNos', 'isSafeFolderName',
+  'normalizeFolderMappings', 'isSafeFolderName',
   'playSettingsValue', 'normalizePlaySettings',
   'buildPrefixedScenes', 'mergePrefixedMappings', 'roomSceneDigest', 'parseRoomConfig'];
-const consts = src.match(/^const (PANEL_NO_MIN|PLAY_ORDERS).*$/gm).join('\n');
+const consts = src.match(/^const (PLAY_ORDERS).*$/gm).join('\n');
 const sandbox = {};
 new Function('exports', 'crypto', consts + '\n' + depNames.map(grab).join('\n')
   + '\nObject.assign(exports,{' + depNames.join(',') + '});')(sandbox, crypto);

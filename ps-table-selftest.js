@@ -16,8 +16,8 @@ function grab(name) {
 const names = ['_psCell', '_psTableOf', '_psSnap',
   '_psGroupHtml', '_psDraftOf', '_psTableHtml', 'psSet',
   // 切表时的「丢掉未保存草稿」闸门：确认框弹几次是这段的价值所在，所以连同墙板那半一起抠进来
-  '_psDirty', '_confirmDropPsDraft', '_exitPsMode', '_wpDirty', '_wpSnap', '_confirmDropWpDraft', '_exitWpMode', '_exitTableModes'];
-const consts = src.match(/^var PS_ORDERS = .*$/gm).join('\n');
+  '_psDirty', '_confirmDropPsDraft', '_exitPsMode', '_wpDirty', '_wpHwSnap', '_wpCodeSnap', '_confirmDropWpDraft', '_exitWpMode', '_exitTableModes'];
+const consts = src.match(/^var (PS_ORDERS|WP_SOURCES) = .*$/gm).join('\n');
 const code = consts + '\n' + names.map(grab).join('\n');
 
 const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -29,13 +29,16 @@ let renders = 0;
 const asks = [];
 let askAnswer = true;
 const confirm = msg => { asks.push(String(msg)); return askAnswer; };
+// 学习态（候选帧 + 倒计时）归墙板表自己管，这里只证明退出时把它叫醒了
+let learns = 0;
 const box = {};
-new Function('exports', 'esc', 'escA', 's', '_loadRoomCfg', 'renderPsEditor', 'confirm',
+new Function('exports', 'esc', 'escA', 's', '_loadRoomCfg', 'renderPsEditor', 'confirm', '_wpLearnReset',
   code + '\nObject.assign(exports,{' + names.join(',') + '});')(
   box, esc, escA, s,
   r => { const c = JSON.parse(r.config || '{}'); c.scenes = c.scenes || {}; ['A', 'B'].forEach(k => { c.scenes[k] = c.scenes[k] || {}; c.scenes[k].folder_mappings = c.scenes[k].folder_mappings || {}; }); return c; },
   () => { renders++; },
-  confirm);
+  confirm,
+  () => { learns++; });
 const T = box;
 
 let pass = 0, fail = 0;
@@ -141,7 +144,12 @@ eq('切房间后旧草稿不复用', (() => { seed(); s.rf = 'r2'; s.rooms = [{ 
 console.log('_exitTableModes（切到另一张总表时的丢弃确认：每张脏表只问一句）:');
 s.rf = 'r1';
 const psDraft = dirty => { const d = { roomId: 'r1', A: {}, B: {} }; d.base = T._psSnap(d); if (dirty) d.A['01'] = { order: 'shuffle' }; return d; };
-const wpDraft = dirty => { const d = { roomId: 'r1', enabled: true, defaultNo: 1, path: '/dev/ttyS1', baud: 9600, A: {}, B: {} }; d.base = T._wpSnap(d); if (dirty) d.A['01'] = 5; return d; };
+const wpDraft = dirty => {
+  const d = { roomId: 'r1', enabled: true, path: '/dev/ttyS1', baud: 9600,
+    dataBits: 8, parity: 'none', stopBits: 1, code: {} };
+  d.baseHw = T._wpHwSnap(d); d.baseCode = T._wpCodeSnap(d);
+  if (dirty) d.code['01'] = { panel: 'F50A00010300' }; return d;
+};
 const reset = (psDirty, wpDirty) => {
   s._psMode = true; s._wpMode = true;
   s._psDraft = psDraft(psDirty); s._wpDraft = wpDraft(wpDirty);
@@ -150,10 +158,16 @@ const reset = (psDirty, wpDirty) => {
 eq('两张表都干净 → 一句都不问', (() => { reset(false, false); return [T._exitTableModes(), asks.length]; })(), [true, 0]);
 eq('只有播放表脏 → 问一句（曾经问两句：闸门和退出函数各弹一次）',
   (() => { reset(true, false); return [T._exitTableModes(), asks.length]; })(), [true, 1]);
-eq('问过就清干净：模式与草稿一起走', (() => { reset(true, false); T._exitTableModes(); return [s._psMode, s._psDraft, s._wpMode, s._wpDraft]; })(), [false, null, false, null]);
+eq('问过就清干净：模式、草稿和学习态一起走', (() => { reset(true, false); learns = 0; T._exitTableModes(); return [s._psMode, s._psDraft, s._wpMode, s._wpDraft, learns]; })(), [false, null, false, null, 1]);
 eq('回答"留下" → 不动任何状态', (() => { reset(true, false); askAnswer = false; const d = s._psDraft; return [T._exitTableModes(), asks.length, s._psMode, s._psDraft === d]; })(), [false, 1, true, true]);
 eq('只有墙板表脏 → 问的是墙板上那句',
-  (() => { reset(false, true); const r = T._exitTableModes(); return [r, asks.length, /墙板表/.test(asks[0])]; })(), [true, 1, true]);
+  (() => { reset(false, true); const r = T._exitTableModes(); return [r, asks.length, /墙板串口/.test(asks[0])]; })(), [true, 1, true]);
+eq('只改学习绑定也算墙板表脏（草稿闸门要盖住新加的那一格）', (() => {
+  reset(false, false);
+  s._wpDraft.code['01'] = { panel: 'F50A00010300' };
+  const dirty = T._wpDirty();
+  return [dirty, T._exitTableModes(), asks.length];
+})(), [true, true, 1]);
 eq('两张都脏 → 各问一句，不重复',
   (() => { reset(true, true); const r = T._exitTableModes(); return [r, asks.length, /播放设置表/.test(asks[1])]; })(), [true, 2, true]);
 eq('前一张留下 → 后一张不再被打扰',
