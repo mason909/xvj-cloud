@@ -17,14 +17,18 @@ const names = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isS
   'buildPrefixedScenes', 'mergePrefixedMappings',
   'roomSceneDigest', 'isSafeDeviceId', 'parseRoomConfig', 'isSafeFolderName', 'isSafeSerialPath',
   'roomDebugFlag', 'roomWallpanelFields', 'roomWallpanelDigest', 'findWallpanelFieldError', 'resolvePreviewTarget',
-  'rememberDevicePanelNo', 'devicePanelNo'];
+  'rememberDevicePanelNo', 'devicePanelNo',
+  'outputPx', 'roomOutputField', 'findOutputError', 'rememberDeviceScreen', 'deviceScreen',
+  'roomSyncFields', 'windowCommandPayload'];
 // 模块级常量（编号区间、波特率档、默认节点、播放设置取值域）：抠出来的函数直接引用它们，不带上就 ReferenceError
-const consts = src.match(/^const (PANEL_NO_MIN|WALLPANEL_BAUDS|WALLPANEL_DEFAULT_PATH|DEVICE_PANEL_NO_TTL|PLAY_ORDERS|PLAY_DISSOLVE_MS_MIN).*$/gm).join('\n')
+const consts = src.match(/^const (PANEL_NO_MIN|WALLPANEL_BAUDS|WALLPANEL_DEFAULT_PATH|DEVICE_PANEL_NO_TTL|PLAY_ORDERS|PLAY_DISSOLVE_MS_MIN|OUTPUT_MIN_PX|DEVICE_SCREEN_TTL).*$/gm).join('\n')
   // 【S-06i】心跳编号缓存是一张模块级 Map，测试要能往里塞/改时间戳，所以连它一起导出
-  + '\n' + src.match(/^const devicePanelNoAt = .*$/m)[0];
+  + '\n' + src.match(/^const devicePanelNoAt = .*$/m)[0]
+  // 任务 #177：设备自报屏幕像素的缓存在同一层，编辑器"取本机"读的就是它
+  + '\n' + src.match(/^const deviceScreenAt = .*$/m)[0];
 const code = consts + '\n' + names.map(grab).join('\n');
 const sandbox = {};
-new Function('exports', 'crypto', code + '\nObject.assign(exports, {' + names.join(',') + ',devicePanelNoAt:devicePanelNoAt,DEVICE_PANEL_NO_TTL:DEVICE_PANEL_NO_TTL});')(sandbox, crypto);
+new Function('exports', 'crypto', code + '\nObject.assign(exports, {' + names.join(',') + ',devicePanelNoAt:devicePanelNoAt,DEVICE_PANEL_NO_TTL:DEVICE_PANEL_NO_TTL,deviceScreenAt:deviceScreenAt,DEVICE_SCREEN_TTL:DEVICE_SCREEN_TTL});')(sandbox, crypto);
 const T = sandbox;
 
 let pass = 0, fail = 0;
@@ -231,6 +235,21 @@ eq('残留的叠化脏键不改 rev', T.roomSceneDigest({ scenes: { A: { folder_
 eq('关回默认后 rev 回到原值', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { order: 'seq' } } } } }), r1);
 eq('键顺序不影响 rev', T.roomSceneDigest({ scenes: { A: { play_settings: { '02': { order: 'shuffle' }, '01': { order: 'shuffle' } } } } }),
   T.roomSceneDigest({ scenes: { A: { play_settings: { '01': { order: 'shuffle' }, '02': { order: 'shuffle' } } } } }));
+// 任务 #177 的上线不抖 rev：output 进指纹只在"真设了"那一支，存量房间全是没设，
+// 部署瞬间必须还能算出加这个字段之前的那串（否则每台在线设备被对账判成落后、各补发一次素材同步）
+const dgBase = { scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [] } } };
+const dgLegacy = (function () {
+  const p = T.buildPrefixedScenes(dgBase.scenes);
+  return crypto.createHash('sha1').update(JSON.stringify([p.A || null, p.B || null])).digest('hex').slice(0, 12);
+})();
+eq('没设 output 时与旧算法逐字节相同', T.roomSceneDigest(dgBase), dgLegacy);
+eq('脏 output（库被手改）也不改 rev', T.roomSceneDigest({ scenes: dgBase.scenes, output: { w: 0, h: 0 } }), dgLegacy);
+eq('设了基准才改 rev', T.roomSceneDigest({ scenes: dgBase.scenes, output: { w: 2400, h: 1080 } }) !== dgLegacy, true);
+eq('换个基准又是另一个 rev', (() => {
+  const a = T.roomSceneDigest({ scenes: dgBase.scenes, output: { w: 2400, h: 1080 } });
+  const b = T.roomSceneDigest({ scenes: dgBase.scenes, output: { w: 2400, h: 1440 } });
+  return [a !== dgLegacy, a !== b];
+})(), [true, true]);
 
 console.log('parseRoomConfig:');
 eq('合法字符串', T.parseRoomConfig('{"debug":true}'), { debug: true });
@@ -275,10 +294,14 @@ eq('HDMI 窗挂着 follow 也不进命中组（非本幕 SCENE 直接排除）',
 const dirty = { id: 's', name: 's', enabled: true, zIndex: 9, content: { type: 'SCENE_A', folderId: '03', follow: 'yes' } };
 const fixed7 = { id: 'w_fix7', name: '固定07', enabled: true, zIndex: 1, content: { type: 'SCENE_A', folderId: '07' } };
 eq('follow 脏值（字符串 "yes"）不算跟随', T.resolvePreviewTarget(pvCfg([fixed7, dirty]), 'A', '07').winIds, ['w_fix7']);
-// 兜底：这一格没窗口绑/在播时，试播按最高权限接管全部启用窗（#161 定调），
+// 兜底：这一格没窗口绑/在播时，试播按最高权限接管**本幕**全部启用窗（#161 定调 + #176 收口），
 // 设备端只落真在屏上的那几扇（previewTargets 的 named 兜底）
-eq('空格兜底 = 接管全部启用窗（连 HDMI 窗也在名单里，判据交给设备）',
-  T.resolvePreviewTarget(pvCfg([hdmi]), 'A', '03').winIds, ['h']);
+eq('空格兜底 = 接管本幕全部启用窗',
+  T.resolvePreviewTarget(pvCfg([fixed, hdmi]), 'A', '07').winIds, ['w_fix']);
+// #176 之后兜底名单也按 content.type 认幕：HDMI/测试色窗跟这一幕的这格没关系，
+// 一间房只挂着 HDMI 窗时试播无窗可接管 = 如实报"没有可接管的窗口"，不拿别的幕的窗顶数
+eq('本幕一只 SCENE 窗都没有（只有 HDMI 窗）→ null，不跨幕接管',
+  T.resolvePreviewTarget(pvCfg([hdmi]), 'A', '03'), null);
 eq('B 幕的跟随窗不抢 A 幕', T.resolvePreviewTarget(pvCfg([fixed], [{ id: 'wb', name: 'B跟随', enabled: true, zIndex: 5, content: { type: 'SCENE_B', follow: true } }]), 'A', '03').winId, 'w_fix');
 eq('B 幕试播命中 B 的跟随窗', T.resolvePreviewTarget(pvCfg([fixed], [{ id: 'wb', name: 'B跟随', enabled: true, zIndex: 5, content: { type: 'SCENE_B', follow: true } }]), 'B', '07').winId, 'wb');
 
@@ -307,6 +330,57 @@ T.devicePanelNoAt.set(DEV, { no: 21, at: Date.now() - T.DEVICE_PANEL_NO_TTL - 1 
 eq('超过 TTL（心跳 30s 一跳，90s 没信就是掉线）→ 读不到', peek(), null);
 eq('过期条目读的时候顺手删除', T.devicePanelNoAt.has(DEV), false);
 T.devicePanelNoAt.clear();
+
+console.log('输出基准 output（任务 #177：编辑器画布与设备 windowGeom 共用那把尺）:');
+eq('没带 → 下发 null（设备按 1920×1080 轴向换算）', T.roomOutputField({}), null);
+eq('合法 {w,h} 原样', T.roomOutputField({ output: { w: 2400, h: 1080 } }), { w: 2400, h: 1080 });
+eq('表单交来的串归一成整数', T.roomOutputField({ output: { w: '1080', h: '1920' } }), { w: 1080, h: 1920 });
+eq('一边越界 = 整把尺作废（不下发半把尺）', T.roomOutputField({ output: { w: 2400, h: 9 } }), null);
+eq('小数不收', T.roomOutputField({ output: { w: 1080.5, h: 1920 } }), null);
+eq('数组/字符串/null 都当没设', [T.roomOutputField({ output: [2400, 1080] }), T.roomOutputField({ output: '2400x1080' }), T.roomOutputField({ output: null })], [null, null, null]);
+eq('校验：没带/null 是合法值（= 撤基准）', [T.findOutputError({}), T.findOutputError({ output: null })], [null, null]);
+eq('校验：合法形状过', T.findOutputError({ output: { w: 2400, h: 1080 } }), null);
+eq('校验：越界报出像素域，不静默回落成设计稿', T.findOutputError({ output: { w: 2400, h: 999999 } }).slice(0, 7), '输出基准的宽高');
+eq('校验：非对象报形状', T.findOutputError({ output: '2400x1080' }).slice(0, 4), '输出基准');
+eq('校验：0 不是合法像素（撤基准要整个键不设）', T.findOutputError({ output: { w: 0, h: 0 } }) !== null, true);
+eq('漏斗：非法基准写库被拦', T.prepareRoomConfig({ output: { w: 5, h: 1080 } }, null).error !== null, true);
+eq('漏斗：合法基准归一后落库', T.prepareRoomConfig({ output: { w: '2400', h: '1080' } }, null).cfg.output, { w: 2400, h: 1080 });
+eq('漏斗：没带就不落键（存量房间出生形状不变）', 'output' in T.prepareRoomConfig({}, null).cfg, false);
+eq('漏斗：少带 output 时继承 DB 那把尺', T.prepareRoomConfig({ scenes: {} }, { output: { w: 2400, h: 1080 } }).cfg.output, { w: 2400, h: 1080 });
+eq('漏斗：显式 output:null 撤基准（不能被 DB 旧值继承回来）', 'output' in T.prepareRoomConfig({ output: null }, { output: { w: 2400, h: 1080 } }).cfg, false);
+// 库里被手改出的脏基准：下次 PUT 继承过来照样撞 400，不静默抹平（同墙板硬件字段那条口径）。
+// 这不是把房间锁死 —— 文案说要什么，带一个合法值或 output:null 就能改回来。
+eq('漏斗：库里的脏基准让下次 PUT 报 400（不静默回落成设计稿）', T.prepareRoomConfig({}, { output: { w: 'abc', h: 1080 } }).error !== null, true);
+eq('漏斗：一次改对即可（合法值覆盖脏值）', T.prepareRoomConfig({ output: { w: 2400, h: 1080 } }, { output: { w: 'abc', h: 1080 } }).cfg.output, { w: 2400, h: 1080 });
+eq('漏斗：也可以整个撤掉（null 连脏值一起带走）', 'output' in T.prepareRoomConfig({ output: null }, { output: { w: 'abc', h: 1080 } }).cfg, false);
+
+eq('下发：重载荷（auth_result / sync_room_materials）带基准，没设=null', T.roomSyncFields(dgBase).output, null);
+eq('下发：重载荷原样带 {w,h}', T.roomSyncFields({ scenes: dgBase.scenes, output: { w: 2400, h: 1080 } }).output, { w: 2400, h: 1080 });
+eq('下发：update_windows 轻通道也带（只改基准就该在这一跳送达）',
+  T.windowCommandPayload('r1', { scenes: dgBase.scenes, output: { w: 3200, h: 1440 } }).output, { w: 3200, h: 1440 });
+eq('下发：基准变了轻载荷里的 rev 也跟着变（设备据此知道要重排）',
+  T.windowCommandPayload('r1', { scenes: dgBase.scenes, output: { w: 3200, h: 1440 } }).rev !== T.windowCommandPayload('r1', dgBase).rev, true);
+
+console.log('【#177】心跳里的设备屏幕像素缓存（编辑器"取本机"的来源，同样无 DDL）:');
+const SCR = 'dev_screen_test';
+T.deviceScreenAt.clear();
+T.rememberDeviceScreen(SCR, 2400, 1080, true);
+eq('在线 + 合法像素 → 读得到', T.deviceScreen(SCR), { w: 2400, h: 1080 });
+T.rememberDeviceScreen(SCR, '3200', '1440', true);
+eq('字符串像素归一成整数', T.deviceScreen(SCR), { w: 3200, h: 1440 });
+T.rememberDeviceScreen(SCR, 0, 1080, true);
+eq('越界宽高当"没报"，直接清掉显示（不留着上一块的尺寸）', T.deviceScreen(SCR), null);
+T.rememberDeviceScreen(SCR, 2400, 1080, true);
+T.rememberDeviceScreen(SCR, 2400, 1080, false);
+eq('离线 → 立即清掉', T.deviceScreen(SCR), null);
+eq('没报过的设备 → null（老版本 APK 不带这俩字段）', T.deviceScreen('dev_never'), null);
+T.rememberDeviceScreen('dev_other_scr', 1920, 1080, true);
+eq('一台一报，互不覆盖（键是设备 id）', T.deviceScreen('dev_other_scr'), { w: 1920, h: 1080 });
+T.rememberDeviceScreen(SCR, 2400, 1080, true);
+T.deviceScreenAt.set(SCR, { size: { w: 2400, h: 1080 }, at: Date.now() - T.DEVICE_SCREEN_TTL - 1 });
+eq('超过 TTL（三个心跳周期没信）→ 读不到', T.deviceScreen(SCR), null);
+eq('过期条目读的时候顺手删除', T.deviceScreenAt.has(SCR), false);
+T.deviceScreenAt.clear();
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

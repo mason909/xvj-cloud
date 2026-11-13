@@ -83,14 +83,25 @@
  *   wallpanel_default_no: 1~32     // 开机/无信号默认编号，非法值一律下发 null
  *   两者都不进 rev（同 debug），单独变更走轻量 set_wallpanel；载荷在 roomWallpanelFields 一处收口。
  *
+ * 输出基准（与 debug 同级的 config 顶层键，任务 #177）：
+ *   output: { w: Number, h: Number } | 缺省
+ *     编辑器画布与设备窗口几何共用的那把尺，单位=输出屏像素。窗口 x/y/width/height 都在这个坐标系里。
+ *     没设 = 历史口径（1920×1080 设计稿按轴向铺满整屏）：设备按 屏宽/1920 与 屏高/1080 各缩一次，
+ *     20:9 的屏上 sx/sy=1.25，数据里的正方形落屏就是长方形。
+ *     设成这台屏的真实像素（设备端就是它自己报上来的那对值）⇒ sx=sy ⇒ 编辑器里画成正方形，屏上就是正方形。
+ *     设备实际像素 ≠ 基准时按轴向缩放铺满整屏 —— 换了一块不同比例的屏，版式整体跟着屏走，不会留黑边。
+ *   进 rev（几何变了屏上必须重排），但只在"真设了"时才计入指纹：存量房间都没设，
+ *   部署瞬间不能因为多算了一段就把全库 rev 推倒（同 panel_no/play_settings「空表不落键」那条教训）。
+ *   非法值写库前 400，不静默回落（同墙板字段那条纪律）。
+ *
  * WinConfig（窗口配置）：服务端整体透传，不解析下列渲染字段，新增字段无需改代码
  *   {
  *     id: String,        // 窗口唯一ID，如 "win_1"
  *     name: String,       // 显示名称，如 "主屏"
- *     x: Number,          // 左上角 X 坐标（px）
- *     y: Number,          // 左上角 Y 坐标（px）
- *     width: Number,      // 宽度（px）
- *     height: Number,     // 高度（px）
+ *     x: Number,          // 左上角 X 坐标（px，单位是房间输出基准 config.output 那个坐标系；没设就是 1920×1080 设计稿）
+ *     y: Number,          // 左上角 Y 坐标（px，同上）
+ *     width: Number,      // 宽度（px，同上 —— 设备落屏时按 屏宽/基准宽 与 屏高/基准高 轴向换算，见 output 那节）
+ *     height: Number,     // 高度（px，同上）
  *     zIndex: Number,    // 层级（越大越上层）
  *     aspectRatio: String | null,  // 如 "16:9"，可选
  *     opacity: Number,    // 0..1 窗口透明度
@@ -552,6 +563,14 @@ function prepareRoomConfig(raw, existingCfg) {
   if (wpErr) return { error: wpErr };
   Object.assign(merged, roomWallpanelFields(merged));
 
+  // 输出基准（编辑器画布与设备换算共用的那把尺）按下发口径落库：字符串宽高归一成整数，
+  // 没设/null 就把整个键撤掉（下发 null，设备回落到 1920×1080 轴向换算）。
+  // 非法值写库前 400 —— 静默回落等于替运营改了整间房的版式，而配置表里看到的还是他自己填的那串。
+  var outErr = findOutputError(merged);
+  if (outErr) return { error: outErr };
+  var outVal = roomOutputField(merged);
+  if (outVal) merged.output = outVal; else delete merged.output;
+
   // 播放设置同理：非法的时长/顺序需要在写库前报出去，而不是静默回落成"表里一套、设备演另一套"。
   // 查的是逐幕合并之前的 scenes —— mergeSceneConfig 里的 normalizePlaySettings 会把脏值直接规范化掉，
   // 到那时再查就看不见 incoming 写进来的那串了（DB 里的存量都是当年校验过的，继承回来不用再查一遍）
@@ -668,7 +687,14 @@ function mergePrefixedMappings(prefixedScenes) {
  */
 function roomSceneDigest(cfg) {
   const p = buildPrefixedScenes((cfg && cfg.scenes) || {});
-  return crypto.createHash('sha1').update(JSON.stringify([p.A || null, p.B || null])).digest('hex').slice(0, 12);
+  // 输出基准决定每扇窗落屏的像素位置，属几何，进 rev（设备才知道要重排）。
+  // 但只在"真设了"时才往数组里多塞那一段：存量房间全部没设，指纹必须和加这个字段之前
+  // 逐字节相同，否则部署那一瞬间全库 rev 漂移，每台在线设备都被对账判成落后、补发一轮素材同步
+  // （同 panel_no / play_settings「空表不落键」那条教训）。
+  const parts = [p.A || null, p.B || null];
+  const out = roomOutputField(cfg);
+  if (out) parts.push(out.w + 'x' + out.h);
+  return crypto.createHash('sha1').update(JSON.stringify(parts)).digest('hex').slice(0, 12);
 }
 
 /**
@@ -688,6 +714,9 @@ function windowCommandPayload(roomId, cfg) {
     action: 'update_windows',
     room_id: roomId,
     scenes: buildPrefixedScenes((cfg && cfg.scenes) || {}),
+    // 输出基准也在这一跳带：只改基准（版式没动）就该由这条轻通道送达，设备按新分母重算每扇窗的几何。
+    // 不带的话"改基准"只能等全量同步或重连，编辑器里明明已经生效，屏上却还按旧尺子摆。
+    output: roomOutputField(cfg),
     rev: roomSceneDigest(cfg),
     timestamp: Date.now()
   };
@@ -738,6 +767,65 @@ function findWallpanelFieldError(cfg) {
     }
   }
   return null;
+}
+
+/**
+ * 房间输出基准（config.output）→ 下发/指纹用的确定形状，或 null（没设）。
+ * 只认 {w,h} 两个 OUTPUT_MIN_PX..OUTPUT_MAX_PX 的整数；脏类型/越界当"没设"，
+ * 因为非法值在写库前已被 findOutputError 报 400，能落到这里的只剩手改库。
+ * 单位=输出屏像素：它同时是编辑器画布的尺寸和设备换算窗口的分母（见 MainActivity.windowGeom）。
+ */
+const OUTPUT_MIN_PX = 16, OUTPUT_MAX_PX = 7680;
+function outputPx(v) {
+  var n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
+  return Number.isInteger(n) && n >= OUTPUT_MIN_PX && n <= OUTPUT_MAX_PX ? n : null;
+}
+function roomOutputField(cfg) {
+  var o = cfg && cfg.output;
+  if (!isPlainObject(o)) return null;
+  var w = outputPx(o.w), h = outputPx(o.h);
+  return w !== null && h !== null ? { w: w, h: h } : null;
+}
+
+/**
+ * 输出基准写入校验：宽高必须是 16~7680 的整数像素，否则 400。
+ * 缺省/null 是合法值（= 没设，设备回落到 1920×1080 轴向换算），不报错。
+ * 非法值不静默回落的理由同墙板字段：那等于"表里填的一套、设备演另一套"，而这里错的是一整间房的版式。
+ */
+function findOutputError(cfg) {
+  var o = cfg && cfg.output;
+  if (o === undefined || o === null) return null;
+  if (!isPlainObject(o)) return '输出基准必须是 { w: 宽像素, h: 高像素 } 的对象，或整个不设';
+  if (outputPx(o.w) === null || outputPx(o.h) === null) {
+    return '输出基准的宽高必须是 ' + OUTPUT_MIN_PX + '~' + OUTPUT_MAX_PX + ' 之间的整数像素（例如本机屏幕 2400×1080）';
+  }
+  return null;
+}
+
+/**
+ * 设备自报的屏幕像素（心跳 screen_w/screen_h）：内存缓存 → GET /api/devices 的 d.screen，
+ * 供编辑器一键"取本机分辨率"。口径与【S-06i】的当前墙板编号一致 —— 只放内存不落库，
+ * 30s 一跳的瞬时状态没必要为它走 DDL，也没必要把心跳变成写放大；
+ * 超过三个心跳周期没刷新就当未知（换了一块屏、盒子重插 HDMI，界面上不该还留着上一块的尺寸）。
+ */
+const DEVICE_SCREEN_TTL = 90000;
+const deviceScreenAt = new Map();   // 规范 devices.id -> { size: {w,h}, at }
+
+function rememberDeviceScreen(id, rawW, rawH, isOnline) {
+  var w = isOnline ? outputPx(rawW) : null;
+  var h = isOnline ? outputPx(rawH) : null;
+  if (w === null || h === null) deviceScreenAt.delete(id);
+  else deviceScreenAt.set(id, { size: { w: w, h: h }, at: Date.now() });
+}
+
+function deviceScreen(id) {
+  const hit = deviceScreenAt.get(id);
+  if (!hit) return null;
+  if (Date.now() - hit.at > DEVICE_SCREEN_TTL) {
+    deviceScreenAt.delete(id);
+    return null;
+  }
+  return hit.size;
 }
 
 /**
@@ -814,7 +902,9 @@ function roomSyncFields(cfg) {
   return Object.assign({
     scenes: prefixedScenes,                                    // folder_mappings / panel_no / play_settings 键已带幕前缀（A01/B01）
     folder_mappings: mergePrefixedMappings(prefixedScenes),     // A+B 全量，与 HTTP 清单接口同形
-    debug: roomDebugFlag(cfg)
+    debug: roomDebugFlag(cfg),
+    // null = 房间没设输出基准，设备按 1920×1080 设计稿轴向换算（历史口径）
+    output: roomOutputField(cfg)
   }, roomWallpanelFields(cfg), {
     rev: roomSceneDigest(cfg)
   });
@@ -832,7 +922,7 @@ function syncCommandPayload(roomId, cfg) {
 /**
  * 【同步时机的唯一收敛点】房间 config 落库后调用：真变了才打扰设备，按变化性质发**最轻的那几条**。
  * - folder_mappings 变了   → sync_room_materials（全量对账，可能要下载，会重建窗口；载荷已含 debug/墙板，不再补轻枪）
- * - 只有窗口/总亮度/编号/播放设置变了 → update_windows（APK 原地改视图，不碰素材；结构或播放设置变化时自行回退重建）
+ * - 只有窗口/总亮度/编号/播放设置/输出基准变了 → update_windows（APK 原地改视图，不碰素材；结构或播放设置变化时自行回退重建）
  * - debug 变了             → set_debug（轻量，不动素材、不重建，见 APK setDebugMode）
  * - 墙板字段变了           → set_wallpanel（同上轻量，见 APK applyWallPanelEnabled；含开关/默认编号/节点/波特率）
  * - 后两类与前两类是并列判定：同一次 PUT 既改编号又开总闸，就 update_windows + set_wallpanel 两条都发
@@ -1237,6 +1327,9 @@ function handleMqttMessage(topic, message) {
             // 不是"保持原样"—— 设备把墙板关了、房间撤了默认号，界面不能再留着旧编号。
             resolveDeviceId(deviceId, function (canonId) {
               rememberDevicePanelNo(canonId, data.panel_no, isOnline);
+              // 本机屏幕像素：编辑器"输出基准"那一栏拿它一键填（#177）。同墙板编号一样是瞬时状态，
+              // 这一跳没带就是"不知道"，界面上不该留着上一块屏的尺寸。
+              rememberDeviceScreen(canonId, data.screen_w, data.screen_h, isOnline);
             });
           }
         );
@@ -1647,7 +1740,7 @@ app.get('/api/devices', (req, res) => {
   }
   db.query(sql, params, (err, results) => {
     if (err) return res.status(500).json({ error: err.message });
-    (results || []).forEach(function (d) { d.panel_no = devicePanelNo(d.id); });
+    (results || []).forEach(function (d) { d.panel_no = devicePanelNo(d.id); d.screen = deviceScreen(d.id); });
     res.json(results);
   });
 });
@@ -1674,6 +1767,7 @@ app.delete('/api/devices/:id', (req, res) => {
     // 清身份映射缓存：行都删了还留着"自报 id → 已删 id"，会把后续日志挂到不存在的设备上
     deviceIdCache.forEach((v, k) => { if (v.id === did) deviceIdCache.delete(k); });
     devicePanelNoAt.delete(did);   // 墙板当前编号同理（【S-06i】），删了就不该还在设备列表上显示
+    deviceScreenAt.delete(did);    // 自报屏幕像素同理（#177）
     db.query('DELETE FROM device_versions WHERE device_id = ?', [did], () => {
       db.query('DELETE FROM device_logs WHERE device_id = ?', [did], () => {
         db.query('DELETE FROM devices WHERE id = ?', [did], (err2) => {
