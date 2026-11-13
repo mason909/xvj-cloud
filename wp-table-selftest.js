@@ -1,7 +1,7 @@
 // 一次性自检：把墙板配置表里的纯函数从 public/index.html 抠出来跑断言（不起服务、不连库、不动数据）。
 // 口径（2026-11-13）：没有编号、也不分幕，一张 { '01': {player,panel} } 的码值表（一格最多两路码：点歌机 + 墙板）+ 串口硬件参数。
 const fs = require('fs');
-const src = fs.readFileSync(require('path').join(__dirname, 'public/index.html'), 'utf8');
+const src = fs.readFileSync(require('path').join(__dirname, 'public/index.html'), 'utf8').replace(/\r\n/g, '\n');
 function grab(name) {
   const i = src.indexOf('function ' + name + '(');
   if (i < 0) throw new Error('未找到 ' + name);

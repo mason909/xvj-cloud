@@ -45,7 +45,7 @@ const canon = v => JSON.stringify(v, (k, val) =>
     : val);
 
 // ---- 从部署中的 server.js 抠出纯函数（与 config-funnel-selftest 同一套 grab）----
-const src = fs.readFileSync('server.js', 'utf8');
+const src = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n');
 function grab(name) {
   const i = src.indexOf('function ' + name + '(');
   if (i < 0) throw new Error('未找到函数 ' + name);

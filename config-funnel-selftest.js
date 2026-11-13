@@ -1,7 +1,7 @@
 // 一次性自检：把 server.js 里的纯函数漏斗抠出来跑断言（不连库、不起服务）。用完即删。
 const fs = require('fs');
 const crypto = require('crypto');
-const src = fs.readFileSync(process.argv[2] || 'server.js', 'utf8');
+const src = fs.readFileSync(process.argv[2] || 'server.js', 'utf8').replace(/\r\n/g, '\n');
 
 function grab(name) {
   const i = src.indexOf('function ' + name + '(');

@@ -3,7 +3,7 @@
 // 全默认的格子不落键、空表整个键都不下发，否则存量房间的 rev 会漂移一次、每台在线设备白重同步。
 // 叠化（dissolve / dissolve_ms）已于 2026-11-12 随功能整条删除，这一格只剩 order。
 const fs = require('fs');
-const src = fs.readFileSync(require('path').join(__dirname, 'public/index.html'), 'utf8');
+const src = fs.readFileSync(require('path').join(__dirname, 'public/index.html'), 'utf8').replace(/\r\n/g, '\n');
 function grab(name) {
   const i = src.indexOf('function ' + name + '(');
   if (i < 0) throw new Error('未找到 ' + name);
