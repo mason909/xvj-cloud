@@ -2537,7 +2537,7 @@ function _wpTableHtml() {
     h += '<span id="wpBound" style="font-size:var(--fs-micro);color:#666">已录 ' + bound + ' 个码</span>';
     if (_wpDirty()) h += '<span class="wp-warn">● 有未保存改动</span>';
     h += '<span style="flex:1"></span>';
-    h += '<button class="btn btn-sync" id="wpCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的总闸、串口节点/波特率/字符格式与码值表覆盖到其余所有房间（其它配置一概不碰）" onclick="wpCopyAll()">全局复制</button>';
+    h += '<button class="btn btn-sync" id="wpCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的总闸、串口节点/波特率/字符格式与码值表覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="wpCopyAll()">全局复制</button>';
     h += '<button class="btn btn-primary" id="wpSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="保存串口参数与总闸（码值是录完立刻保存的，不用点这里）" onclick="wpSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未保存的串口/总闸改动，按云端当前配置重画" onclick="wpReload()">重读</button>';
     h += '</div>';
@@ -2956,7 +2956,9 @@ async function wpSave() {
 }
 
 /**
- * 全局复制：把当前房间的墙板字段（总闸/串口/字符格式/码值表）覆盖到其余所有房间。
+ * 全局复制：把当前房间的墙板字段（总闸/串口/字符格式/码值表）覆盖到**本店**其余房间。
+ * 墙板码值只对同店同批设备有意义，跨店复制等于把别人家的按键映射写进来，所以范围以当前房间的
+ * store_name 为界，不是全平台所有房间。
  * 每间房都走读后写、只动 wallpanel_* 七项，其它配置（场景/窗口/播放设置/调试）一概不碰；
  * 复制完把当前房间也存一次，保证"复制出去的"就是"这里留下的"。
  * 一间失败不拦后面：最后报出成功数与失败名单。
@@ -2969,13 +2971,21 @@ async function wpCopyAll() {
     if (bindErr.length) { alert('先处理码值：\n' + bindErr.join('\n')); return; }
     var btn = document.getElementById('wpCopyBtn');
     if (btn) btn.disabled = true;
+    // 复制边界 = 当前房间所属店铺；s.rooms 可能是旧的/未按店过滤的快照，拿不到就现读一次
+    var cur = (s.rooms || []).find(function (r) { return r && r.id === s.rf; });
+    var store = cur && cur.store_name;
+    if (!store) {
+        try { cur = await apiGet('/api/rooms/' + encodeURIComponent(s.rf)); store = cur && cur.store_name; }
+        catch (e) { /* 下面统一报错 */ }
+    }
+    if (!store) { if (btn) btn.disabled = false; alert('拿不到当前房间的店铺，无法确定复制范围。'); return; }
     var list;
-    try { list = asList(await apiGet('/api/rooms')); }
+    try { list = asList(await apiGet('/api/rooms?store=' + encodeURIComponent(store))); }
     catch (e) { if (btn) btn.disabled = false; alert('取房间列表失败: ' + e.message); return; }
     var others = list.filter(function (r) { return r && r.id !== s.rf; });
-    if (!others.length) { if (btn) btn.disabled = false; alert('没有其它房间可覆盖。'); return; }
-    if (!confirm('把当前房间的墙板设置（总闸、串口节点/波特率/字符格式、码值表）覆盖到其余 '
-        + others.length + ' 间房？\n\n它们原本的墙板设置会被整体替换，其它配置不受影响。')) {
+    if (!others.length) { if (btn) btn.disabled = false; alert('本店没有其它房间可覆盖。'); return; }
+    if (!confirm('把当前房间的墙板设置（总闸、串口节点/波特率/字符格式、码值表）覆盖到「' + store + '」的其余 '
+        + others.length + ' 间房？\n\n它们原本的墙板设置会被整体替换，其它配置与其他店铺不受影响。')) {
         if (btn) btn.disabled = false;
         return;
     }
@@ -3007,7 +3017,7 @@ async function wpCopyAll() {
         if (btn) btn.disabled = false;
         if (btn) btn.textContent = '全局复制';
     }
-    s._wpNote = '已把墙板设置覆盖到 ' + ok + ' 间房' + (bad.length ? '，' + bad.length + ' 间失败' : '');
+    s._wpNote = '已把墙板设置覆盖到本店 ' + ok + ' 间房' + (bad.length ? '，' + bad.length + ' 间失败' : '');
     renderWpEditor();
     if (bad.length) alert('有 ' + bad.length + ' 间房没覆盖成功：\n' + bad.join('\n'));
 }
