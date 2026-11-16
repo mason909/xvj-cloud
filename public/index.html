@@ -848,7 +848,7 @@ function createPlayer(url, type, container, poster) {
  * 【F-02】菜单切换 sp(p)（各页初始化在这里分派）
  * 【F-03】素材管理页 lm()     　【F-03b】预设素材页 lp()
  * 【F-04】未注册设备 lu()     　【F-04b】设备列表 ld()
- *         【F-04c】设备手动命令 sendDeviceCommand()（stop / 强制对账 / 重推素材，只代表 broker 收下了）
+ *         【F-04c】设备手动命令 sendDeviceCommand()（stop / 待机 / 恢复播放 / 强制同步 / 推最新版，只代表 broker 收下了）
  * 【F-05】设备授权 ar()→confirmAuth()（一次 POST /api/devices/:id/authorize 同时完成授权与绑房）
  *         unbind() 解绑授权、unbindRoom() 只解房间绑定
  * 【F-06】房间列表刷新 lr()   　【F-06b】选择房间渲染 sr()
@@ -1761,9 +1761,13 @@ function rmDevice() {
             h += '</div>';
             // 手动命令：服务端 POST /api/devices/:id/command 只认 DEVICE_ACTIONS 白名单，且 update_windows /
             // delete_material / preview_* 已被拦在专用接口后面（载荷必须由服务端按房间配置生成），这里能裸发的就是剩下的几条。
-            // 此前前端一个入口都没有，现场想"立刻停掉这台的画面"只能去改配置间接触发。只放三枚真正用得上的。
+            // 此前前端一个入口都没有，现场想"立刻停掉这台的画面"只能去改配置间接触发。
+            // 「待机」「恢复播放」是同一对可逆动作（设备侧 APK【A-15】）：待机不杀进程、不动配置，
+            // 黑屏后 MQTT 与心跳照常，所以云端随时唤得回；设备本机也可以用鼠标左键连点 5 下做同一件事。
             h += '<div style="display:flex;gap:6px;align-items:center">';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="停止该设备全部窗口的播放（不改配置，下次同步会恢复）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'stop\',\'停止播放\',' + (isOnline ? 'true' : 'false') + ')">停止</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="黑屏待机：窗口全部释放，但设备保持在线、配置与素材都不动（本机鼠标左键连点 5 下是同一个开关）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'standby\',\'待机\',' + (isOnline ? 'true' : 'false') + ')">待机</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="退出待机：按设备上那份配置缓存重建画面（不在待机中则无变化）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'resume\',\'恢复播放\',' + (isOnline ? 'true' : 'false') + ')">恢复播放</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="不看 rev 强制整房重新同步（素材清单 + 窗口 + 映射全量下发，会重建播放器）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'sync\',\'强制同步\',' + (isOnline ? 'true' : 'false') + ')">强制同步</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="把版本管理里的最新版推给这台设备（OTA）" onclick="pushUpdate(\'' + escJsA(d.id) + '\')">推最新版</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="解除这台机与本房的绑定（设备回到「[U]未注册设备」，需要重新授权才能再绑）" onclick="unbindRoom(\'' + escJsA(d.id) + '\')">解绑</button>';

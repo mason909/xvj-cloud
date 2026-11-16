@@ -1873,7 +1873,9 @@ app.post('/api/devices/:id/block', (req, res) => {
 // 老 APK(167) 里那条 preset_sync 分支只是留着没人调用，服务端先收掉入口即可，不需要设备升级。
 const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
                         'update_windows', 'delete_material', 'update', 'set_debug', 'set_wallpanel',
-                        'preview_material', 'preview_stop', 'wallpanel_learn'];
+                        'preview_material', 'preview_stop', 'wallpanel_learn',
+                        // 待机/恢复：黑屏可逆、不动配置，设备侧只吃 action（APK【A-15】）
+                        'standby', 'resume'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
