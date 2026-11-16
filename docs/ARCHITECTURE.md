@@ -306,7 +306,7 @@ GET / OPTIONS / HEAD 开放（设备端只做 GET）。前端由【F-00】负责
 | 方向 | 主题 | 说明 |
 |---|---|---|
 | 入 | `xvj/device/register` | 注册（`deviceId` 在 payload，无第二段） |
-| 入 | `xvj/device/{id}/status` | 心跳：`version` / `model` / `mac` / `rev`（已应用配置指纹）/ `syncing` / `frames`（最近收到的 485 帧，见 §五.8） |
+| 入 | `xvj/device/{id}/status` | 心跳：`version` / `model` / `mac` / `rev`（已应用配置指纹）/ `syncing` / `frames`（最近收到的 485 帧，见 §五.8）/ `mem_avail_mb` + `app_pss_mb`（内存水位，见【A-17】） |
 | 入 | `xvj/device/{id}/frames` | 学习窗内的帧候选快照 `{learning, frames:[{hex,n,age}]}`，只进服务端内存台账（`DEVICE_FRAMES_TTL` 120s，无 DDL） |
 | 入 | `xvj/device/{id}/request` | 设备主动请求配置 |
 | 入 | `xvj/device/{id}/log` | 设备日志上报（远程 DEBUG 通道） |
@@ -420,10 +420,11 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | A-08 | 窗口释放 | `releaseAllWindows` |
 | A-09 | OTA 自更新 | `checkForUpdate` / `isTrustedApkUrl` / `isValidFilepath` / `verifyApkSignature` / `downloadAndInstall` / `installApk` / `retryPendingInstall` |
 | A-10 | 系统 UI | `hideSystemUI` |
-| A-11 | 工具方法 | `logToFile` / `sha256` / `generateDeviceFingerprint` / `calculateMd5` |
+| A-11 | 工具方法 | `logToFile`（写前滚动：2MB 一轮、留两份旧档）/ `sha256` / `generateDeviceFingerprint` / `calculateMd5` |
 | A-12 | 播放设置 | `playSettingsOf` / `playSettingsJson` |
 | A-13 | 大屏试播 | `startGroupPreview` / `previewTarget` / `armPreview` / `endPreview` / `endPreviewCovering` / `abortAllPreviews`；**账按格子记**（`previews[folderKey]`），接管那一刻的正片位置抄进 `PreviewState` |
 | A-14 | 墙板 485 链路 | `applyWallPanelEnabled` / `applyWallPanelFields` / `applyWallPanelBindings` / `handleWallPanelEvent` / `applyPanelSource` / `panelFolderFor` / `startWallPanelLearn` / `publishFrameSnapshot` |
+| A-17 | 保活（独立进程） | `KeepAliveService`（`:keepalive` 进程，`reviveIfStale` / `goForeground`）；主进程侧 `startKeepAliveService` / `touchAlive` / `markExitedFile` |
 
 > **A-05 是空号**：单播放器点播时代的 `playFromUrl()` / `playLocalVideo()` 早已删除，标签保留不复用。
 > `syncRoomMaterialsAllScenes()` 也已改名，旧文档里的这两个名字都不存在了。
@@ -458,6 +459,13 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 - 读图两条口都挂 `requireAuth`：`GET /api/devices/:id/screenshot` 回 `{available, ts, bytes, age_ms}` 给前端判"是不是刚拍的那张"，`GET /api/devices/:id/screenshot.jpg` 用 `res.end(buf)` 直出内存字节并带 `no-store`；两分钟一到 (`SHOT_KEEP_MS`) 两条都转成"没有/请重新点一次"。既然压根不落盘，也就不存在图被 nginx 直出或进 git 的风险。
 - 设备侧（APK【A-16】）：`su -c "screencap -p"` 从 stdout 收 PNG（不落设备磁盘）→ `BitmapFactory` 按 2 的幂采样再精确缩到 ≤1280 宽 → JPEG 质量 55（一帧几十 KB）→ POST，令牌放 `x-shot-token` 头里而不是 URL（URL 会进日志）。整段跑在独立的单线程 `shotExecutor` 上：素材同步占满 4 个下载坑时这一发不排队，同时全局也只可能有一张 screencap 在跑。**抓屏不看前台**：命令从 MQTT 线程进来、screencap 由 su 起的独立进程做整块屏的合成，所以应用被 HOME 键最小化、或已退出到桌面时照样截得到，截到的正是当时屏上的原厂桌面 —— 同理**不吃 `exited` 闸门**。唯一前提是进程还活着，否则命令收不到。任何一步失败只留一行 `SYNC/SCREENSHOT` 日志，不碰播放器、不改状态；管理台 25 秒等不到 ts 变新就给"去看设备日志页"的提示。
 - 自检：`screenshot-selftest.js`（108 条：令牌生命周期、阅后即焚过期、上传口边界、两段缩放比例、前端判新与超时，外加三份源码锚点）。
+
+**【A-17】画面保活（2026-11-16，台架记）**：现场症状是"进程一死，MQTT 跟着死，远程连 `reopen_desktop` 都发不进来，只能人到箱子前点图标"。
+- 进程结构：`KeepAliveService` 跑在独立 `:keepalive` 进程（同进程的 Service 跟 MainActivity 一起死，等于没做），`START_STICKY` 前台服务；targetSdk 34 必须带 `FOREGROUND_SERVICE_SPECIAL_USE` 权限 + manifest `foregroundServiceType="specialUse"` + 子类型 property，后台重启可能抛 `ForegroundServiceStartNotAllowedException`，调用处 try/catch 退化。
+- 判活靠文件心跳：跨进程拿不到对方内存状态、`getRunningAppProcesses` 在新系统上不可靠 ⇒ 主进程每次 `sendStatus` 碰 `alive` 的 mtime（30s 一拍），服务每 60s 查一次，超过 120s 没碰就认定死了，带 HOME 类目 `startActivity` 拉回来（复用【A-15】的 singleTask + `liveInstance` 去重口径）。
+- 与显式退出互斥：`exit_desktop` 后主进程留 `exited` 标记文件，服务看见就不拉（不标记的话退出两分钟后画面自己弹回来）；`onResume` 回到前台时清标记。跨进程只能靠文件，`MODE_MULTI_PROCESS` 已废弃。
+- 内存水位：心跳额外带 `mem_avail_mb`（整机 `ActivityManager.MemoryInfo.availMem`）与 `app_pss_mb`（本进程 `Debug.getTotalPss`），只进 `status_data` 原文供后台画曲线/置红，**不进 rev、不触发任何对账**；dma-buf 只有 root 读得到，设备侧拿不到就整段不带。
+- 自检：`keepalive-selftest.js`（36 条：判活建模 7 例 + 服务/清单/主进程三处源码锚点）。
 
 ⚠️ **没有 `sync`**：服务端的 `action:'sync'` 只是 HTTP 入参，publish 前已改写成 `sync_room_materials`。
 授权广播 `xvj/auth/response` 上另有 `auth_result` / `deauthorize` 两个 action，
