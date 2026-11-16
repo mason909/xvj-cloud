@@ -416,7 +416,7 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | A-03 | 注册 & 授权 | `registerDevice` / `sendStatus` / `handleAuthResponse` |
 | A-04 | 命令分发 | `handleCommand` → `when(action)` |
 | A-06 | 素材同步 | `requestRoomMaterialSync` / `runRoomSyncLoop` / `doRoomMaterialSync` / `fetchRoomMaterials` / `syncSceneFolders` / `syncFolderWithIds` |
-| A-07 | 窗口配置 & 渲染 | `applySceneConfigs` / `scenesFingerprint` / `enabledWindowsSorted` / `applyLiveWindowUpdate` / `createWindowView` / `resolveWindowFolder` / `playFolderInWindow`；同格共享解码那层 `createShareGroup` / `refreshShareGroup` / `destroyShareGroups`（画布在 `ShareCanvasView.kt`），日志共用 `armWindowLogger` |
+| A-07 | 窗口配置 & 渲染 | `applySceneConfigs` / `scenesFingerprint` / `enabledWindowsSorted` / `applyLiveWindowUpdate` / `createWindowView` / `resolveWindowFolder` / `playFolderInWindow` / `applySceneChangesInPlace`（原地闸门）/ `playlistStale`；同格共享解码那层 `createShareGroup` / `refreshShareGroup` / `destroyShareGroups`（画布在 `ShareCanvasView.kt`），日志共用 `armWindowLogger` |
 | A-08 | 窗口释放 | `releaseAllWindows` |
 | A-09 | OTA 自更新 | `checkForUpdate` / `isTrustedApkUrl` / `isValidFilepath` / `verifyApkSignature` / `downloadAndInstall` / `installApk` / `retryPendingInstall` |
 | A-10 | 系统 UI | `hideSystemUI` |
@@ -468,16 +468,28 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 ```
 1. APP 启动 → loadConfig() 读 SharedPreferences 的 scenes_json 缓存 → applySceneConfigs 恢复窗口
 2. MQTT 连上 → register → 服务端回 auth_result（带 scenes）→ 缓存并再次 applySceneConfigs
-3. 收到 command → 同步素材 / 只重排窗口 / 试播
+3. 收到 command → 同步素材（新素材原地换清单）/ 只重排窗口 / 试播
 4. 拿不到 scenes（未授权或离线）→ 停在欢迎视频，或用 scenes_json 缓存
 ```
 
-**两条渲染路径的代价差别是设计依据**：
+**三条渲染路径的代价差别是设计依据**：
 
 | 路径 | 触发 | 代价 |
 |---|---|---|
-| `applySceneConfigs` | 全量同步、授权、重连 | **释放并重建全部播放器 → 视频从头播** |
+| `applySceneConfigs` → `applySceneChangesInPlace`（原地闸门） | 全量同步/授权/重连，但**窗口清单与共享组构成没动** | 只给内容真变的那几扇 `setMediaItems`，**播放器零释放** |
+| `applySceneConfigs`（整屏重建） | 冷启动 / 闸门回退 / `force` | **释放并重建全部播放器 → 视频从头播 → 内核 dma-buf 不回还** |
 | `applyLiveWindowUpdate` | `update_windows` | 原地更新几何/属性，不重建；判定为结构变化时才回退全量重建 |
+
+> **闸门为什么是硬要求，不是优化**：台架（CX3588 / 4GB / 7680×2160 / 6 扇窗）实测每整屏重建一次，
+> 内核侧净留 **24 个对象、约 97MB dma-buf** 且永不归还 —— 关窗也不降。5 轮 1,139,892K → 1,625,412K，
+> Free RAM 只剩 765MB，再几轮 lmkd 就开杀，现场表现是"连续推素材后 APP 闪退"（任务 #224）。
+> 大块的 8K 成帧缓冲（≥8MB 那种）拿得回来，泄的是小块的 codec/surface buffer，所以**把释放与创建串起来没用，唯一有效的手段是不重建**。
+>
+> **闸门怎么判**：两侧都从同一份 scenes 派生，期望次序 / 每窗内容签名 / 每窗所属格 / 共享组构成
+> 都是现算的，不存在账本漂移；对不上就是结构变化或屏上没账（冷启动、退出到桌面后）→ 交回整屏重建。
+> 任一路命中即原地：① `content` 签名变了且两态都是视频（换映射）；② 该格随机/顺序真翻转（重排清单）；
+> ③ `playlistStale()` 磁盘清单与缓存不一致（新素材落格/补下/云端删素材），判据与播放器吃的 `sameItems` 同一个。
+> 回退条件：试播中、窗口增删启停换序、共享组成员构成变了、内容类型互转（视图类型不同）、某窗屏上没画面现场。
 
 **窗口坐标怎么落屏**：`windowGeom()` 是唯一换算口，两轴各算各的比例，
 分母是**这间房的输出基准**（`config.output`，没设则 `1920×1080` 设计稿，冷启动从 `output_w/output_h` 读回），
@@ -515,6 +527,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
       ↓ syncSceneFolders 遍历 A/B 两幕 folder_mappings（键带前缀）
       ↓ syncFolderWithIds 逐格对账下载
 落盘 filesDir/scenea|sceneb/NN，缓存键 = 相对路径
+      ↓ applySceneConfigs（不传 force）→ 命中原地闸门，只有内容真变的那几扇换清单
 ```
 
 内容一致性判据三把钥匙：**ETag / Last-Modified / md5**，缓存键都是相对路径。
@@ -538,7 +551,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 - 随机播放在进入文件夹时用 `items.shuffled()` 定一次序（不是 ExoPlayer 的 `shuffleModeEnabled`）；
   同格多扇窗要共洗一次，见 §5.7 的 `folderPlaylists`。
 - **改设置不动映射** → 服务端发 `update_windows` 轻通道；但设置不在窗口 `content` 里，内容签名比不出它，
-  所以本机另记 `appliedPlaySettingsJson`，真变了就判成结构变化回退全量重建（**视频会从头播**）。
+  所以本机另记 `appliedPlaySettingsJson`，真变了就把受影响那几扇的清单按新设置重排（`playFolderInWindow` 原地换列表）。
 
 ### 5.7 同格严格同步与整组试播（A-07 / A-13）
 
@@ -805,6 +818,10 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 13. **同一格的多扇窗是一个画面，不是 N 个画面**（2026-11-11 定调）。任何"只动一扇窗"的路径都会当场分裂屏幕，
     而且那一扇播完回到自己被冻住的位置 —— 这一格的轮播顺序从那一刻永久错开，现场看到的就是"顺序乱了"。
     新增接管类动作（试播、切格、重排）一律按整组下发、整组收尾。
+14. **整屏重建是漏点，能原地就别重建**（2026-11-16 台架实测）。每释放并重建一轮 6 个播放器，内核净留 24 个
+    dma-buf 对象约 97MB 且永不归还（关窗也不降），5 轮涨 485MB 后 lmkd 开杀，现场表现是"连续推素材后闪退"。
+    大块的 8K 成帧缓冲拿得回来，泄的是小块 codec/surface buffer，所以把 release 与 create 串起来没用。
+    新增任何配置类下发路径，先问"能不能走 `applySceneChangesInPlace`"；要拆共享组、换视图类型、增删窗口才允许回退整屏。
 
 ---
 
