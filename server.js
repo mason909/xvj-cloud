@@ -1135,6 +1135,85 @@ app.delete('/api/session', (req, res) => {
   res.json({ success: true });
 });
 
+// ========== 【S-15】设备实时截图 ==========
+// 链路：管理台点「实时截图」→ 服务端发一条**带一次性上传令牌**的 MQTT 命令 → 设备截屏并把 JPEG
+// POST 回来 → 管理台轮询到 ts 变了就把图显示出来。
+// 为什么要令牌：设备上只有 MQTT 凭据，没有管理台 API key，而这条口是写接口。令牌只出现在发给
+// 那一台设备的私有 command 主题里，用过即废、60 秒过期 —— 别人既猜不到也没法重放。
+// 图刻意不落 public/ 下（那里 nginx 直出、等于公开），只由带鉴权的 GET 口回吐，见下面两条读图路由。
+const SHOT_DIR = path.join(__dirname, 'shots');
+const SHOT_MAX_BYTES = 8 * 1024 * 1024;      // 设备侧已压到 ≤1920 宽的 JPEG，正常 200~600KB；留足余量防编码退化
+const SHOT_TOKEN_TTL_MS = 60 * 1000;
+const SHOT_MIN_BYTES = 512;                   // 比这还小不可能是张图，直接当垃圾丢掉
+const SHOT_ID_RE = /^[0-9a-fA-F]{8,128}$/;   // 设备 id 是十六进制指纹且直接当文件名，必须先挡住路径穿越
+const shotTokens = new Map();                // 规范 devices.id → { token, exp }
+const shotMeta = new Map();                  // 规范 devices.id → { ts, bytes }（图落盘时间与大小）
+
+try { fs.mkdirSync(SHOT_DIR, { recursive: true }); } catch (e) { console.error('shots 目录建不出来:', e.message); }
+// 服务重启不该让每台设备都得重截一次才知道有没有图：按文件 mtime 把台账补回来
+try {
+  fs.readdirSync(SHOT_DIR).forEach(function (f) {
+    const m = f.match(/^(.+)\.jpg$/);
+    if (!m || !SHOT_ID_RE.test(m[1])) return;
+    try {
+      const st = fs.statSync(path.join(SHOT_DIR, f));
+      shotMeta.set(m[1], { ts: Math.round(st.mtimeMs), bytes: st.size });
+    } catch (e) { /* 单台补不回来不影响其余 */ }
+  });
+} catch (e) { /* 目录刚建或读不了，等第一次回传再记 */ }
+
+/**
+ * 发 screenshot 命令时配一张一次性上传令牌，顺带清掉过期与从未用过的旧令牌
+ * （管理台点了但设备没回图的情况很常见，不清会无界攒着）。
+ */
+function issueShotToken(deviceId) {
+  const now = Date.now();
+  shotTokens.forEach(function (v, k) { if (v.exp < now) shotTokens.delete(k); });
+  const token = crypto.randomBytes(12).toString('hex');
+  shotTokens.set(deviceId, { token: token, exp: now + SHOT_TOKEN_TTL_MS });
+  return token;
+}
+
+// 设备回传口：必须注册在下面那道写接口闸门之前（设备没有 API key，靠令牌认），
+// 也和【S-14】的会话路由同一个道理 —— 闸门在先会把这条口变成"要登录才能给登录喂数据"。
+const shotUploadBody = express.raw({ type: function () { return true; }, limit: SHOT_MAX_BYTES });
+app.post('/api/device/:id/screenshot', shotUploadBody, (req, res) => {
+  const id = String(req.params.id || '');
+  const rec = shotTokens.get(id);
+  if (!SHOT_ID_RE.test(id) || !rec || rec.exp < Date.now()) {
+    return res.status(403).json({ error: '截图令牌不存在或已过期（请从管理台重新点一次）' });
+  }
+  // 常量时间比：这条口是公开的，别把令牌比对的耗时差异暴露出去
+  if (!safeEqual(String(req.headers['x-shot-token'] || ''), rec.token)) {
+    return res.status(403).json({ error: '截图令牌不匹配' });
+  }
+  const buf = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buf || buf.length < SHOT_MIN_BYTES) {
+    return res.status(400).json({ error: '截图数据太小，不像一张图' });
+  }
+  // JPEG 魔数：FFD8FF 开头。设备截图失败时可能把错误文本当 body 发来，不能让它落盘成 .jpg
+  if (!(buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF)) {
+    return res.status(400).json({ error: '截图数据不是 JPEG' });
+  }
+  const file = path.join(SHOT_DIR, id + '.jpg');
+  const tmp = file + '.tmp';
+  try {
+    // 先写 .tmp 再 rename：同一台设备连点两次不会让读图口撞上"半个文件"
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (e2) { /* 没建起来就不必删 */ }
+    return res.status(500).json({ error: '截图落盘失败: ' + e.message });
+  }
+  // 令牌到这里才算用掉：前面任何一步失败都留在窗口内，设备可以重试同一张令牌
+  shotTokens.delete(id);
+  let ts = Date.now();
+  try { ts = Math.round(fs.statSync(file).mtimeMs); } catch (e) { /* 拿不到就用当前时间 */ }
+  shotMeta.set(id, { ts: ts, bytes: buf.length });
+  logAction('screenshot', 'device', { device_id: id, bytes: buf.length });
+  res.json({ success: true, bytes: buf.length, ts: ts });
+});
+
 // 写操作统一要求凭据（会话 cookie 或 x-api-key）；GET/OPTIONS/HEAD 全开放。
 // 设备侧确实只做 GET（/api/config、/api/room-materials-v2），其余通信全走 MQTT；
 // 但 POST /api/device/version 与 POST /api/log 也是写接口，同样要带 key —— 现有 APK 不调它们
@@ -1868,7 +1947,8 @@ app.post('/api/devices/:id/block', (req, res) => {
 });
 
 // 【S-05e】 发送指令到设备（MQTT command 主题下发）
-// action 必须落在 DEVICE_ACTIONS 白名单里（= APK handleCommand 的 when 分支 + 服务端会改写的 'sync'）；
+// action 必须落在 DEVICE_ACTIONS 白名单里（= APK handleCommand 的 when 分支 + 服务端会补载荷的
+// 'sync' / 'sync_room_materials' / 'screenshot'）；
 // 未知 action 一律 400，不透传 —— command 主题上的指令设备是照单执行的，不能靠前端自觉。
 // 老 APK(167) 里那条 preset_sync 分支只是留着没人调用，服务端先收掉入口即可，不需要设备升级。
 const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
@@ -1876,7 +1956,9 @@ const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
                         'preview_material', 'preview_stop', 'wallpanel_learn',
                         // 退出到桌面/唤回：释放画面并把原厂桌面顶到身前，进程与 MQTT 不动，
                         // 设备侧只吃 action（APK【A-15】）；唤回靠设备上的 root am start，服务端不补载荷
-                        'exit_desktop', 'reopen_desktop'];
+                        'exit_desktop', 'reopen_desktop',
+                        // 实时截图：服务端补一次性上传令牌 + 回传地址（见【S-15】），设备截完把 JPEG 发回来
+                        'screenshot'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
@@ -1937,10 +2019,48 @@ app.post('/api/devices/:id/command', (req, res) => {
   // 查询设备的 id+fingerprint 用于 MQTT topic（双发防 OTA 后指纹漂移失联）
   db.query('SELECT id, fingerprint FROM devices WHERE id = ?', [deviceId], (err, rows) => {
     if (err || rows.length === 0) return res.status(404).json({ error: '设备未找到' });
+    // 【S-15】截图命令要自带回传凭据：设备上只有 MQTT 凭据、没有管理台 API key，
+    // 令牌与 upload_url 只进这一台设备的私有 command 主题，别人订阅不到。
+    if (cmd.action === 'screenshot') {
+      const id = rows[0].id;
+      cmd.token = issueShotToken(id);
+      cmd.upload_url = APK_DOWNLOAD_BASE + '/api/device/' + encodeURIComponent(id) + '/screenshot';
+    }
     publishToDeviceCommand(rows[0], cmd);
     logAction('sync', 'device', { device_id: deviceId, command: cmd });
     res.json({ success: true, command: cmd });
   });
+});
+
+// 【S-15】截图的两条读口（管理台用）。图不在 public/ 下，nginx 直出不到，只能从这里走：
+// 一道 requireAuth 就足够 —— GET /api 全局是免鉴权的（见那道写接口闸门），但截图是"这台设备此刻
+// 的实时画面"，属于现场内容，不该被任意人轮询。
+app.get('/api/devices/:id/screenshot', requireAuth, (req, res) => {
+  const id = String(req.params.id || '');
+  if (!SHOT_ID_RE.test(id)) return res.status(400).json({ error: '非法设备 id' });
+  const meta = shotMeta.get(id);
+  if (!meta) return res.json({ available: false });
+  res.json({ available: true, ts: meta.ts, bytes: meta.bytes, age_ms: Date.now() - meta.ts });
+});
+
+app.get('/api/devices/:id/screenshot.jpg', requireAuth, (req, res) => {
+  const id = String(req.params.id || '');
+  if (!SHOT_ID_RE.test(id)) return res.status(400).json({ error: '非法设备 id' });
+  const meta = shotMeta.get(id);
+  const file = path.join(SHOT_DIR, id + '.jpg');   // id 已过 SHOT_ID_RE，拼不出路径穿越
+  if (!meta || !fs.existsSync(file)) {
+    return res.status(404).json({ error: '还没有这张设备的截图，先在管理台点一次实时截图' });
+  }
+  let bytes = meta.bytes;
+  try { bytes = fs.statSync(file).size; } catch (e) { /* 刚被替换也照样能读，字节数留旧值即可 */ }
+  // no-store：管理台靠"重新点一次"取新图，缓存会让它看起来永远不更新
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Content-Length', bytes);
+  fs.createReadStream(file).on('error', (e) => {
+    if (!res.headersSent) return res.status(500).json({ error: e.message });
+    res.destroy();
+  }).pipe(res);
 });
 
 // 【S-05p】 大屏试播：把房间里某一格素材，在"它本该出现的那扇窗"里放一遍，播完自动回到原来的画面。
