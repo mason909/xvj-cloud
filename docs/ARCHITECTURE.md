@@ -446,6 +446,11 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | `exit_desktop` | 退出到桌面：停播 + 释放窗口 + 显式把原厂桌面（HOME 候选里非本包那个）顶到身前，进程/MQTT/心跳全活着；镜像里没有别的桌面就退化成一层黑布（APK【A-15】；本机另有鼠标左键连点 5 下同一入口，但连点只管"退出"这一个方向） |
 | `reopen_desktop` | 唤回画面：设备侧用 root `am start` 把自己顶回前台，回到前台那次按 `scenes_json` 缓存重建；无 root 就只放开闸门，等现场按 HOME 键或点桌面图标。已非授权态则改播欢迎视频 |
 
+**【A-15】收口（2026-11-16，#324 台架真机全验）**：退出 → 桌面交接 → HOME 键回来 → 云端唤回四条路验通，`exit_desktop` 后前台是 `com.android.launcher3`、`reopen_desktop` 后按缓存重建并首帧就绪。两处配套约束记在这里，改 APK 别绕过：
+① 清单必须有 `<queries><intent>MAIN + HOME</intent></queries>`，否则 targetSdk 34 的包可见性会把 HOME 查询过滤成只剩自己，明明装着 launcher3 也判成"没有桌面"而退化成黑屏（#322 真机事故）。
+② 设备侧凡是 `am start` 自己都要带 `-a android.intent.action.MAIN -c android.intent.category.HOME`：栈归属由**类目**决定，不带类目落 `standard` 栈，之后按 HOME 键系统会在 `home` 栈再起一个 MainActivity，两个实例共用同一个 MQTT clientId ⇒ broker 每 10 秒互踢、播放器建两套（`launchMode="singleTask"` 不跨栈类型去重）。APK 另设进程级 `liveInstance` 兜底：新实例在 `connectMQTT()` 之前让旧实例停播 + 释放窗口 + `finish()`。
+判据：`dumpsys activity activities` 里 xvj 只有一条 `ActivityRecord` 且其 `Task{… type=home}`；mosquitto 日志不再出现 `already connected, closing old connection`。自检 `desktop-exit-selftest.js`（60 条，含双实例互踢建模）。
+
 ⚠️ **没有 `sync`**：服务端的 `action:'sync'` 只是 HTTP 入参，publish 前已改写成 `sync_room_materials`。
 授权广播 `xvj/auth/response` 上另有 `auth_result` / `deauthorize` 两个 action，
 **接收端必须按 `device_id` 定向比对**，无法确认目标的一律不动作（共享 topic 的历史事故）。
