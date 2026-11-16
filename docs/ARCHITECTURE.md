@@ -443,8 +443,8 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | `wallpanel_learn` | 开/关学习窗（`on` + `seconds` 1~60）：开窗即清空帧台账，此后每一帧到达都上报 `frames` 快照 |
 | `preview_material` | 整组接管：把**这一格的所有窗口**同时换成那只素材，播完同时回到正片同一位置 |
 | `preview_stop` | 收掉试播（带 `folder_id` 收那一格整组，不带则全收） |
-| `standby` | 进待机：停播 + 释放窗口 + 盖黑屏，进程/MQTT/心跳全活着（APK【A-15】；本机另有鼠标左键连点 5 下同一入口） |
-| `resume` | 出待机：撤黑，按设备 `scenes_json` 缓存重建画面；已非授权态则改播欢迎视频 |
+| `exit_desktop` | 退出到桌面：停播 + 释放窗口 + 显式把原厂桌面（HOME 候选里非本包那个）顶到身前，进程/MQTT/心跳全活着；镜像里没有别的桌面就退化成一层黑布（APK【A-15】；本机另有鼠标左键连点 5 下同一入口，但连点只管"退出"这一个方向） |
+| `reopen_desktop` | 唤回画面：设备侧用 root `am start` 把自己顶回前台，回到前台那次按 `scenes_json` 缓存重建；无 root 就只放开闸门，等现场按 HOME 键或点桌面图标。已非授权态则改播欢迎视频 |
 
 ⚠️ **没有 `sync`**：服务端的 `action:'sync'` 只是 HTTP 入参，publish 前已改写成 `sync_room_materials`。
 授权广播 `xvj/auth/response` 上另有 `auth_result` / `deauthorize` 两个 action，

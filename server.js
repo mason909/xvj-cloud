@@ -1874,8 +1874,9 @@ app.post('/api/devices/:id/block', (req, res) => {
 const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
                         'update_windows', 'delete_material', 'update', 'set_debug', 'set_wallpanel',
                         'preview_material', 'preview_stop', 'wallpanel_learn',
-                        // 待机/恢复：黑屏可逆、不动配置，设备侧只吃 action（APK【A-15】）
-                        'standby', 'resume'];
+                        // 退出到桌面/唤回：释放画面并把原厂桌面顶到身前，进程与 MQTT 不动，
+                        // 设备侧只吃 action（APK【A-15】）；唤回靠设备上的 root am start，服务端不补载荷
+                        'exit_desktop', 'reopen_desktop'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
