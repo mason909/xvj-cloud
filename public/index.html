@@ -5377,7 +5377,7 @@ async function deviceScreenshot(id, online) {
         if (!box || !box.classList.contains('show')) return;   // 弹层已被关掉，别再问了
         if (Date.now() > deadline) {
             setMc('<div style="padding:34px;text-align:center;color:#ffb74d">25 秒内没等到图<br>'
-                + '<span style="font-size:var(--fs-micro)">设备可能没 root、在退出态、或截图/上传失败 —— 都在设备日志页里留了话</span></div>');
+                + '<span style="font-size:var(--fs-micro)">设备没 root、进程被杀收不到命令、或抓屏/上传失败 —— 都在设备日志页里留了话</span></div>');
             return;
         }
         try {
@@ -5389,7 +5389,7 @@ async function deviceScreenshot(id, online) {
                     + 'style="max-width:100%;max-height:68vh;display:block;margin:0 auto;border:1px solid #333;border-radius:4px">'
                     + '<div style="color:#888;font-size:var(--fs-micro);text-align:center;margin-top:8px">'
                     + '抓取于 ' + esc(new Date(m.ts).toLocaleString()) + ' · ' + Math.round((m.bytes || 0) / 1024) + ' KB'
-                    + ' · 这是点一下拿一张的静态画面，不是实时视频</div></div>');
+                    + ' · 点一下拿一张，不是实时视频；图不落盘、两分钟后自动没，要再看就再点一次</div></div>');
                 return;
             }
         } catch (e) { /* 单次轮询失败下一轮再试 */ }

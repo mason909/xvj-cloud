@@ -1140,27 +1140,21 @@ app.delete('/api/session', (req, res) => {
 // POST 回来 → 管理台轮询到 ts 变了就把图显示出来。
 // 为什么要令牌：设备上只有 MQTT 凭据，没有管理台 API key，而这条口是写接口。令牌只出现在发给
 // 那一台设备的私有 command 主题里，用过即废、60 秒过期 —— 别人既猜不到也没法重放。
-// 图刻意不落 public/ 下（那里 nginx 直出、等于公开），只由带鉴权的 GET 口回吐，见下面两条读图路由。
-const SHOT_DIR = path.join(__dirname, 'shots');
-const SHOT_MAX_BYTES = 8 * 1024 * 1024;      // 设备侧已压到 ≤1920 宽的 JPEG，正常 200~600KB；留足余量防编码退化
+// 图只在内存里活两分钟，不落盘：这是"看一眼现场"，不是监控录像，存下来既没用处又把屏上内容
+// 留在了服务器磁盘上。要再看就再点一次。
+const SHOT_MAX_BYTES = 2 * 1024 * 1024;      // 设备侧压到 ≤1280 宽 q55，正常几十~一百多 KB；留足余量防编码退化
 const SHOT_TOKEN_TTL_MS = 60 * 1000;
+const SHOT_KEEP_MS = 120 * 1000;              // 阅后即焚的"即焚"时长：够管理台看图并重看一次
 const SHOT_MIN_BYTES = 512;                   // 比这还小不可能是张图，直接当垃圾丢掉
-const SHOT_ID_RE = /^[0-9a-fA-F]{8,128}$/;   // 设备 id 是十六进制指纹且直接当文件名，必须先挡住路径穿越
+const SHOT_ID_RE = /^[0-9a-fA-F]{8,128}$/;   // 设备 id 是十六进制指纹且当 Map 的键用，先挡住乱七八糟的入参
 const shotTokens = new Map();                // 规范 devices.id → { token, exp }
-const shotMeta = new Map();                  // 规范 devices.id → { ts, bytes }（图落盘时间与大小）
+const shotStore = new Map();                 // 规范 devices.id → { buf, ts, exp }（图本体就在这，重启即清）
 
-try { fs.mkdirSync(SHOT_DIR, { recursive: true }); } catch (e) { console.error('shots 目录建不出来:', e.message); }
-// 服务重启不该让每台设备都得重截一次才知道有没有图：按文件 mtime 把台账补回来
-try {
-  fs.readdirSync(SHOT_DIR).forEach(function (f) {
-    const m = f.match(/^(.+)\.jpg$/);
-    if (!m || !SHOT_ID_RE.test(m[1])) return;
-    try {
-      const st = fs.statSync(path.join(SHOT_DIR, f));
-      shotMeta.set(m[1], { ts: Math.round(st.mtimeMs), bytes: st.size });
-    } catch (e) { /* 单台补不回来不影响其余 */ }
-  });
-} catch (e) { /* 目录刚建或读不了，等第一次回传再记 */ }
+/** 过期就删：签发/收图/读图时各顺手扫一遍，不另起定时器 */
+function pruneShots(now) {
+  shotTokens.forEach(function (v, k) { if (v.exp < now) shotTokens.delete(k); });
+  shotStore.forEach(function (v, k) { if (v.exp < now) shotStore.delete(k); });
+}
 
 /**
  * 发 screenshot 命令时配一张一次性上传令牌，顺带清掉过期与从未用过的旧令牌
@@ -1168,7 +1162,7 @@ try {
  */
 function issueShotToken(deviceId) {
   const now = Date.now();
-  shotTokens.forEach(function (v, k) { if (v.exp < now) shotTokens.delete(k); });
+  pruneShots(now);
   const token = crypto.randomBytes(12).toString('hex');
   shotTokens.set(deviceId, { token: token, exp: now + SHOT_TOKEN_TTL_MS });
   return token;
@@ -1191,25 +1185,15 @@ app.post('/api/device/:id/screenshot', shotUploadBody, (req, res) => {
   if (!buf || buf.length < SHOT_MIN_BYTES) {
     return res.status(400).json({ error: '截图数据太小，不像一张图' });
   }
-  // JPEG 魔数：FFD8FF 开头。设备截图失败时可能把错误文本当 body 发来，不能让它落盘成 .jpg
+  // JPEG 魔数：FFD8FF 开头。设备截图失败时可能把错误文本当 body 发来，不能当图收下
   if (!(buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF)) {
     return res.status(400).json({ error: '截图数据不是 JPEG' });
   }
-  const file = path.join(SHOT_DIR, id + '.jpg');
-  const tmp = file + '.tmp';
-  try {
-    // 先写 .tmp 再 rename：同一台设备连点两次不会让读图口撞上"半个文件"
-    fs.writeFileSync(tmp, buf);
-    fs.renameSync(tmp, file);
-  } catch (e) {
-    try { fs.unlinkSync(tmp); } catch (e2) { /* 没建起来就不必删 */ }
-    return res.status(500).json({ error: '截图落盘失败: ' + e.message });
-  }
   // 令牌到这里才算用掉：前面任何一步失败都留在窗口内，设备可以重试同一张令牌
   shotTokens.delete(id);
-  let ts = Date.now();
-  try { ts = Math.round(fs.statSync(file).mtimeMs); } catch (e) { /* 拿不到就用当前时间 */ }
-  shotMeta.set(id, { ts: ts, bytes: buf.length });
+  const ts = Date.now();
+  pruneShots(ts);
+  shotStore.set(id, { buf: buf, ts: ts, exp: ts + SHOT_KEEP_MS });
   logAction('screenshot', 'device', { device_id: id, bytes: buf.length });
   res.json({ success: true, bytes: buf.length, ts: ts });
 });
@@ -2038,29 +2022,27 @@ app.post('/api/devices/:id/command', (req, res) => {
 app.get('/api/devices/:id/screenshot', requireAuth, (req, res) => {
   const id = String(req.params.id || '');
   if (!SHOT_ID_RE.test(id)) return res.status(400).json({ error: '非法设备 id' });
-  const meta = shotMeta.get(id);
-  if (!meta) return res.json({ available: false });
-  res.json({ available: true, ts: meta.ts, bytes: meta.bytes, age_ms: Date.now() - meta.ts });
+  const now = Date.now();
+  pruneShots(now);
+  const shot = shotStore.get(id);
+  if (!shot) return res.json({ available: false });
+  res.json({ available: true, ts: shot.ts, bytes: shot.buf.length, age_ms: now - shot.ts });
 });
 
 app.get('/api/devices/:id/screenshot.jpg', requireAuth, (req, res) => {
   const id = String(req.params.id || '');
   if (!SHOT_ID_RE.test(id)) return res.status(400).json({ error: '非法设备 id' });
-  const meta = shotMeta.get(id);
-  const file = path.join(SHOT_DIR, id + '.jpg');   // id 已过 SHOT_ID_RE，拼不出路径穿越
-  if (!meta || !fs.existsSync(file)) {
-    return res.status(404).json({ error: '还没有这张设备的截图，先在管理台点一次实时截图' });
+  const now = Date.now();
+  pruneShots(now);
+  const shot = shotStore.get(id);
+  if (!shot) {
+    return res.status(404).json({ error: '这张截图已经过期（阅后即焚，只留两分钟），重新点一次实时截图' });
   }
-  let bytes = meta.bytes;
-  try { bytes = fs.statSync(file).size; } catch (e) { /* 刚被替换也照样能读，字节数留旧值即可 */ }
   // no-store：管理台靠"重新点一次"取新图，缓存会让它看起来永远不更新
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'image/jpeg');
-  res.setHeader('Content-Length', bytes);
-  fs.createReadStream(file).on('error', (e) => {
-    if (!res.headersSent) return res.status(500).json({ error: e.message });
-    res.destroy();
-  }).pipe(res);
+  res.setHeader('Content-Length', shot.buf.length);
+  res.end(shot.buf);
 });
 
 // 【S-05p】 大屏试播：把房间里某一格素材，在"它本该出现的那扇窗"里放一遍，播完自动回到原来的画面。

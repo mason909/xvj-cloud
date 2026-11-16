@@ -445,19 +445,19 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | `preview_stop` | 收掉试播（带 `folder_id` 收那一格整组，不带则全收） |
 | `exit_desktop` | 退出到桌面：停播 + 释放窗口 + 显式把原厂桌面（HOME 候选里非本包那个）顶到身前，进程/MQTT/心跳全活着；镜像里没有别的桌面就退化成一层黑布（APK【A-15】；本机另有鼠标左键连点 5 下同一入口，但连点只管"退出"这一个方向） |
 | `reopen_desktop` | 唤回画面：设备侧用 root `am start` 把自己顶回前台，回到前台那次按 `scenes_json` 缓存重建；无 root 就只放开闸门，等现场按 HOME 键或点桌面图标。已非授权态则改播欢迎视频 |
-| `screenshot` | 实时截图：服务端补 `upload_url` + 一次性 `token`，设备 root `screencap` 出 PNG、压到 ≤1920 宽 JPEG 后 POST 回来；只读一帧画面，不动播放与配置（APK【A-16】/ 云端【S-15】） |
+| `screenshot` | 实时截图：服务端补 `upload_url` + 一次性 `token`，设备 root `screencap` 出 PNG、压到 ≤1280 宽 JPEG 后 POST 回来；只读一帧画面，不动播放与配置（APK【A-16】/ 云端【S-15】） |
 
 **【A-15】收口（2026-11-16，#324 台架真机全验）**：退出 → 桌面交接 → HOME 键回来 → 云端唤回四条路验通，`exit_desktop` 后前台是 `com.android.launcher3`、`reopen_desktop` 后按缓存重建并首帧就绪。两处配套约束记在这里，改 APK 别绕过：
 ① 清单必须有 `<queries><intent>MAIN + HOME</intent></queries>`，否则 targetSdk 34 的包可见性会把 HOME 查询过滤成只剩自己，明明装着 launcher3 也判成"没有桌面"而退化成黑屏（#322 真机事故）。
 ② 设备侧凡是 `am start` 自己都要带 `-a android.intent.action.MAIN -c android.intent.category.HOME`：栈归属由**类目**决定，不带类目落 `standard` 栈，之后按 HOME 键系统会在 `home` 栈再起一个 MainActivity，两个实例共用同一个 MQTT clientId ⇒ broker 每 10 秒互踢、播放器建两套（`launchMode="singleTask"` 不跨栈类型去重）。APK 另设进程级 `liveInstance` 兜底：新实例在 `connectMQTT()` 之前让旧实例停播 + 释放窗口 + `finish()`。
 判据：`dumpsys activity activities` 里 xvj 只有一条 `ActivityRecord` 且其 `Task{… type=home}`；mosquitto 日志不再出现 `already connected, closing old connection`。自检 `desktop-exit-selftest.js`（60 条，含双实例互踢建模）。
 
-**【S-15】设备实时截图（2026-11-16）**：现场要的是"点开就看到那间房此刻的屏"，所以它是**点一次拿一帧**，不是视频流。
-- 命令带凭据：设备上只有 MQTT 凭据、没有管理台 API key，所以 `screenshot` 由服务端补两样 —— `token = crypto.randomBytes(12)`（60 秒过期、落盘成功即作废、每次点命令换新）与 `upload_url = APK_DOWNLOAD_BASE + '/api/device/<id>/screenshot'`。两者只进这一台设备的私有 command 主题，别人订阅不到，拿到也重放不了。
-- 回传口 `POST /api/device/:id/screenshot` 注册在【S-14】那道写接口闸门**之前**（和会话路由同一个道理，闸门在先就成了"要登录才能给登录喂数据"），自带 `express.raw` 上限 8MB；依次校验 id 形状正则 → 令牌（常量时间比）→ 体积 → JPEG 魔数，然后 `writeFileSync(tmp)` + `renameSync` 原子覆盖，**一台设备只留最新一张**。
-- 图落 `__dirname/shots/`（`public/` 之外，nginx 直出不到），读图必须走两条挂了 `requireAuth` 的口：`GET /api/devices/:id/screenshot` 回 `{available, ts, bytes}` 给前端判"是不是刚拍的那张"，`GET /api/devices/:id/screenshot.jpg` 带 `no-store` 回吐字节。服务重启按文件 mtime 把台账补回来，不必让每台设备重截一次。
-- 设备侧（APK【A-16】）：`su -c "screencap -p"` 从 stdout 收 PNG（不落设备磁盘）→ `BitmapFactory` 按 2 的幂采样再精确缩到 ≤1920 宽 → JPEG 质量 70 → POST，令牌放 `x-shot-token` 头里而不是 URL（URL 会进日志）。整段跑在独立的单线程 `shotExecutor` 上：素材同步占满 4 个下载坑时这一发不排队，同时全局也只可能有一张 screencap 在跑。**不吃 `exited` 闸门** —— 退出态下屏上是原厂桌面，那正是远程管理要看的一种画面。任何一步失败只留一行 `SYNC/SCREENSHOT` 日志，不碰播放器、不改状态；管理台 25 秒等不到 ts 变新就给"去看设备日志页"的提示。
-- 自检：`screenshot-selftest.js`（99 条：令牌生命周期、上传口边界、两段缩放比例、前端判新与超时，外加三份源码锚点）。
+**【S-15】设备实时截图（2026-11-16）**：现场要的是"点开就看到那间房此刻的屏"，所以它是**点一次拿一帧**，不是视频流；体积只求看得清屏上文字，**图不落盘、阅后即焚**。
+- 命令带凭据：设备上只有 MQTT 凭据、没有管理台 API key，所以 `screenshot` 由服务端补两样 —— `token = crypto.randomBytes(12)`（60 秒过期、被收下即作废、每次点命令换新）与 `upload_url = APK_DOWNLOAD_BASE + '/api/device/<id>/screenshot'`。两者只进这一台设备的私有 command 主题，别人订阅不到，拿到也重放不了。
+- 回传口 `POST /api/device/:id/screenshot` 注册在【S-14】那道写接口闸门**之前**（和会话路由同一个道理，闸门在先就成了"要登录才能给登录喂数据"），自带 `express.raw` 上限 2MB；依次校验 id 形状正则 → 令牌（常量时间比）→ 体积 → JPEG 魔数，通过后进 `shotStore`（`deviceId → {buf, ts, exp}`）——**没有磁盘目录、没有 tmp/rename，进程重启即清空**。`pruneShots()` 在签发/收图/读图三处顺手扫过期项，不另起定时器。
+- 读图两条口都挂 `requireAuth`：`GET /api/devices/:id/screenshot` 回 `{available, ts, bytes, age_ms}` 给前端判"是不是刚拍的那张"，`GET /api/devices/:id/screenshot.jpg` 用 `res.end(buf)` 直出内存字节并带 `no-store`；两分钟一到 (`SHOT_KEEP_MS`) 两条都转成"没有/请重新点一次"。既然压根不落盘，也就不存在图被 nginx 直出或进 git 的风险。
+- 设备侧（APK【A-16】）：`su -c "screencap -p"` 从 stdout 收 PNG（不落设备磁盘）→ `BitmapFactory` 按 2 的幂采样再精确缩到 ≤1280 宽 → JPEG 质量 55（一帧几十 KB）→ POST，令牌放 `x-shot-token` 头里而不是 URL（URL 会进日志）。整段跑在独立的单线程 `shotExecutor` 上：素材同步占满 4 个下载坑时这一发不排队，同时全局也只可能有一张 screencap 在跑。**抓屏不看前台**：命令从 MQTT 线程进来、screencap 由 su 起的独立进程做整块屏的合成，所以应用被 HOME 键最小化、或已退出到桌面时照样截得到，截到的正是当时屏上的原厂桌面 —— 同理**不吃 `exited` 闸门**。唯一前提是进程还活着，否则命令收不到。任何一步失败只留一行 `SYNC/SCREENSHOT` 日志，不碰播放器、不改状态；管理台 25 秒等不到 ts 变新就给"去看设备日志页"的提示。
+- 自检：`screenshot-selftest.js`（108 条：令牌生命周期、阅后即焚过期、上传口边界、两段缩放比例、前端判新与超时，外加三份源码锚点）。
 
 ⚠️ **没有 `sync`**：服务端的 `action:'sync'` 只是 HTTP 入参，publish 前已改写成 `sync_room_materials`。
 授权广播 `xvj/auth/response` 上另有 `auth_result` / `deauthorize` 两个 action，
