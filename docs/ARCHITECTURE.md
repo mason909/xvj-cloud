@@ -526,8 +526,9 @@ content.folderId 非空 → 只播指定那格；不在映射或那格空 → nu
 并**必须把它塞回 `allWindows`** —— 后面那圈选文件夹的循环按 `allWindows` 查配置，漏了就是"视图建了、素材也在、画面全黑"。
 第二幕默认窗口为空，由用户手动配置。
 
-`HDMI` / `color` 两类内容目前都是**占位 View**（`createHdmiView` 只显示 "HDMI N" 文本），
-没有真实采集；`HdmiManager` / `HdmiProcessor` 仍是 `// disabled`。
+`HDMI` 仍是**占位 View**（`createHdmiView` 只显示 "HDMI N" 文本），没有真实采集；
+`color`（测试背景）自 2026-11-17 起固定渲染测试图卡 `assets/testcard.jpg`（`createColorView`，
+1920 宽共享位图、居中裁切；图卡缺失才退回 `color` 纯色）。`HdmiManager` / `HdmiProcessor` 仍是 `// disabled`。
 
 ### 5.5 素材同步
 
@@ -765,7 +766,10 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 |---|---|---|---|
 | `SCENE_A` / `SCENE_B` | 播该幕对应文件夹的素材 | `folderId`（裸编号 `"01"`）、`follow`（Boolean，墙板跟随） | 独立 ExoPlayer + TextureView |
 | `HDMI` | HDMI 输入 | `inputIndex`（0-based） | **占位 TextView，采集未实现** |
-| `color` | 纯色背景（**小写**） | `color`（如 `"#000000"`） | 占位 View |
+| `color` | 测试背景（**小写**） | `color`（兜底纯色，如 `"#000000"`） | 固定显示 `assets/testcard.jpg`（KZOO 测试图卡，居中裁切铺满；图卡缺失才用颜色） |
+
+> 测试背景与实际产物同一张图：云端/前端预览是 `public/testcard.jpg`，设备端打包的是同一张
+> 3840×2160 JPEG（原始 8000×4500，直接解码要 144MB；设备按 1/2 采样解成 1920 宽共享位图）。
 
 > 旧文档里的 `COLOR`（大写）/ `IMAGE` / `VIDEO` 取值**都不存在**。设备端对 type 做 `uppercase()`，
 > 所以前端写小写 `color` 能命中 `COLOR` 分支。
