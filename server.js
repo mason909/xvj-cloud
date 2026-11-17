@@ -127,11 +127,13 @@
  *     content: {                    // 窗口内容。取值以前端 saveWindows() 实际写入的为准
  *       type: 'SCENE_A' | 'SCENE_B' | 'HDMI' | 'color',
  *                         // SCENE_A/SCENE_B = 播该幕对应文件夹的素材；color 是小写（测试背景）
+ *                         // 测试背景在设备端固定显示 assets/testcard.jpg（铺满窗口居中裁切），
+ *                         // 与云端 public/testcard.jpg 是同一张图；color 字段只在图卡读不到时兜底
  *                         // 没有 IMAGE 分支，旧文档里的 'COLOR'/'VIDEO'/'IMAGE' 大写取值都不存在
  *       // type=HDMI 时：
  *       inputIndex?: Number,        // HDMI 输入索引（0-based）
  *       // type=color 时：
- *       color?: String,             // 背景色，如 "#000000"
+ *       color?: String,             // 兜底纯色，如 "#000000"（图卡缺失时用）
  *       // type=SCENE_A|SCENE_B 时：
  *       folderId?: String           // 对应素材文件夹 ID，如 "01"（未加场景前缀）
  *       follow?: Boolean            // 墙板跟随：true = 这一幕里播哪个文件夹由墙板决定
