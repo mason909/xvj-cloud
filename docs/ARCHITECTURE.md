@@ -770,6 +770,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 > 旧文档里的 `COLOR`（大写）/ `IMAGE` / `VIDEO` 取值**都不存在**。设备端对 type 做 `uppercase()`，
 > 所以前端写小写 `color` 能命中 `COLOR` 分支。
 > `follow` 与 `folderId` 不打架：`folderId` 是"墙板没按过 / 这一帧没绑这一幕时的默认那格"。
+> **新建窗口默认 `follow=true`**（2026-11-17 用户定调）：`addWin()` 出生即带；已有窗口按库里的值不动，不要的再去属性栏取消。
 
 ### 6.4 素材三层架构
 
