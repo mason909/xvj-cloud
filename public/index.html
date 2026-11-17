@@ -1773,6 +1773,7 @@ function rmDevice() {
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="实时截图：让设备把此刻落屏的画面抓回来显示在这里（不是实时视频，是点一次拿一张）。设备需要在线；没等到图去设备日志页看原因" onclick="deviceScreenshot(\'' + escJsA(d.id) + '\',' + (isOnline ? 'true' : 'false') + ')">实时截图</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="不看 rev 强制整房重新同步（素材清单 + 窗口 + 映射全量下发，会重建播放器）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'sync\',\'强制同步\',' + (isOnline ? 'true' : 'false') + ')">强制同步</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="把版本管理里的最新版推给这台设备（OTA）" onclick="pushUpdate(\'' + escJsA(d.id) + '\')">推最新版</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="重启整台设备（root reboot，不是重启 APK）：画面会中断，约 30~60 秒后开机自启回到播放。无 root 的机器会拒绝并在设备日志留一行" onclick="rebootDevice(\'' + escJsA(d.id) + '\',' + (isOnline ? 'true' : 'false') + ')">重启设备</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="解除这台机与本房的绑定（设备回到「[U]未注册设备」，需要重新授权才能再绑）" onclick="unbindRoom(\'' + escJsA(d.id) + '\')">解绑</button>';
             h += '</div>';
             h += '</div>';
@@ -5340,6 +5341,24 @@ async function sendDeviceCommand(id, action, label, online) {
         autoCloseModal(2000);
     } catch (e) {
         alert(label + ' 下发失败: ' + e.message);
+    }
+}
+
+// 【F-04e】 重启设备（设备卡片上的「重启设备」按钮，设备侧 root reboot）
+/**
+ * 与 sendDeviceCommand 的差别：这条命令的结果是设备整机重启、下线几十秒，属于现场可感知的中断，
+ * 所以下发前必须确认一次（离线则直接不发 —— 命令不 retain，离线收不到也没有补发）。
+ * 200 只代表 broker 收下了；设备是否真重启，看心跳断开再回来、以及设备日志里那行 REBOOT。
+ */
+async function rebootDevice(id, online) {
+    if (!online) { alert('设备离线，重启命令收发不到（不补发），先让现场把机器开机联网'); return; }
+    if (!confirm('确定重启这台设备？\n\n画面会中断，设备约 30~60 秒后自动开机、回到播放（开机自启 + 默认桌面已是 XVJ）。')) return;
+    try {
+        await apiPost('/api/devices/' + encodeURIComponent(id) + '/command', { command: { action: 'reboot' } });
+        openModal('<div style="padding:30px;text-align:center;color:#ffb74d">重启命令已下发<br><span style="font-size:var(--fs-micro)">设备即将下线，约 30~60 秒后自动回到播放；心跳恢复后设备卡片会变回在线</span></div>');
+        autoCloseModal(3200);
+    } catch (e) {
+        alert('重启命令下发失败: ' + e.message);
     }
 }
 

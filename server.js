@@ -1943,6 +1943,9 @@ const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
                         // 退出到桌面/唤回：释放画面并把原厂桌面顶到身前，进程与 MQTT 不动，
                         // 设备侧只吃 action（APK【A-15】）；唤回靠设备上的 root am start，服务端不补载荷
                         'exit_desktop', 'reopen_desktop',
+                        // 远程重启整台设备（设备卡「重启设备」）：设备侧 root reboot，服务端不补载荷。
+                        // 这条会让设备下线几十秒，前端弹确认后才发（见 index.html rebootDevice）
+                        'reboot',
                         // 实时截图：服务端补一次性上传令牌 + 回传地址（见【S-15】），设备截完把 JPEG 发回来
                         'screenshot'];
 app.post('/api/devices/:id/command', (req, res) => {
