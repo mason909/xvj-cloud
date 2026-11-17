@@ -4277,7 +4277,8 @@ function selWin(id) {
 /**
  * 添加新窗口
  * 自动生成唯一 ID，插入 windows 数组，触发 renderWinEditorFull()
- * 窗口默认：名字「新窗口N」、16:9 的 640x360、落在左上角、zIndex 排到最后、类型跟随当前幕
+ * 窗口默认：名字「新窗口N」、16:9 的 640x360、落在左上角、zIndex 排到最后、类型跟随当前幕、
+ * 跟随墙板（2026-11-17 用户定调：新建窗口一律默认跟随墙板，不需要的再去属性栏取消）
  */
 function addWin() {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
@@ -4300,7 +4301,7 @@ function addWin() {
         var m = /^新窗口\s*(\d+)$/.exec(String(w.name == null ? '' : w.name).trim());
         if (m) maxNo = Math.max(maxNo, parseInt(m[1], 10));
     });
-    wins.push({ id: newId, name: '新窗口' + (maxNo + 1), x: 0, y: 0, width: Math.round(_designW / 3), height: Math.round(_designH / 3), aspectRatio: '16:9', content: { type: winType }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
+    wins.push({ id: newId, name: '新窗口' + (maxNo + 1), x: 0, y: 0, width: Math.round(_designW / 3), height: Math.round(_designH / 3), aspectRatio: '16:9', content: { type: winType, follow: true }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
 
     // 双向隔离：A 的操作不动 B，反之亦然
     cfg.scenes[curS].windows = wins; // 当前场景：用含新窗口的拷贝覆盖回去
