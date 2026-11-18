@@ -915,7 +915,9 @@ var s = {
     _wpLearnTimer: null,   // 等按键时每秒拉一次帧的句柄（收窗/关表/换房间都要停）
     _wpSaveQ: null,        // 码值自动保存的串行队列（两次录制挨得近时不至于后一次 GET 拿到前一次还没落库的 config）
     _psMode: false,        // 工作台「播放设置」编辑模式（同上，与窗口/截取/墙板三者互斥）
-    _psDraft: null,        // 播放设置草稿 {roomId, A:{格:{order}}, B:{}, base:''}，只跟当前房间绑定
+    _psDraft: null,        // 播放设置草稿 {roomId, A:{格:{order,hdmi}}, B:{}, base:''}，只跟当前房间绑定
+    _psNote: '',           // 全局复制成功后的一行回执
+    _psCopying: false,     // 全局复制进行中（防连点）
     _snap: localStorage.getItem('xsnap') !== '0',   // 窗口画布吸附开关（纯编辑辅助，本地偏好，默认开）
     fs: [],
     ms: [],
@@ -3205,7 +3207,9 @@ function _psTableHtml() {
     h += '<span style="font-size:var(--fs-meta);color:#ccc">按文件夹设置播放行为</span>';
     h += '<span style="font-size:var(--fs-micro);color:#666">已设 ' + set + ' 格</span>';
     if (_psSnap(d) !== d.base) h += '<span class="wp-warn">● 有未保存改动</span>';
+    if (s._psNote) h += '<span style="font-size:var(--fs-micro);color:#4caf50">✓ ' + esc(s._psNote) + '</span>';
     h += '<span style="flex:1"></span>';
+    h += '<button class="btn btn-sync" id="psCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的播放设置（每格的播放顺序与点歌屏开关）覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="psCopyAll()">全局复制</button>';
     h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" onclick="psSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未保存的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
@@ -3319,7 +3323,66 @@ async function psSave() {
         s.rooms[idx] = newRoom;
     }
     s._psDraft = null;
+    s._psNote = '';
     renderPsEditor();
+}
+
+/**
+ * 全局复制：把当前房间的播放设置（两幕每格的播放顺序 + 点歌屏开关）覆盖到**本店**其余房间。
+ * 边界与墙板表同一口径：只认当前房间的 store_name；每间房读后写、只换 scenes.A/B.play_settings，
+ * 其它配置（窗口/墙板/输出基准）一概不碰。复制的是当前草稿，所以最后把自己也存一次，
+ * 保证"复制出去的"就是"这里留下的"。一间失败不拦后面：最后报出成功数与失败名单。
+ */
+async function psCopyAll() {
+    var d = _psDraftOf();
+    if (!d || !s.rf || s._psCopying) return;
+    var cur = (s.rooms || []).find(function (r) { return r && r.id === s.rf; });
+    var store = cur && cur.store_name;
+    if (!store) {
+        try { cur = await apiGet('/api/rooms/' + encodeURIComponent(s.rf)); store = cur && cur.store_name; }
+        catch (e) { /* 下面统一报错 */ }
+    }
+    if (!store) { alert('拿不到当前房间的店铺，无法确定复制范围。'); return; }
+    var list;
+    try { list = asList(await apiGet('/api/rooms?store=' + encodeURIComponent(store))); }
+    catch (e) { alert('取房间列表失败: ' + e.message); return; }
+    var others = list.filter(function (r) { return r && r.id !== s.rf; });
+    if (!others.length) { alert('本店没有其它房间可覆盖。'); return; }
+    if (!confirm('把当前房间的播放设置（每格播放顺序、点歌屏开关）覆盖到「' + store + '」的其余 '
+        + others.length + ' 间房？\n\n它们原本的播放设置会被整体替换，其它配置与其他店铺不受影响。')) return;
+    var psA = JSON.parse(JSON.stringify(d.A)), psB = JSON.parse(JSON.stringify(d.B));
+    s._psCopying = true;
+    var btn = document.getElementById('psCopyBtn');
+    if (btn) btn.disabled = true;
+    var ok = 0, bad = [];
+    try {
+        await flushAutoSync();   // 这次连发 GET→PUT 会整份覆盖各房 config，先落掉窗口编辑的防抖改动
+        for (var i = 0; i < others.length; i++) {
+            var r = others[i];
+            if (btn) btn.textContent = '复制中 ' + (i + 1) + '/' + others.length + '…';
+            try {
+                var roomObj = await apiGet('/api/rooms/' + encodeURIComponent(r.id));
+                if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
+                var cfg = _loadRoomCfg(roomObj);
+                cfg.scenes.A.play_settings = JSON.parse(JSON.stringify(psA));
+                cfg.scenes.B.play_settings = JSON.parse(JSON.stringify(psB));
+                await apiCall('/api/rooms/' + encodeURIComponent(r.id), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: JSON.stringify(cfg) })
+                });
+                ok++;
+            } catch (e) { bad.push((r.name || r.id) + '：' + e.message); }
+        }
+        await psSave();          // 当前房间自己也落一份（顺带按落库真值重画）
+    } finally {
+        s._psCopying = false;
+        var btn2 = document.getElementById('psCopyBtn');
+        if (btn2) { btn2.disabled = false; btn2.textContent = '全局复制'; }
+    }
+    s._psNote = '已把播放设置覆盖到本店 ' + ok + ' 间房' + (bad.length ? '，' + bad.length + ' 间失败' : '');
+    renderPsEditor();
+    if (bad.length) alert('有 ' + bad.length + ' 间房没覆盖成功：\n' + bad.join('\n'));
 }
 
 

@@ -152,6 +152,7 @@ has('素材数按幕各算各的（A01=2，B01=—）', trs[2], 'class="wp-cnt h
 has('已设格数进工具条（A01/随机 + A02、B02/开点歌屏）', tbl, '已设 3 格');
 has('硬切口径写在表前（免得有人以为还有叠化可开）', tbl, '素材轮播的交接一律硬切');
 has('保存/重读两个入口', tbl, 'onclick="psSave()"');
+has('全局复制入口（覆盖本店其余房间的播放设置）', tbl, 'onclick="psCopyAll()"');
 has('重读入口', tbl, 'onclick="psReload()"');
 eq('干净草稿不标未保存', tbl.indexOf('● 有未保存改动') >= 0, false);
 T.psSet('A', '05', 'order', 'shuffle');
