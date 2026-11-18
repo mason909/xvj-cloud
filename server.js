@@ -375,6 +375,7 @@ function isSafeSerialPath(s) { return typeof s === 'string' && /^\/dev\/[A-Za-z0
  * 文件夹级播放设置（scenes[X].play_settings）的取值口径 —— 三端共用一份，改这里要同步
  * 前端 _psCell/psSet* 与 APK 的 playSettingsOf：
  *   order       'seq'|'shuffle' 顺序循环（按文件名）/ 随机循环
+ *   hdmi        false = 这一格在播时关掉点歌屏（HDMI 采集）窗口；缺省 = 开
  * A、B 是两套独立物理目录（scenea/01 与 sceneb/01 装的不是同一批片子），所以设置按幕各存一份。
  * 全默认的格子一律不落键：给每幕挂一张 30 格默认表会让 roomSceneDigest 当场全库漂移一次，
  * 部署后每台在线设备都被对账判成"rev 落后"补发一发同步、视频从头播（与 play_settings「空表不落键」同理）。
@@ -385,11 +386,15 @@ const PLAY_ORDERS = ['seq', 'shuffle'];
 
 /**
  * 单格播放设置 → 确定形状；等于全默认返回 null（= 这一格不落键）。
- * 只认 order：残留的 dissolve 类键不再往下带，设备端已经不读它们，留着只会让 rev 比出假变化。
+ * 只认 order / hdmi：残留的 dissolve 类键不再往下带，设备端已经不读它们，留着只会让 rev 比出假变化。
+ * hdmi 默认 true（显示点歌屏），所以只有 false 才落键 —— 老房间/没拨过的格子形状不变，rev 不漂。
  */
 function playSettingsValue(v) {
   if (!isPlainObject(v)) return null;
-  return v.order === 'shuffle' ? { order: 'shuffle' } : null;
+  const out = {};
+  if (v.order === 'shuffle') out.order = 'shuffle';
+  if (v.hdmi === false) out.hdmi = false;
+  return Object.keys(out).length ? out : null;
 }
 
 /**
@@ -428,6 +433,9 @@ function findPlaySettingsError(cfg) {
       const where = `场景${key} 文件夹${panelCellKey(key, fid)}`;
       if (cell.order !== undefined && cell.order !== null && cell.order !== '' && PLAY_ORDERS.indexOf(cell.order) < 0) {
         return `${where} 的播放顺序只能是 seq（顺序循环）或 shuffle（随机循环）`;
+      }
+      if (cell.hdmi !== undefined && cell.hdmi !== null && typeof cell.hdmi !== 'boolean') {
+        return `${where} 的点歌屏开关只能是 true（显示）或 false（关闭）`;
       }
     }
   }
@@ -844,6 +852,28 @@ function findOutputError(cfg) {
  */
 const DEVICE_SCREEN_TTL = 90000;
 const deviceScreenAt = new Map();   // 规范 devices.id -> { size: {w,h}, at }
+
+/**
+ * 副屏（1080/eDP）运行时开关状态（心跳 secondary_display）→ GET /api/devices 的 d.secondary_display。
+ * 与 screen 同一套口径：只放内存、90s 过期、这一跳没带就是"不知道"，重启后由设备自己重新上报。
+ * null 有两种可能，前端都当"暂不支持"：老版本 APK 不上报，或本机没有这条显示链（没有 eDP 口）。
+ */
+const deviceAuxAt = new Map();   // 规范 devices.id -> { on, at }
+
+function rememberDeviceAux(id, rawOn, isOnline) {
+  if (!isOnline || typeof rawOn !== 'boolean') deviceAuxAt.delete(id);
+  else deviceAuxAt.set(id, { on: rawOn, at: Date.now() });
+}
+
+function deviceAux(id) {
+  const hit = deviceAuxAt.get(id);
+  if (!hit) return null;
+  if (Date.now() - hit.at > DEVICE_SCREEN_TTL) {
+    deviceAuxAt.delete(id);
+    return null;
+  }
+  return hit.on;
+}
 
 function rememberDeviceScreen(id, rawW, rawH, isOnline) {
   var w = isOnline ? outputPx(rawW) : null;
@@ -1426,6 +1456,9 @@ function handleMqttMessage(topic, message) {
               // 本机屏幕像素：编辑器"输出基准"那一栏拿它一键填（#177）。瞬时状态，
               // 这一跳没带就是"不知道"，界面上不该留着上一块屏的尺寸。
               rememberDeviceScreen(canonId, data.screen_w, data.screen_h, isOnline);
+              // 副屏（1080/eDP）此刻通着没有：设备卡上的「副屏」开关按它渲染，开关动作后设备会补一跳。
+              // 不带这个字段 = 老 APK 或没有 eDP 链，界面上显示"不支持"，不要沿用上一台的值。
+              rememberDeviceAux(canonId, data.secondary_display, isOnline);
               // 近期收到的帧（【S-06f】）：心跳顺带带一份，学习窗之外的时间也能看见总线上在跑什么。
               // 同样遵循"这一跳没带 = 不知道"，不让设备熄了或换了场景后界面上还挂着旧帧。
               rememberDeviceFrames(canonId, data.frames, isOnline);
@@ -1875,6 +1908,7 @@ app.get('/api/devices', (req, res) => {
     (results || []).forEach(function (d) {
       d.screen = deviceScreen(d.id);
       d.frames = deviceFrames(d.id);   // 最近收到的 485 帧（【S-06f】），没收到过 = null
+      d.secondary_display = deviceAux(d.id);   // 副屏（eDP）开/关/未知(null)，见 deviceAux
     });
     res.json(results);
   });
@@ -1947,7 +1981,10 @@ const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
                         // 这条会让设备下线几十秒，前端弹确认后才发（见 index.html rebootDevice）
                         'reboot',
                         // 实时截图：服务端补一次性上传令牌 + 回传地址（见【S-15】），设备截完把 JPEG 发回来
-                        'screenshot'];
+                        'screenshot',
+                        // 副屏（1080/eDP）运行时开关：载荷只有布尔 on，设备侧 root 写 DRM 状态（APK【A-18】），
+                        // 实际状态随心跳 secondary_display 回传。开机默认关由设备上的 vendor init rc 保证
+                        'secondary_display'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
@@ -1977,6 +2014,10 @@ app.post('/api/devices/:id/command', (req, res) => {
   let cmd = { ...command };
   if (cmd.url && cmd.url.startsWith('/')) {
     cmd.url = APK_DOWNLOAD_BASE + cmd.url;
+  }
+  // 副屏开关只认显式布尔：缺字段/字符串一律 400，免得设备把 "false" 当开启
+  if (cmd.action === 'secondary_display' && typeof cmd.on !== 'boolean') {
+    return res.status(400).json({ error: 'secondary_display 需要布尔字段 on' });
   }
 
   // sync / sync_room_materials 走同一条补全路径：两条发到设备上的都是 syncCommandPayload 组装的

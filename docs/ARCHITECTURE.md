@@ -447,6 +447,7 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | `exit_desktop` | 退出到桌面：停播 + 释放窗口 + 显式把原厂桌面（HOME 候选里非本包那个）顶到身前，进程/MQTT/心跳全活着；镜像里没有别的桌面就退化成一层黑布（APK【A-15】；本机另有鼠标左键连点 5 下同一入口，但连点只管"退出"这一个方向） |
 | `reopen_desktop` | 唤回画面：设备侧用 root `am start` 把自己顶回前台，回到前台那次按 `scenes_json` 缓存重建；无 root 就只放开闸门，等现场按 HOME 键或点桌面图标。已非授权态则改播欢迎视频 |
 | `screenshot` | 实时截图：服务端补 `upload_url` + 一次性 `token`，设备 root `screencap` 出 PNG、压到 ≤1280 宽 JPEG 后 POST 回来；只读一帧画面，不动播放与配置（APK【A-16】/ 云端【S-15】） |
+| `secondary_display` | 副屏（1080/eDP）运行时开关：载荷 `{action:'secondary_display', on:true|false}`（服务端强制布尔）。设备 root 写 `/sys/class/drm/card0-eDP-1/status` + `uevent change`，开约 4 秒 / 关约 10 秒生效；无 root 只记一行拒绝。实际状态随心跳 `secondary_display` 回传，管理台设备卡按它渲染（APK【A-18】） |
 
 **【A-15】收口（2026-11-16，#324 台架真机全验）**：退出 → 桌面交接 → HOME 键回来 → 云端唤回四条路验通，`exit_desktop` 后前台是 `com.android.launcher3`、`reopen_desktop` 后按缓存重建并首帧就绪。两处配套约束记在这里，改 APK 别绕过：
 ① 清单必须有 `<queries><intent>MAIN + HOME</intent></queries>`，否则 targetSdk 34 的包可见性会把 HOME 查询过滤成只剩自己，明明装着 launcher3 也判成"没有桌面"而退化成黑屏（#322 真机事故）。
@@ -459,6 +460,11 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 - 读图两条口都挂 `requireAuth`：`GET /api/devices/:id/screenshot` 回 `{available, ts, bytes, age_ms}` 给前端判"是不是刚拍的那张"，`GET /api/devices/:id/screenshot.jpg` 用 `res.end(buf)` 直出内存字节并带 `no-store`；两分钟一到 (`SHOT_KEEP_MS`) 两条都转成"没有/请重新点一次"。既然压根不落盘，也就不存在图被 nginx 直出或进 git 的风险。
 - 设备侧（APK【A-16】）：`su -c "screencap -p"` 从 stdout 收 PNG（不落设备磁盘）→ `BitmapFactory` 按 2 的幂采样再精确缩到 ≤1280 宽 → JPEG 质量 55（一帧几十 KB）→ POST，令牌放 `x-shot-token` 头里而不是 URL（URL 会进日志）。整段跑在独立的单线程 `shotExecutor` 上：素材同步占满 4 个下载坑时这一发不排队，同时全局也只可能有一张 screencap 在跑。**抓屏不看前台**：命令从 MQTT 线程进来、screencap 由 su 起的独立进程做整块屏的合成，所以应用被 HOME 键最小化、或已退出到桌面时照样截得到，截到的正是当时屏上的原厂桌面 —— 同理**不吃 `exited` 闸门**。唯一前提是进程还活着，否则命令收不到。任何一步失败只留一行 `SYNC/SCREENSHOT` 日志，不碰播放器、不改状态；管理台 25 秒等不到 ts 变新就给"去看设备日志页"的提示。
 - 自检：`screenshot-selftest.js`（108 条：令牌生命周期、阅后即焚过期、上传口边界、两段缩放比例、前端判新与超时，外加三份源码锚点）。
+
+**【A-18】副屏开关（2026-11-18，台架改造配套）**：1080 口（eDP 假面板）极少使用，台架已把 8K 口（HDMI-A-1）设为主屏并在开机完成时强制断开 eDP（vendor 三处改动，见记忆 `xvj-bench-cx3588-board`）。设备卡「副屏」只做运行时切换，重启后回到默认关。
+- 命令：`secondary_display` + 布尔 `on`（服务端 400 拦非布尔），APK 收到后 `su -c "echo on|off > /sys/class/drm/card0-eDP-1/status && echo change > .../uevent"`。
+- 回传：心跳带 `secondary_display`（读 sysfs status，`connected`=true）。服务端与 `screen` 同一套内存 TTL（90s），`GET /api/devices` 挂成 `d.secondary_display`；null = 老 APK 或本机没有这条链，前端按钮禁用。
+- 量产：三处 vendor 改动（build.prop primary/extend、HwComposerEnv.xml 单连接器、init rc 开机 force-off）必须烘进出厂镜像，不能逐台手改；开关本身依赖 root 或厂商特权接口，量产 user 版无 su 时设备只记拒绝、前端等到超时提示看日志。
 
 **【A-17】画面保活（2026-11-16，台架记）**：现场症状是"进程一死，MQTT 跟着死，远程连 `reopen_desktop` 都发不进来，只能人到箱子前点图标"。
 - 进程结构：`KeepAliveService` 跑在独立 `:keepalive` 进程（同进程的 Service 跟 MainActivity 一起死，等于没做），`START_STICKY` 前台服务；targetSdk 34 必须带 `FOREGROUND_SERVICE_SPECIAL_USE` 权限 + manifest `foregroundServiceType="specialUse"` + 子类型 property，后台重启可能抛 `ForegroundServiceStartNotAllowedException`，调用处 try/catch 退化。
@@ -553,7 +559,8 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 
 ### 5.6 播放设置（A-12）
 
-`scenes[X].play_settings` 每格只有 `{ order }`：`'seq'` 顺序循环 | `'shuffle'` 随机循环。
+`scenes[X].play_settings` 每格两个键：`order`（`'seq'` 顺序循环 | `'shuffle'` 随机循环，缺省 seq）
+与 `hdmi`（`false` = 这一格在播时关掉点歌屏/HDMI 采集窗口；缺省 = 开）。两者都是"默认不落键"。
 
 > **叠化（`dissolve` / `dissolve_ms`）已于 2026-11-12 从三端整条删除**：第二路预卷播放器、alpha/音量交叉淡入、
 > 同步组的淡入闸门一起没了，素材轮播交接**一律硬切**（切墙板 / 切幕 / 试播接管本来也是硬切）。
@@ -567,6 +574,11 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   同格多扇窗要共洗一次，见 §5.7 的 `folderPlaylists`。
 - **改设置不动映射** → 服务端发 `update_windows` 轻通道；但设置不在窗口 `content` 里，内容签名比不出它，
   所以本机另记 `appliedPlaySettingsJson`，真变了就把受影响那几扇的清单按新设置重排（`playFolderInWindow` 原地换列表）。
+- **点歌屏开关（`hdmi`，2026-11-18）**：前端按文件夹一行一控（拨一下同时写 A/B 两幕——墙板一格一码不分幕，
+  两幕永远同格）。设备端 `applyHdmiVisibility` 在每次窗口应用后执行：当前在播的格子（`videoSurfaces` 的 folderKey）
+  里**任一格 `hdmi` 开着就显示**所有 HDMI 窗口，全关才 `GONE`；没有在播格子时按显示处理。
+  `GONE` 让 TextureView 销毁 SurfaceTexture → 既有 `onSurfaceTextureDestroyed` 停采集，
+  重新显示时既有 `onSurfaceTextureAvailable` 重接 —— **没有新增采集侧记账**。走原地路径，不触发全量重建。
 
 ### 5.7 同格严格同步与整组试播（A-07 / A-13）
 

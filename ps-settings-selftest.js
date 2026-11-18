@@ -59,8 +59,8 @@ function grab(name) {
 const depNames = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isSceneKey', 'isPlainObject',
   'normalizeFolderMappings', 'isSafeFolderName',
   'playSettingsValue', 'normalizePlaySettings',
-  'buildPrefixedScenes', 'mergePrefixedMappings', 'roomSceneDigest', 'parseRoomConfig'];
-const consts = src.match(/^const (PLAY_ORDERS).*$/gm).join('\n');
+  'buildPrefixedScenes', 'mergePrefixedMappings', 'outputPx', 'roomOutputField', 'roomSceneDigest', 'parseRoomConfig'];
+const consts = src.match(/^const (PLAY_ORDERS|OUTPUT_MIN_PX).*$/gm).join('\n');
 const sandbox = {};
 new Function('exports', 'crypto', consts + '\n' + depNames.map(grab).join('\n')
   + '\nObject.assign(exports,{' + depNames.join(',') + '});')(sandbox, crypto);
@@ -136,6 +136,18 @@ const T = sandbox;
     canon(db.scenes.A.play_settings) === canon({ '08': { order: 'shuffle' } }),
     canon(db.scenes.A.play_settings));
 
+  // 点歌屏开关（hdmi）：false 落键，缺省/true 不落键 —— 与 order 同一套"默认不写"，
+  // 存量房间形状不变，部署那一瞬间 rev 不漂移
+  await putCfg({ scenes: { A: { play_settings: { '08': { order: 'shuffle', hdmi: false },
+                                                 '09': { hdmi: true },
+                                                 '10': { hdmi: false } } } } });
+  db = await cfgOf();
+  check('hdmi:false 落键、hdmi:true 当默认丢掉、两个键可共存',
+    canon(db.scenes.A.play_settings) === canon({ '08': { order: 'shuffle', hdmi: false }, '10': { hdmi: false } }),
+    canon(db.scenes.A.play_settings));
+  r = await putCfg({ scenes: { A: { play_settings: { '01': { hdmi: 'off' } } } } });
+  check('hdmi 传字符串 → 400（不静默当开）', r.code === 400, r.code + ' ' + r.buf);
+
   // 显式空表 = 关掉，不能被 DB 旧值继承回来
   await putCfg({ scenes: { A: { play_settings: {} } } });
   db = await cfgOf();
@@ -186,6 +198,20 @@ const T = sandbox;
   check('随机循环单开关下发、顺序格不落键',
     canon(r.j.command.scenes.A.play_settings) === canon({ A02: { order: 'shuffle' } }),
     JSON.stringify(r.j.command.scenes.A.play_settings));
+
+  // ===== 7. 点歌屏开关随下发到位，翻转进出 rev =====
+  const revBeforeHdmi = r.j.command.rev;
+  await putCfg({ scenes: { A: { play_settings: { '04': { hdmi: false } } } } });
+  r = await req('POST', '/api/devices/' + DEV + '/command', { command: { action: 'sync_room_materials' } });
+  check('点歌屏关下发成 A04 = { hdmi: false }',
+    canon(r.j.command.scenes.A.play_settings) === canon({ A04: { hdmi: false } }),
+    JSON.stringify(r.j.command.scenes.A.play_settings));
+  check('点歌屏翻转动 rev', typeof r.j.command.rev === 'string' && r.j.command.rev !== revBeforeHdmi,
+    r.j.command.rev + ' vs ' + revBeforeHdmi);
+  await putCfg({ scenes: { A: { play_settings: {} } } });
+  r = await req('POST', '/api/devices/' + DEV + '/command', { command: { action: 'sync_room_materials' } });
+  check('点歌屏关回默认后 rev 回到原值（不虚报变更）', r.j.command.rev === revEmpty,
+    r.j.command.rev + ' vs ' + revEmpty);
 
   // ===== 清理 =====
   await q('DELETE FROM devices WHERE id=?', [DEV]);

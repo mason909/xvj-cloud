@@ -265,6 +265,12 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .ps-tbl th,.ps-tbl td{text-align:center}
 .ps-tbl th:first-child,.ps-tbl td:first-child{text-align:left}
 .ps-sep{border-left:1px solid #3a3a3a}
+/* 点歌屏开关列：复用 .wb-sw 的轨道/滑块骨架（44x24、18px、开位 left:23px），
+   表格里控件多、没有个别的 JS 上色，开态直接由 :checked 画（不用 id，30 行一套规则） */
+.ps-hdmi{width:64px}
+.ps-tbl .wb-sw{display:inline-flex}
+.ps-tbl .wb-sw input:checked+.sl{background:#4caf50}
+.ps-tbl .wb-sw input:checked+.sl+.kb{left:23px}
 @media(max-width:1180px){
 .content{padding:18px}
 .wb-row{gap:12px}
@@ -3047,24 +3053,29 @@ async function wpCopyAll() {
 
 // ============================================================================
 // 【F-06g】播放设置表（工作台「播放设置」模式）
-// 表形与墙板表同构：行 = 文件夹 01~30，列 = A幕 / B幕 各一组（素材数 + 播放顺序）。
+// 表形与墙板表同构：行 = 文件夹 01~30，列 = A幕 / B幕 各一组（素材数 + 播放顺序），另加一列点歌屏开关。
 // A、B 是两套独立的物理素材目录（scenea/01 与 sceneb/01 各播各的），所以设置也各存一份。
-// 落库形状 scenes[X].play_settings = {格: {order}}，全默认的格子不落键、
+// 落库形状 scenes[X].play_settings = {格: {order, hdmi}}，全默认的格子不落键、
 // 空表整个键都不下发 —— 与服务端 playSettingsValue / buildPrefixedScenes 同一口径，
 // 存量房间不会因为新增这个字段而 rev 漂移一次（那会让每台在线设备白重同步、视频从头播）。
 // 叠化（dissolve / dissolve_ms）已于 2026-11-12 随功能一起删除：素材轮播交接一律硬切。
 // 后续要加的设置项直接往这一组列里添，草稿/快照/保存三处都按「整格对象」走，不用改结构。
+// 点歌屏开关（hdmi:false = 关）按文件夹一行一控，同时写 A/B 两幕：
+// 墙板一格一码不分幕，两幕永远同格，分两列只会让人拨出一半开一半关的自相矛盾状态。
 // ============================================================================
 
 var PS_ORDERS = ['seq', 'shuffle'];
 
 /**
- * 一格设置的规范形状；全默认（顺序循环）→ null = 不落键。
+ * 一格设置的规范形状；全默认（顺序循环 + 点歌屏开）→ null = 不落键。
  * 读库和编辑都过它，两处不会各漂一份口径。
  */
 function _psCell(v) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-    return v.order === 'shuffle' ? { order: 'shuffle' } : null;
+    var o = {};
+    if (v.order === 'shuffle') o.order = 'shuffle';
+    if (v.hdmi === false) o.hdmi = false;
+    return Object.keys(o).length ? o : null;
 }
 
 /** 某一幕的设置表：01~30 之外的键原样留着（表只画 30 行，保存是整表 PUT，丢了等于替别人清设置） */
@@ -3085,7 +3096,7 @@ function _psSnap(d) {
         var o = {};
         Object.keys(m).sort().forEach(function (k) {
             var c = m[k];
-            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq'];
+            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq', c.hdmi === false ? 'off' : 'on'];
         });
         return o;
     };
@@ -3100,7 +3111,7 @@ function _psDirty() {
 /** 有未保存草稿就问一句；返回 false = 用户要留下（调用方负责把刚拨的开关还原） */
 function _confirmDropPsDraft() {
     if (!_psDirty()) return true;
-    return confirm('播放设置表还有未保存的改动（播放顺序），离开这张表就丢了，不会自动落库。\n确定离开？');
+    return confirm('播放设置表还有未保存的改动（播放顺序/点歌屏），离开这张表就丢了，不会自动落库。\n确定离开？');
 }
 
 /** 退出播放设置模式：草稿随模式一起丢，重开时按云端真值重建。确认框由调用方弹（见 _exitTableModes） */
@@ -3172,6 +3183,16 @@ function _psGroupHtml(sc, fid, cell, count, sep) {
     return h;
 }
 
+/** 一行的点歌屏开关：A、B 两幕只要有一幕没关就算开（设备端按"任一在播的格开着就显示"执行） */
+function _psHdmiSw(fid, d) {
+    var ca = d.A[fid], cb = d.B[fid];
+    var on = !(ca && ca.hdmi === false) || !(cb && cb.hdmi === false);
+    return '<label class="wb-sw" title="' + escA('开 = 这一格在播时显示所有点歌屏（HDMI 采集）窗口；关 = 隐藏它们并停掉采集。默认开') + '">'
+        + '<span class="tk"><input type="checkbox" name="psh-' + fid + '"' + (on ? ' checked' : '')
+        + ' aria-label="文件夹' + fid + ' 的点歌屏开关" onchange="psSetHdmi(\'' + fid + '\',this.checked)">'
+        + '<span class="sl"></span><span class="kb"></span></span></label>';
+}
+
 function _psTableHtml() {
     var d = _psDraftOf();
     if (!d) return '<div class="empty" style="margin-top:10px">房间数据还没加载完，关掉「播放设置」再开一次</div>';
@@ -3188,10 +3209,11 @@ function _psTableHtml() {
     h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" onclick="psSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未保存的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环。</div>';
+    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏开。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
-        + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th></tr>'
+        + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th>'
+        + '<th rowspan="2" class="ps-sep ps-hdmi">点歌屏</th></tr>'
         + '<tr><th>素材</th><th>播放顺序</th>'
         + '<th class="ps-sep">素材</th><th>播放顺序</th></tr>'
         + '</thead><tbody>';
@@ -3200,6 +3222,7 @@ function _psTableHtml() {
         h += '<tr><td class="wp-fid">' + f + '</td>'
             + _psGroupHtml('A', f, d.A[f], (fm.A[f] || []).length, false)
             + _psGroupHtml('B', f, d.B[f], (fm.B[f] || []).length, true)
+            + '<td class="ps-sep">' + _psHdmiSw(f, d) + '</td>'
             + '</tr>';
     }
     h += '</tbody></table>';
@@ -3216,16 +3239,33 @@ function renderPsEditor() {
     else g.insertAdjacentHTML('beforeend', html);
 }
 
-/** 改一格草稿（只动内存，点「保存」才落库）；回到全默认就删键，与服务端"默认值不落键"同口径 */
-function psSet(sc, fid, field, v) {
+/**
+ * 改一格草稿（只动内存，点「保存」才落库）；回到全默认就删键，与服务端"默认值不落键"同口径。
+ * 按整格对象改：拨顺序不能把点歌屏开关抹掉，反之亦然。
+ */
+function _psSetCell(sc, fid, field, v) {
     var d = _psDraftOf();
-    if (!d || (sc !== 'A' && sc !== 'B') || field !== 'order') return;
-    var ord = v === 'shuffle' ? 'shuffle' : 'seq';
-    if (ord === 'seq') {
-        delete d[sc][fid];   // 回到全默认就删键，与服务端"默认值不落键"同口径
-    } else {
-        d[sc][fid] = { order: 'shuffle' };
-    }
+    if (!d) return false;
+    var cell = {};
+    var old = d[sc][fid];
+    if (old) Object.keys(old).forEach(function (k) { cell[k] = old[k]; });
+    if (field === 'order') {
+        if (v === 'shuffle') cell.order = 'shuffle'; else delete cell.order;
+    } else if (field === 'hdmi') {
+        if (v) delete cell.hdmi; else cell.hdmi = false;
+    } else return false;
+    if (Object.keys(cell).length) d[sc][fid] = cell; else delete d[sc][fid];
+    return true;
+}
+function psSet(sc, fid, field, v) {
+    if (sc !== 'A' && sc !== 'B') return;
+    if (_psSetCell(sc, fid, field, v)) renderPsEditor();
+}
+
+/** 点歌屏开关按行拨：A、B 两幕同时落同一个值（理由见本节表头注释） */
+function psSetHdmi(fid, on) {
+    _psSetCell('A', fid, 'hdmi', on);
+    _psSetCell('B', fid, 'hdmi', on);
     renderPsEditor();
 }
 
