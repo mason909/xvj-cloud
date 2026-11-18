@@ -69,6 +69,9 @@ eq('存量 panel_no 不跟着下发（设备端已不读）', 'panel_no' in T.bu
 eq('play_settings 加幕前缀 + 排序，设备按物理目录 id 查', T.buildPrefixedScenes({ A: { play_settings: { '02': { order: 'shuffle' }, '03': { order: 'seq' } } } }).A.play_settings,
   { A02: { order: 'shuffle' } });
 eq('空/全默认 play_settings 不落键', Object.keys(T.buildPrefixedScenes({ A: { play_settings: { '01': { order: 'seq' } } }, B: { play_settings: {} } }).A), ['name', 'folder_mappings', 'windows']);
+eq('DMX512 开关随下发到设备（带幕前缀）', T.buildPrefixedScenes({ A: { play_settings: { '04': { dmx: true } } } }).A.play_settings,
+  { A04: { dmx: true } });
+eq('DMX512 关不落键', Object.keys(T.buildPrefixedScenes({ A: { play_settings: { '04': { dmx: false } } } }).A), ['name', 'folder_mappings', 'windows']);
 eq('A/B 各存各的（两幕是两套物理目录）', (() => {
   const p = T.buildPrefixedScenes({ A: { play_settings: { '01': { order: 'shuffle' } } }, B: { play_settings: { '01': { order: 'shuffle' } } } });
   return [p.A.play_settings, p.B.play_settings];
@@ -206,10 +209,14 @@ eq('同前缀键合并去重（A 里写了 B01 时与 B 的 B01 并起来）',
 eq('脏值不抛', T.mergePrefixedMappings({ A: { folder_mappings: { A01: 5 } }, B: { folder_mappings: { B01: 'str' } } }), { A01: [], B01: ['str'] });
 eq('入参为 undefined 不抛', T.mergePrefixedMappings(undefined), {});
 
-console.log('playSettingsValue / normalizePlaySettings（文件夹级播放设置，只剩 order）:');
+console.log('playSettingsValue / normalizePlaySettings（文件夹级播放设置：order + hdmi + dmx）:');
 eq('顺序循环 → null（这一格不落键）', T.playSettingsValue({ order: 'seq' }), null);
 eq('缺字段也算全默认', T.playSettingsValue({}), null);
 eq('随机 → 只带 order', T.playSettingsValue({ order: 'shuffle' }), { order: 'shuffle' });
+eq('DMX512 开 → 只带 dmx', T.playSettingsValue({ dmx: true }), { dmx: true });
+eq('DMX512 关（false）当默认，不落键', T.playSettingsValue({ dmx: false }), null);
+eq('dmx 脏值（非 true）当默认', [T.playSettingsValue({ dmx: 'yes' }), T.playSettingsValue({ dmx: 1 })], [null, null]);
+eq('三个键共存都保留', T.playSettingsValue({ order: 'shuffle', hdmi: true, dmx: true }), { order: 'shuffle', hdmi: true, dmx: true });
 eq('残留的 dissolve 键不再往下带', T.playSettingsValue({ dissolve: true, dissolve_ms: 600, order: 'shuffle' }), { order: 'shuffle' });
 eq('只有残留 dissolve、顺序仍默认 → 整格不落键', T.playSettingsValue({ dissolve: true, dissolve_ms: 600 }), null);
 eq('脏 order 回落顺序（= 默认，null）', T.playSettingsValue({ order: 'random' }), null);
@@ -227,6 +234,10 @@ eq('空串/没带不算错', T.findPlaySettingsError({ scenes: { A: { play_setti
 eq('脏 order 报出可选值', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { order: 'random' } } } } }),
   '场景A 文件夹01 的播放顺序只能是 seq（顺序循环）或 shuffle（随机循环）');
 eq('带前缀的键在文案里折回格名', T.findPlaySettingsError({ scenes: { A: { play_settings: { 'A01': { order: 'x' } } } } }).indexOf('文件夹01') > 0, true);
+eq('DMX512 开关合法 → null', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { dmx: true } } } } }), null);
+eq('DMX512 开关传字符串 → 报错（不静默当关）', T.findPlaySettingsError({ scenes: { B: { play_settings: { '02': { dmx: 'on' } } } } }),
+  '场景B 文件夹02 的 DMX512 控制开关只能是 true（接受）或 false（不接受）');
+eq('DMX512 开关显式 null 不算错（与 hdmi 同口径）', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': { dmx: null } } } } }), null);
 eq('脏形状格不报（由规范化丢弃，与 folder_mappings 同口径）', T.findPlaySettingsError({ scenes: { A: { play_settings: { '01': true } } } }), null);
 
 console.log('mergeSceneConfig:');
@@ -240,6 +251,8 @@ eq('没带 play_settings → 继承 DB 的设置', T.mergeSceneConfig({ folder_m
 eq('显式 play_settings:{} 关回默认（不能被 DB 旧值继承回来）', T.mergeSceneConfig({ play_settings: {} }, { play_settings: { '01': { order: 'shuffle' } } }, '第一幕', 'A').play_settings, {});
 eq('随机改回顺序 = 那一格整个消失', T.mergeSceneConfig({ play_settings: { '01': { order: 'seq' } } }, { play_settings: { '01': { order: 'shuffle' } } }, '第一幕', 'A').play_settings, {});
 eq('DB 里残留的叠化键继承时一并丢掉', T.mergeSceneConfig({}, { play_settings: { '01': { dissolve: true, dissolve_ms: 600 } } }, '第一幕', 'A').play_settings, {});
+eq('DMX512 开关随整格写入（不被丢）', T.mergeSceneConfig({ play_settings: { '01': { dmx: true } } }, {}, '第一幕', 'A').play_settings, { '01': { dmx: true } });
+eq('DMX512 关从 DB 继承时按默认丢掉', T.mergeSceneConfig({}, { play_settings: { '01': { dmx: false } } }, '第一幕', 'A').play_settings, {});
 eq('空 windows 数组不覆盖（清空走 PUT /windows）', T.mergeSceneConfig({ windows: [] }, ex, '第一幕').windows, ex.windows);
 eq('非空 windows 覆盖', T.mergeSceneConfig({ windows: [{ id: 'n', name: 'N' }] }, ex, '第一幕').windows, [{ id: 'n', name: 'N' }]);
 eq('master clamp 上界', T.mergeSceneConfig({ master: { brightness: 3 } }, ex, '第一幕').master, { brightness: 1 });
@@ -288,6 +301,10 @@ eq('播放设置非法顺序写库被拦', T.prepareRoomConfig({ scenes: { B: { 
   '场景B 文件夹02 的播放顺序只能是 seq（顺序循环）或 shuffle（随机循环）');
 eq('播放设置出生即归一（带前缀键折回格名、默认格丢掉）', T.prepareRoomConfig({ scenes: { A: { play_settings: { 'A01': { order: 'shuffle' }, '02': { order: 'seq' } } } } }, null).cfg.scenes.A.play_settings,
   { '01': { order: 'shuffle' } });
+eq('DMX512 开关非法值写库被拦', T.prepareRoomConfig({ scenes: { A: { play_settings: { '03': { dmx: 'on' } } } } }, null).error,
+  '场景A 文件夹03 的 DMX512 控制开关只能是 true（接受）或 false（不接受）');
+eq('DMX512 开出生即落库', T.prepareRoomConfig({ scenes: { A: { play_settings: { '03': { dmx: true, hdmi: false } } } } }, null).cfg.scenes.A.play_settings,
+  { '03': { dmx: true } });
 eq('少带 play_settings 的那一幕从 DB 继承（整份 PUT 不该抹掉另一幕）', (() => {
   const db = { scenes: { A: { play_settings: { '01': { order: 'shuffle' } } }, B: { play_settings: { '02': { order: 'seq' } } } } };
   const c = T.prepareRoomConfig({ scenes: { A: { name: '第一幕' } } }, db).cfg;
@@ -313,6 +330,8 @@ eq('存量 panel_no 残留不改 rev', T.roomSceneDigest({ scenes: { A: { folder
 // 它若跟着进指纹，每台在线设备都被对账判成落后、各补发一次同步、视频从头播
 eq('空 play_settings 不改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: {} } } }), r1);
 eq('全默认的格子不改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { order: 'seq' } } } } }), r1);
+eq('DMX512 关（false）不改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { dmx: false } } } } }), r1);
+eq('开 DMX512 会改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { dmx: true } } } } }) !== r1, true);
 eq('改随机顺序会改 rev', T.roomSceneDigest({ scenes: { A: { folder_mappings: { '01': ['x'] }, windows: [], play_settings: { '01': { order: 'shuffle' } } } } }) !== r1, true);
 // 叠化下线后 DB 里还可能留着 dissolve/dissolve_ms 脏键：归一一次就把它们抹了，
 // 所以它们绝不进指纹 —— 存量房间不会因为"历史上有过叠化"而多抖一次 rev

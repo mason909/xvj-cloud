@@ -148,6 +148,18 @@ const T = sandbox;
   r = await putCfg({ scenes: { A: { play_settings: { '01': { hdmi: 'off' } } } } });
   check('hdmi 传字符串 → 400（不静默当关）', r.code === 400, r.code + ' ' + r.buf);
 
+  // DMX512 开关（dmx）：与 hdmi 同一套「true 落键、缺省/false 不落键」，默认全关
+  await putCfg({ scenes: { A: { play_settings: { '11': { dmx: true },
+                                                 '12': { dmx: false },
+                                                 '13': { order: 'shuffle', hdmi: true, dmx: true } } } } });
+  db = await cfgOf();
+  check('dmx:true 落键、dmx:false 当默认丢掉、三个键可共存',
+    canon(db.scenes.A.play_settings) === canon({ '11': { dmx: true },
+      '13': { order: 'shuffle', hdmi: true, dmx: true } }),
+    canon(db.scenes.A.play_settings));
+  r = await putCfg({ scenes: { A: { play_settings: { '01': { dmx: 'on' } } } } });
+  check('dmx 传字符串 → 400（不静默当关）', r.code === 400, r.code + ' ' + r.buf);
+
   // 显式空表 = 关掉，不能被 DB 旧值继承回来
   await putCfg({ scenes: { A: { play_settings: {} } } });
   db = await cfgOf();
@@ -212,6 +224,20 @@ const T = sandbox;
   r = await req('POST', '/api/devices/' + DEV + '/command', { command: { action: 'sync_room_materials' } });
   check('点歌屏关回默认后 rev 回到原值（不虚报变更）', r.j.command.rev === revEmpty,
     r.j.command.rev + ' vs ' + revEmpty);
+
+  // ===== 8. DMX512 控制随下发到位，翻转进出 rev =====
+  await putCfg({ scenes: { A: { play_settings: { '06': { dmx: true } } } } });
+  r = await req('POST', '/api/devices/' + DEV + '/command', { command: { action: 'sync_room_materials' } });
+  check('DMX512 开下发成 A06 = { dmx: true }',
+    canon(r.j.command.scenes.A.play_settings) === canon({ A06: { dmx: true } }),
+    JSON.stringify(r.j.command.scenes.A.play_settings));
+  check('DMX512 翻转动 rev', typeof r.j.command.rev === 'string' && r.j.command.rev !== revEmpty,
+    r.j.command.rev + ' vs ' + revEmpty);
+  await putCfg({ scenes: { A: { play_settings: { '06': { dmx: false } } } } });
+  r = await req('POST', '/api/devices/' + DEV + '/command', { command: { action: 'sync_room_materials' } });
+  check('DMX512 关回默认后不下发、rev 回到原值（不虚报变更）',
+    !(r.j.command.scenes.A && r.j.command.scenes.A.play_settings) && r.j.command.rev === revEmpty,
+    JSON.stringify(r.j.command.scenes.A) + ' ' + r.j.command.rev + ' vs ' + revEmpty);
 
   // ===== 清理 =====
   await q('DELETE FROM devices WHERE id=?', [DEV]);

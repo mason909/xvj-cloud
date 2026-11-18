@@ -65,13 +65,14 @@
  *   {
  *     A: { name: '第一幕',
  *          folder_mappings: { "01": [materialId, ...], "02": [...] },   // 键是未加前缀的两位编号；值是素材库 id 或预设素材 id，两种都合法
- *          play_settings: { "01": { order: 'shuffle', hdmi: true } },
+ *          play_settings: { "01": { order: 'shuffle', hdmi: true, dmx: true } },
  *                         // 文件夹级播放设置：order='seq' 顺序循环 | 'shuffle' 随机循环；
- *                         // hdmi=true 表示这一格在播时显示点歌屏（HDMI 采集）窗口，缺省 = 关。
+ *                         // hdmi=true 表示这一格在播时显示点歌屏（HDMI 采集）窗口，缺省 = 关；
+ *                         // dmx=true 表示这一格接受 DMX512 控制，缺省 = 关。
  *                         // 素材轮播交接一律硬切（叠化已于 2026-11-12 从三端删除，载荷里残留的 dissolve /
  *                         // dissolve_ms 键写库时被丢掉，不必清库）。
- *                         // 没列出的键 = 全默认（顺序循环 + 点歌屏关）；全默认的格子不落键，空表整个键都不下发，
- *                         // 所以存量房间的 rev 不会因为新增这个字段而漂移。非法值写库前 400。
+ *                         // 没列出的键 = 全默认（顺序循环 + 点歌屏关 + DMX512 关）；全默认的格子不落键，
+ *                         // 空表整个键都不下发，所以存量房间的 rev 不会因为新增这些字段而漂移。非法值写库前 400。
  *          windows: [WinConfig, ...],
  *          master: { brightness: Number } },   // 场景总亮度 0..1，服务端在 PUT windows 时夹取
  *     B: { ... }
@@ -377,6 +378,7 @@ function isSafeSerialPath(s) { return typeof s === 'string' && /^\/dev\/[A-Za-z0
  * 前端 _psCell/psSet* 与 APK 的 playSettingsOf：
  *   order       'seq'|'shuffle' 顺序循环（按文件名）/ 随机循环
  *   hdmi        true = 这一格在播时显示点歌屏（HDMI 采集）窗口；缺省 = 关
+ *   dmx         true = 这一格接受 DMX512 控制；缺省 = 关（设备端 DMX 接收尚未实现，先按三端同一形状落设置）
  * A、B 是两套独立物理目录（scenea/01 与 sceneb/01 装的不是同一批片子），所以设置按幕各存一份。
  * 全默认的格子一律不落键：给每幕挂一张 30 格默认表会让 roomSceneDigest 当场全库漂移一次，
  * 部署后每台在线设备都被对账判成"rev 落后"补发一发同步、视频从头播（与 play_settings「空表不落键」同理）。
@@ -387,15 +389,16 @@ const PLAY_ORDERS = ['seq', 'shuffle'];
 
 /**
  * 单格播放设置 → 确定形状；等于全默认返回 null（= 这一格不落键）。
- * 只认 order / hdmi：残留的 dissolve 类键不再往下带，设备端已经不读它们，留着只会让 rev 比出假变化。
- * hdmi 默认 false（2026-11-18 用户定调：点歌屏默认全关），所以只有 true 才落键；
- * 存量库里残留的 hdmi:false 是旧口径的"关"，现在等于默认，写库/下发时按默认丢掉。
+ * 只认 order / hdmi / dmx：残留的 dissolve 类键不再往下带，设备端已经不读它们，留着只会让 rev 比出假变化。
+ * hdmi 默认 false（2026-11-18 用户定调：点歌屏默认全关），dmx 默认 false（同用户定调：DMX512 控制默认关），
+ * 所以只有 true 才落键；存量库里残留的 false 是旧口径的"关"，现在等于默认，写库/下发时按默认丢掉。
  */
 function playSettingsValue(v) {
   if (!isPlainObject(v)) return null;
   const out = {};
   if (v.order === 'shuffle') out.order = 'shuffle';
   if (v.hdmi === true) out.hdmi = true;
+  if (v.dmx === true) out.dmx = true;
   return Object.keys(out).length ? out : null;
 }
 
@@ -438,6 +441,9 @@ function findPlaySettingsError(cfg) {
       }
       if (cell.hdmi !== undefined && cell.hdmi !== null && typeof cell.hdmi !== 'boolean') {
         return `${where} 的点歌屏开关只能是 true（显示）或 false（关闭）`;
+      }
+      if (cell.dmx !== undefined && cell.dmx !== null && typeof cell.dmx !== 'boolean') {
+        return `${where} 的 DMX512 控制开关只能是 true（接受）或 false（不接受）`;
       }
     }
   }

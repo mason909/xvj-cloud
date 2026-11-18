@@ -272,6 +272,7 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 /* 点歌屏开关列：复用 .wb-sw 的轨道/滑块骨架（44x24、18px、开位 left:23px），
    表格里控件多、没有个别的 JS 上色，开态直接由 :checked 画（不用 id，30 行一套规则） */
 .ps-hdmi{width:64px}
+.ps-dmx{width:88px}
 .ps-tbl .wb-sw{display:inline-flex}
 .ps-tbl .wb-sw input:checked+.sl{background:#4caf50}
 .ps-tbl .wb-sw input:checked+.sl+.kb{left:23px}
@@ -3171,21 +3172,21 @@ async function wpCopyAll() {
 
 // ============================================================================
 // 【F-06g】播放设置表（工作台「播放设置」模式）
-// 表形与墙板表同构：行 = 文件夹 01~30，列 = A幕 / B幕 各一组（素材数 + 播放顺序），另加一列点歌屏开关。
+// 表形与墙板表同构：行 = 文件夹 01~30，列 = A幕 / B幕 各一组（素材数 + 播放顺序），另加点歌屏与 DMX512 两个开关列。
 // A、B 是两套独立的物理素材目录（scenea/01 与 sceneb/01 各播各的），所以设置也各存一份。
-// 落库形状 scenes[X].play_settings = {格: {order, hdmi}}，全默认的格子不落键、
+// 落库形状 scenes[X].play_settings = {格: {order, hdmi, dmx}}，全默认的格子不落键、
 // 空表整个键都不下发 —— 与服务端 playSettingsValue / buildPrefixedScenes 同一口径，
 // 存量房间不会因为新增这个字段而 rev 漂移一次（那会让每台在线设备白重同步、视频从头播）。
 // 叠化（dissolve / dissolve_ms）已于 2026-11-12 随功能一起删除：素材轮播交接一律硬切。
 // 后续要加的设置项直接往这一组列里添，草稿/快照/保存三处都按「整格对象」走，不用改结构。
-// 点歌屏开关（hdmi:true = 开，缺省 = 关）按文件夹一行一控，同时写 A/B 两幕：
+// 点歌屏（hdmi）/ DMX512 控制（dmx）两个开关按文件夹一行一控，同时写 A/B 两幕：
 // 墙板一格一码不分幕，两幕永远同格，分两列只会让人拨出一半开一半关的自相矛盾状态。
 // ============================================================================
 
 var PS_ORDERS = ['seq', 'shuffle'];
 
 /**
- * 一格设置的规范形状；全默认（顺序循环 + 点歌屏关）→ null = 不落键。
+ * 一格设置的规范形状；全默认（顺序循环 + 点歌屏关 + DMX512 关）→ null = 不落键。
  * 读库和编辑都过它，两处不会各漂一份口径。
  */
 function _psCell(v) {
@@ -3193,6 +3194,7 @@ function _psCell(v) {
     var o = {};
     if (v.order === 'shuffle') o.order = 'shuffle';
     if (v.hdmi === true) o.hdmi = true;
+    if (v.dmx === true) o.dmx = true;
     return Object.keys(o).length ? o : null;
 }
 
@@ -3214,7 +3216,7 @@ function _psSnap(d) {
         var o = {};
         Object.keys(m).sort().forEach(function (k) {
             var c = m[k];
-            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq', c.hdmi === true ? 'on' : 'off'];
+            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq', c.hdmi === true ? 'on' : 'off', c.dmx === true ? 'on' : 'off'];
         });
         return o;
     };
@@ -3293,6 +3295,16 @@ function _psHdmiSw(fid, d) {
         + '<span class="sl"></span><span class="kb"></span></span></label>';
 }
 
+/** 一行的 DMX512 控制开关：一行一控写 A/B 两幕，口径与点歌屏同（默认关） */
+function _psDmxSw(fid, d) {
+    var ca = d.A[fid], cb = d.B[fid];
+    var on = (ca && ca.dmx === true) || (cb && cb.dmx === true);
+    return '<label class="wb-sw" title="' + escA('开 = 这一格接受 DMX512 控制（中控把 XVJ 当效果灯时，通道表只对这一格生效）；关 = 忽略 DMX 通道。默认关') + '">'
+        + '<span class="tk"><input type="checkbox" name="psd-' + fid + '"' + (on ? ' checked' : '')
+        + ' aria-label="文件夹' + fid + ' 的 DMX512 控制开关" onchange="psSetDmx(\'' + fid + '\',this.checked)">'
+        + '<span class="sl"></span><span class="kb"></span></span></label>';
+}
+
 function _psTableHtml() {
     var d = _psDraftOf();
     if (!d) return '<div class="empty" style="margin-top:10px">房间数据还没加载完，关掉「播放设置」再开一次</div>';
@@ -3308,15 +3320,16 @@ function _psTableHtml() {
     if (s._psNote) h += '<span style="font-size:var(--fs-micro);color:#4caf50">✓ ' + esc(s._psNote) + '</span>';
     if (s._psErr) h += '<span class="wp-warn" style="color:#e94560">' + esc(s._psErr) + '</span>';
     h += '<span style="flex:1"></span>';
-    h += '<button class="btn btn-sync" id="psCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的播放设置（每格的播放顺序与点歌屏开关）覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="psCopyAll()">全局复制</button>';
+    h += '<button class="btn btn-sync" id="psCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的播放设置（每格的播放顺序、点歌屏与 DMX512 开关）覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="psCopyAll()">全局复制</button>';
     h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="改动会自动保存；这里可立即落库，或重试上一次失败" onclick="psSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关。</div>';
+    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关、DMX512 控制关。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
         + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th>'
-        + '<th rowspan="2" class="ps-sep ps-hdmi">点歌屏</th></tr>'
+        + '<th rowspan="2" class="ps-sep ps-hdmi">点歌屏</th>'
+        + '<th rowspan="2" class="ps-sep ps-dmx">DMX512控制</th></tr>'
         + '<tr><th>素材</th><th>播放顺序</th>'
         + '<th class="ps-sep">素材</th><th>播放顺序</th></tr>'
         + '</thead><tbody>';
@@ -3326,6 +3339,7 @@ function _psTableHtml() {
             + _psGroupHtml('A', f, d.A[f], (fm.A[f] || []).length, false)
             + _psGroupHtml('B', f, d.B[f], (fm.B[f] || []).length, true)
             + '<td class="ps-sep">' + _psHdmiSw(f, d) + '</td>'
+            + '<td class="ps-sep">' + _psDmxSw(f, d) + '</td>'
             + '</tr>';
     }
     h += '</tbody></table>';
@@ -3356,6 +3370,8 @@ function _psSetCell(sc, fid, field, v) {
         if (v === 'shuffle') cell.order = 'shuffle'; else delete cell.order;
     } else if (field === 'hdmi') {
         if (v) cell.hdmi = true; else delete cell.hdmi;
+    } else if (field === 'dmx') {
+        if (v) cell.dmx = true; else delete cell.dmx;
     } else return false;
     if (Object.keys(cell).length) d[sc][fid] = cell; else delete d[sc][fid];
     return true;
@@ -3369,6 +3385,14 @@ function psSet(sc, fid, field, v) {
 function psSetHdmi(fid, on) {
     _psSetCell('A', fid, 'hdmi', on);
     _psSetCell('B', fid, 'hdmi', on);
+    renderPsEditor();
+    _psAutoSaveSoon();
+}
+
+/** DMX512 控制开关按行拨：同样 A、B 两幕同值 */
+function psSetDmx(fid, on) {
+    _psSetCell('A', fid, 'dmx', on);
+    _psSetCell('B', fid, 'dmx', on);
     renderPsEditor();
     _psAutoSaveSoon();
 }
@@ -3465,7 +3489,7 @@ async function psSave() {
 }
 
 /**
- * 全局复制：把当前房间的播放设置（两幕每格的播放顺序 + 点歌屏开关）覆盖到**本店**其余房间。
+ * 全局复制：把当前房间的播放设置（两幕每格的播放顺序 + 点歌屏开关 + DMX512 开关）覆盖到**本店**其余房间。
  * 边界与墙板表同一口径：只认当前房间的 store_name；每间房读后写、只换 scenes.A/B.play_settings，
  * 其它配置（窗口/墙板/输出基准）一概不碰。复制的是当前草稿，所以最后把自己也存一次，
  * 保证"复制出去的"就是"这里留下的"。一间失败不拦后面：最后报出成功数与失败名单。
@@ -3485,7 +3509,7 @@ async function psCopyAll() {
     catch (e) { alert('取房间列表失败: ' + e.message); return; }
     var others = list.filter(function (r) { return r && r.id !== s.rf; });
     if (!others.length) { alert('本店没有其它房间可覆盖。'); return; }
-    if (!confirm('把当前房间的播放设置（每格播放顺序、点歌屏开关）覆盖到「' + store + '」的其余 '
+    if (!confirm('把当前房间的播放设置（每格播放顺序、点歌屏开关、DMX512 开关）覆盖到「' + store + '」的其余 '
         + others.length + ' 间房？\n\n它们原本的播放设置会被整体替换，其它配置与其他店铺不受影响。')) return;
     var psA = JSON.parse(JSON.stringify(d.A)), psB = JSON.parse(JSON.stringify(d.B));
     s._psCopying = true;

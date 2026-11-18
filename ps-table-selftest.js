@@ -14,7 +14,7 @@ function grab(name) {
   return src.slice(i, j + 2);
 }
 const names = ['_psCell', '_psTableOf', '_psSnap',
-  '_psGroupHtml', '_psSetCell', '_psHdmiSw', '_psDraftOf', '_psTableHtml', 'psSet', 'psSetHdmi',
+  '_psGroupHtml', '_psSetCell', '_psHdmiSw', '_psDmxSw', '_psDraftOf', '_psTableHtml', 'psSet', 'psSetHdmi', 'psSetDmx',
   // 自动保存：psSet 改完就排防抖，_psSaveSnap 才是真正落库的那一段（读后写 + 基线回填）
   '_psAutoSaveSoon', '_psSaveSnap',
   // 切表：四张表都改动即保存，两个退出函数只需把状态与学习清干净，不再弹确认框
@@ -67,8 +67,12 @@ eq('脏 order 回落 seq（= 默认，不落键）', T._psCell({ order: 'random'
 eq('非对象/数组/null 一律 null', [T._psCell('x'), T._psCell([1]), T._psCell(null), T._psCell(5)], [null, null, null, null]);
 eq('点歌屏开（hdmi:true）落键', T._psCell({ hdmi: true }), { hdmi: true });
 eq('点歌屏关（hdmi:false）= 默认，不落键', T._psCell({ hdmi: false }), null);
+eq('DMX512 开（dmx:true）落键', T._psCell({ dmx: true }), { dmx: true });
+eq('DMX512 关（dmx:false）= 默认，不落键', T._psCell({ dmx: false }), null);
+eq('三个键共存时都保留', T._psCell({ order: 'shuffle', hdmi: true, dmx: true }), { order: 'shuffle', hdmi: true, dmx: true });
 eq('两个键共存时都保留', T._psCell({ order: 'shuffle', hdmi: true }), { order: 'shuffle', hdmi: true });
 eq('hdmi 脏值（非 true）当默认关', [T._psCell({ hdmi: 'yes' }), T._psCell({ hdmi: 1 })], [null, null]);
+eq('dmx 脏值（非 true）当默认关', [T._psCell({ dmx: 'yes' }), T._psCell({ dmx: 1 })], [null, null]);
 
 console.log('_psTableOf:');
 eq('两幕各读各的表', T._psTableOf({ scenes: { A: { play_settings: { '01': { order: 'shuffle' } } }, B: { play_settings: { '02': { order: 'shuffle' } } } } }, 'A'),
@@ -88,7 +92,9 @@ eq('顺序变了算改动', T._psSnap({ A: { '01': { order: 'seq' } }, B: {} }) 
 eq('B 幕变了也算改动', T._psSnap({ A: d0.A, B: { '01': { order: 'shuffle' } } }) !== T._psSnap(d0), true);
 eq('多带的脏键（如残留 dissolve）不算改动 —— 与服务端丢键同口径', T._psSnap({ A: { '01': { order: 'shuffle', dissolve: true } }, B: {} }), T._psSnap(d0));
 eq('点歌屏拨了一下也算改动', T._psSnap({ A: { '01': { hdmi: true } }, B: {} }) !== T._psSnap({ A: {}, B: {} }), true);
+eq('DMX512 拨了一下也算改动', T._psSnap({ A: { '01': { dmx: true } }, B: {} }) !== T._psSnap({ A: {}, B: {} }), true);
 eq('hdmi:false 读进草稿时按默认丢掉（快照里只剩真设置）', T._psTableOf({ scenes: { A: { play_settings: { '01': { hdmi: false } } } } }, 'A'), {});
+eq('dmx:false 读进草稿时按默认丢掉', T._psTableOf({ scenes: { A: { play_settings: { '01': { dmx: false } } } } }, 'A'), {});
 
 console.log('_psGroupHtml（一幕一格两个 td）:');
 const gOff = T._psGroupHtml('A', '01', null, 0, false);
@@ -136,28 +142,43 @@ eq('开了再关 → 整格回到基线（hdmi 键删掉）', (() => { const d =
   [{}, {}, true]);
 eq('只开了点歌屏 → 草稿算脏（这格要落键）', (() => { const d = seed(); T.psSetHdmi('01', true); return T._psSnap(d) !== d.base; })(), true);
 eq('读库时全默认的格子不进草稿', (() => { const d = seed({ '01': { order: 'seq' }, '02': { order: 'shuffle' } }); return Object.keys(d.A); })(), ['02']);
-console.log('_psTableHtml（整表结构：5 列 × 30 行，表头两层不能错位）:');
+
+console.log('DMX512 控制开关（psSetDmx：一行拨 A/B 两幕）:');
+eq('拨开关不动这一格的播放顺序与点歌屏', (() => { const d = seed({ '01': { order: 'shuffle', hdmi: true } }); T.psSetDmx('01', true); return d.A; })(),
+  { '01': { order: 'shuffle', hdmi: true, dmx: true } });
+eq('拨点歌屏不抹 DMX', (() => { const d = seed({ '01': { dmx: true } }); T.psSetHdmi('01', true); return d.A; })(),
+  { '01': { dmx: true, hdmi: true } });
+eq('按行拨：A、B 两幕落同一个值', (() => { const d = seed({}, {}); T.psSetDmx('02', true); return [d.A, d.B]; })(),
+  [{ '02': { dmx: true } }, { '02': { dmx: true } }]);
+eq('开了再关 → 整格回到基线（dmx 键删掉）', (() => { const d = seed(); T.psSetDmx('01', true); T.psSetDmx('01', false); return [d.A, d.B, T._psSnap(d) === d.base]; })(),
+  [{}, {}, true]);
+eq('只开了 DMX → 草稿算脏（这格要落键）', (() => { const d = seed(); T.psSetDmx('01', true); return T._psSnap(d) !== d.base; })(), true);
+console.log('_psTableHtml（整表结构：7 列 × 30 行，表头两层不能错位）:');
 s.rf = 'r1';
 s.rooms = [{ id: 'r1', config: JSON.stringify({ scenes: {
-  A: { folder_mappings: { '01': ['a', 'b'], '03': ['c'] }, play_settings: { '01': { order: 'shuffle' }, '02': { hdmi: true } } },
+  A: { folder_mappings: { '01': ['a', 'b'], '03': ['c'] }, play_settings: { '01': { order: 'shuffle' }, '02': { hdmi: true, dmx: true } } },
   B: { folder_mappings: { '02': ['d'] }, play_settings: { '02': { order: 'shuffle', hdmi: true } } } } }) }];
 s._psDraft = null;
 const tbl = T._psTableHtml();
 const trs = tbl.match(/<tr>[\s\S]*?<\/tr>/g) || [];
 eq('表头 2 行 + 数据 30 行', trs.length, 32);
-eq('第一层表头：文件夹/点歌屏两个 rowspan2 + 两组 colspan2', (trs[0].match(/rowspan="2"/g) || []).length + (trs[0].match(/colspan="2"/g) || []).length, 4);
+eq('第一层表头：文件夹/点歌屏/DMX 三个 rowspan2 + 两组 colspan2', (trs[0].match(/rowspan="2"/g) || []).length + (trs[0].match(/colspan="2"/g) || []).length, 5);
 has('表头有「点歌屏」', trs[0], '>点歌屏</th>');
-eq('第二层表头 4 个 th（文件夹/点歌屏两格被 rowspan 占着）', (trs[1].match(/<th/g) || []).length, 4);
-eq('每行 6 个 td', trs.slice(2).map(r => (r.match(/<td/g) || []).length), new Array(30).fill(6));
+has('表头有「DMX512控制」', trs[0], '>DMX512控制</th>');
+eq('第二层表头 4 个 th（文件夹/点歌屏/DMX 三格被 rowspan 占着）', (trs[1].match(/<th/g) || []).length, 4);
+eq('每行 7 个 td', trs.slice(2).map(r => (r.match(/<td/g) || []).length), new Array(30).fill(7));
 eq('每行 1 个控件 × 2 幕', trs.slice(2).map(r => (r.match(/onchange="psSet\('/g) || []).length), new Array(30).fill(2));
 eq('每行 1 个点歌屏开关', trs.slice(2).map(r => (r.match(/onchange="psSetHdmi\(/g) || []).length), new Array(30).fill(1));
+eq('每行 1 个 DMX512 开关', trs.slice(2).map(r => (r.match(/onchange="psSetDmx\(/g) || []).length), new Array(30).fill(1));
 eq('没拨过的行点歌屏默认关（不带 checked）', trs[2].indexOf('name="psh-01" checked') < 0, true);
+eq('没拨过的行 DMX 默认关（不带 checked）', trs[2].indexOf('name="psd-01" checked') < 0, true);
 has('02 行 A/B 两幕都开着 → 这一行开关带 checked', trs[3], 'name="psh-02" checked');
+has('02 行只 A 幕开了 DMX → 这一行开关也算开', trs[3], 'name="psd-02" checked');
 has('开关列带竖分隔', trs[2], 'class="ps-sep">');
 has('A 幕 01 随机循环选中', trs[2], "psSet('A','01','order',this.value)\"><option value=\"seq\">顺序循环</option><option value=\"shuffle\" selected>");
 has('B 幕 02 随机循环选中', trs[3], '<option value="shuffle" selected>随机循环');
 has('素材数按幕各算各的（A01=2，B01=—）', trs[2], 'class="wp-cnt has" title="第A幕 文件夹01 里有几个素材（0 个的话设了也没画面）">2</td>');
-has('已设格数进工具条（A01/随机 + A02、B02/开点歌屏）', tbl, '已设 3 格');
+has('已设格数进工具条（A01/随机 + A02、B02/开点歌屏 + A02/开 DMX）', tbl, '已设 3 格');
 has('硬切口径写在表前（免得有人以为还有叠化可开）', tbl, '素材轮播的交接一律硬切');
 has('保存/重读两个入口', tbl, 'onclick="psSave()"');
 has('全局复制入口（覆盖本店其余房间的播放设置）', tbl, 'onclick="psCopyAll()"');
@@ -207,14 +228,14 @@ eq('退出顺手清掉上一轮的红字', (() => {
     A: { windows: [{ id: 'w1' }], play_settings: { '09': { order: 'shuffle' } } },
     B: { folder_mappings: { '02': ['x'] } } } }) };
   puts.length = 0; putFails = null;
-  const snap = { roomId: 'r1', want: T._psSnap({ A: { '01': { order: 'shuffle', hdmi: true } }, B: {} }),
-    A: { '01': { order: 'shuffle', hdmi: true } }, B: {} };
+  const snap = { roomId: 'r1', want: T._psSnap({ A: { '01': { order: 'shuffle', hdmi: true, dmx: true } }, B: {} }),
+    A: { '01': { order: 'shuffle', hdmi: true, dmx: true } }, B: {} };
   const r1 = await T._psSaveSnap(snap);
   eq('成功返回 null', r1, null);
   eq('只发一次 PUT', puts.length, 1);
   const cfg = JSON.parse(puts[0].body.config);
-  eq('两幕的 play_settings 都按快照写（B 空表也带上）',
-    [cfg.scenes.A.play_settings, cfg.scenes.B.play_settings], [{ '01': { order: 'shuffle', hdmi: true } }, {}]);
+  eq('两幕的 play_settings 都按快照写（B 空表也带上，dmx 原样落）',
+    [cfg.scenes.A.play_settings, cfg.scenes.B.play_settings], [{ '01': { order: 'shuffle', hdmi: true, dmx: true } }, {}]);
   eq('别的键原样保留（windows / folder_mappings 不被抹）',
     [cfg.scenes.A.windows.length, !!cfg.scenes.B.folder_mappings['02']], [1, true]);
   eq('基线回填到快照 → 不再标保存中，回执变绿字',
