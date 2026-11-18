@@ -157,6 +157,7 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 | F-01 | 全局状态对象 | `var s = {...}` |
 | F-02 | 菜单切换与各页初始化 | `sp(p)` |
 | F-03 / F-03b | 素材管理页 / 预设素材页 | `lm()` / `lp()` |
+| F-03c | 素材页拖拽上传 | `ul(files)`（与「上传文件」同一链路）；document 级 dragover/drop 只在 `s.p==='materials'` 且非预览弹层时接管 |
 | F-04 / F-04b | 未注册设备 / 设备列表 | `lu()` / `ld()` |
 | F-04c | 设备手动命令 | `sendDeviceCommand()`（stop / 强制对账 / 重推素材） |
 | F-05 | 设备授权 | `ar()` → `confirmAuth()`（一次 POST 同时授权与绑房） |

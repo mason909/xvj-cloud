@@ -111,6 +111,10 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 /* 空态文案会被塞进 repeat(auto-fill,minmax(150px,1fr)) 的网格当单项，不跨列就只占一条 150px 轨道
    —— 实测「无素材，点击…」被压成一竖列每行三个字。跨列由 .mm-grid>.empty 管，这里只管排版。 */
 .empty{text-align:center;padding:40px 24px;color:#8d8d8d;font-size:var(--fs-meta);line-height:1.7}
+/* 拖拽上传遮罩：pointer-events:none 才不会把 dragover/drop 的落点从底下的页面上抢走 */
+#dropVeil{position:fixed;inset:0;z-index:150;display:none;align-items:center;justify-content:center;background:rgba(10,14,20,.6);pointer-events:none}
+#dropVeil .box{background:#1a1a1a;border:2px dashed #4a9eff;border-radius:12px;padding:26px 34px;color:#dbe9ff;font-size:var(--fs-title);box-shadow:0 20px 60px rgba(0,0,0,.6);text-align:center}
+#dropVeil .sub{color:#8d8d8d;font-size:var(--fs-dense);margin-top:8px}
 .mm-grid>.empty{grid-column:1/-1}
 .device-card{background:#242424;border-radius:10px;padding:16px;border:1px solid #333;margin-bottom:16px}
 .device-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
@@ -362,6 +366,7 @@ body.nav-off .brand-name{display:inline}
 <div id="folder-info" style="padding:10px 20px;background:#2a2a2a;margin-bottom:15px;border-radius:8px;color:#aaa;font-size:var(--fs-h2)">
 <span id="folder-info-name" style="font-weight:bold"></span>
 <span id="folder-info-note" style="color:#888;margin-left:10px"></span>
+<span style="color:#666;margin-left:10px;font-size:var(--fs-meta)">· 文件可直接拖进本页上传</span>
 </div>
 <div class="grid" id="g"></div>
 </div>
@@ -481,6 +486,7 @@ body.nav-off .brand-name{display:inline}
 </main>
 </div>
 <input type="file" id="fi" multiple style="display:none" onchange="ul(this.files)">
+<div id="dropVeil"><div class="box"><div id="dropVeilTxt"></div><div class="sub">松手即上传 · 可一次拖多个文件</div></div></div>
 <div class="modal" id="m" onclick="if(event.target === this) closeModal()"><div class="modal-content"><button class="modal-close" title="关闭 (Esc)" onclick="closeModal()">×</button><div id="mc"></div></div></div>
 <script src="/mqtt.min.js"></script>
 <script>
@@ -1146,7 +1152,7 @@ function rm() {
     var g = document.getElementById('g');
     var l = s.ms.filter(function(x) { return x.folder === s.f; });
     if (l.length === 0) {
-        g.innerHTML = '<div class="empty">暂无素材（' + esc(s.f) + ' 文件夹）</div>';
+        g.innerHTML = '<div class="empty">暂无素材（' + esc(s.f) + ' 文件夹）<br>把文件拖进本页任意位置即可上传</div>';
         return;
     }
     var ps = _presetUrlSet();
@@ -1262,6 +1268,49 @@ function ul(files) {
     }
     uploadOne(0);
 }
+
+// 【F-03c】 拖拽上传：素材页任意位置松手即上传到当前文件夹，走与「上传文件」同一个 ul() 链路。
+// 遮罩是 pointer-events:none，不抢 dragover/drop 的落点；只在素材页接管，别的页面拖文件仍是浏览器默认行为。
+function _dragHasFiles(e) {
+    var t = e.dataTransfer && e.dataTransfer.types;
+    if (!t) return false;
+    for (var i = 0; i < t.length; i++) if (t[i] === 'Files') return true;   // 拖文本/拖选区不算
+    return false;
+}
+function _dropVeil(on) {
+    var v = document.getElementById('dropVeil');
+    if (!v) return;
+    if (on) {
+        var t = document.getElementById('dropVeilTxt');
+        if (t) t.innerText = '松手上传到 ' + (s.f || '01') + ' 文件夹';
+        v.style.display = 'flex';
+    } else if (v.style.display !== 'none') v.style.display = 'none';
+}
+// 预览弹层开着时不接管：文件落在播放器上会被误传一笔
+function _dropActive(e) {
+    if (s.p !== 'materials' || !_dragHasFiles(e)) return false;
+    var m = document.getElementById('m');
+    return !(m && m.classList.contains('show'));
+}
+document.addEventListener('dragover', function(e) {
+    if (!_dropActive(e)) return;
+    e.preventDefault();                                  // 不拦 = 浏览器当场打开这个文件，整页被顶掉
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    _dropVeil(true);
+});
+document.addEventListener('dragleave', function(e) {
+    // 只有真正离开文档才收遮罩；掠过子元素时 relatedTarget 还在页面里
+    if (e.relatedTarget && document.documentElement.contains(e.relatedTarget)) return;
+    _dropVeil(false);
+});
+document.addEventListener('drop', function(e) {
+    if (!_dropActive(e)) return;
+    e.preventDefault();
+    _dropVeil(false);
+    var files = e.dataTransfer.files;
+    if (files && files.length) ul(files);
+});
+document.addEventListener('dragend', function() { _dropVeil(false); });   // Esc 取消/拖出窗口时兜底
 
 // 删除素材。服务端的 DELETE 是一串级联：清所有房间映射 + 删同 URL 的预设行 + 删物理文件 +
 // 通知受影响房间的设备重新同步。所以删除前先 GET /usage 把影响面问清楚再让人确认；
