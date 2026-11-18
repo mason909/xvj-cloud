@@ -57,10 +57,10 @@ eq('残留的 dissolve 键不再往下带', T._psCell({ dissolve: true, dissolve
 eq('只有残留 dissolve、顺序仍是默认 → 整格不落键', T._psCell({ dissolve: true, dissolve_ms: 800 }), null);
 eq('脏 order 回落 seq（= 默认，不落键）', T._psCell({ order: 'random' }), null);
 eq('非对象/数组/null 一律 null', [T._psCell('x'), T._psCell([1]), T._psCell(null), T._psCell(5)], [null, null, null, null]);
-eq('点歌屏关（hdmi:false）落键', T._psCell({ hdmi: false }), { hdmi: false });
-eq('点歌屏开（hdmi:true）= 默认，不落键', T._psCell({ hdmi: true }), null);
-eq('两个键共存时都保留', T._psCell({ order: 'shuffle', hdmi: false }), { order: 'shuffle', hdmi: false });
-eq('hdmi 脏值（非 false）当默认开', [T._psCell({ hdmi: 'no' }), T._psCell({ hdmi: 0 })], [null, null]);
+eq('点歌屏开（hdmi:true）落键', T._psCell({ hdmi: true }), { hdmi: true });
+eq('点歌屏关（hdmi:false）= 默认，不落键', T._psCell({ hdmi: false }), null);
+eq('两个键共存时都保留', T._psCell({ order: 'shuffle', hdmi: true }), { order: 'shuffle', hdmi: true });
+eq('hdmi 脏值（非 true）当默认关', [T._psCell({ hdmi: 'yes' }), T._psCell({ hdmi: 1 })], [null, null]);
 
 console.log('_psTableOf:');
 eq('两幕各读各的表', T._psTableOf({ scenes: { A: { play_settings: { '01': { order: 'shuffle' } } }, B: { play_settings: { '02': { order: 'shuffle' } } } } }, 'A'),
@@ -79,8 +79,8 @@ eq('键序不同不算改动', T._psSnap({ A: { '02': { order: 'shuffle' }, '01'
 eq('顺序变了算改动', T._psSnap({ A: { '01': { order: 'seq' } }, B: {} }) !== T._psSnap(d0), true);
 eq('B 幕变了也算改动', T._psSnap({ A: d0.A, B: { '01': { order: 'shuffle' } } }) !== T._psSnap(d0), true);
 eq('多带的脏键（如残留 dissolve）不算改动 —— 与服务端丢键同口径', T._psSnap({ A: { '01': { order: 'shuffle', dissolve: true } }, B: {} }), T._psSnap(d0));
-eq('点歌屏拨了一下也算改动', T._psSnap({ A: { '01': { hdmi: false } }, B: {} }) !== T._psSnap({ A: {}, B: {} }), true);
-eq('hdmi:true 读进草稿时按默认丢掉（快照里只剩真设置）', T._psTableOf({ scenes: { A: { play_settings: { '01': { hdmi: true } } } } }, 'A'), {});
+eq('点歌屏拨了一下也算改动', T._psSnap({ A: { '01': { hdmi: true } }, B: {} }) !== T._psSnap({ A: {}, B: {} }), true);
+eq('hdmi:false 读进草稿时按默认丢掉（快照里只剩真设置）', T._psTableOf({ scenes: { A: { play_settings: { '01': { hdmi: false } } } } }, 'A'), {});
 
 console.log('_psGroupHtml（一幕一格两个 td）:');
 const gOff = T._psGroupHtml('A', '01', null, 0, false);
@@ -118,21 +118,21 @@ eq('B 幕独立', (() => { const d = seed(); T.psSet('B', '03', 'order', 'shuffl
 eq('脏幕/脏字段 → 不动草稿也不重绘', (() => { const d = seed(); T.psSet('C', '01', 'order', 'shuffle'); T.psSet('A', '01', 'dissolve', true); return [d.A, renders]; })(), [{}, 0]);
 
 console.log('点歌屏开关（psSetHdmi：一行拨 A/B 两幕）:');
-eq('拨开关不动这一格的播放顺序', (() => { const d = seed({ '01': { order: 'shuffle' } }); T.psSetHdmi('01', false); return d.A; })(),
-  { '01': { order: 'shuffle', hdmi: false } });
-eq('拨播放顺序不抹点歌屏开关', (() => { const d = seed({ '01': { hdmi: false } }); T.psSet('A', '01', 'order', 'shuffle'); return d.A; })(),
-  { '01': { hdmi: false, order: 'shuffle' } });
-eq('按行拨：A、B 两幕落同一个值', (() => { const d = seed({ '02': { order: 'shuffle' } }, { '02': { order: 'shuffle' } }); T.psSetHdmi('02', false); return [d.A, d.B]; })(),
-  [{ '02': { order: 'shuffle', hdmi: false } }, { '02': { order: 'shuffle', hdmi: false } }]);
-eq('关了再打开 → 整格回到基线（hdmi 键删掉）', (() => { const d = seed(); T.psSetHdmi('01', false); T.psSetHdmi('01', true); return [d.A, d.B, T._psSnap(d) === d.base]; })(),
+eq('拨开关不动这一格的播放顺序', (() => { const d = seed({ '01': { order: 'shuffle' } }); T.psSetHdmi('01', true); return d.A; })(),
+  { '01': { order: 'shuffle', hdmi: true } });
+eq('拨播放顺序不抹点歌屏开关', (() => { const d = seed({ '01': { hdmi: true } }); T.psSet('A', '01', 'order', 'shuffle'); return d.A; })(),
+  { '01': { hdmi: true, order: 'shuffle' } });
+eq('按行拨：A、B 两幕落同一个值', (() => { const d = seed({ '02': { order: 'shuffle' } }, { '02': { order: 'shuffle' } }); T.psSetHdmi('02', true); return [d.A, d.B]; })(),
+  [{ '02': { order: 'shuffle', hdmi: true } }, { '02': { order: 'shuffle', hdmi: true } }]);
+eq('开了再关 → 整格回到基线（hdmi 键删掉）', (() => { const d = seed(); T.psSetHdmi('01', true); T.psSetHdmi('01', false); return [d.A, d.B, T._psSnap(d) === d.base]; })(),
   [{}, {}, true]);
-eq('只关了点歌屏 → 草稿算脏（这格要落键）', (() => { const d = seed(); T.psSetHdmi('01', false); return T._psSnap(d) !== d.base; })(), true);
+eq('只开了点歌屏 → 草稿算脏（这格要落键）', (() => { const d = seed(); T.psSetHdmi('01', true); return T._psSnap(d) !== d.base; })(), true);
 eq('读库时全默认的格子不进草稿', (() => { const d = seed({ '01': { order: 'seq' }, '02': { order: 'shuffle' } }); return Object.keys(d.A); })(), ['02']);
 console.log('_psTableHtml（整表结构：5 列 × 30 行，表头两层不能错位）:');
 s.rf = 'r1';
 s.rooms = [{ id: 'r1', config: JSON.stringify({ scenes: {
-  A: { folder_mappings: { '01': ['a', 'b'], '03': ['c'] }, play_settings: { '01': { order: 'shuffle' }, '02': { hdmi: false } } },
-  B: { folder_mappings: { '02': ['d'] }, play_settings: { '02': { order: 'shuffle', hdmi: false } } } } }) }];
+  A: { folder_mappings: { '01': ['a', 'b'], '03': ['c'] }, play_settings: { '01': { order: 'shuffle' }, '02': { hdmi: true } } },
+  B: { folder_mappings: { '02': ['d'] }, play_settings: { '02': { order: 'shuffle', hdmi: true } } } } }) }];
 s._psDraft = null;
 const tbl = T._psTableHtml();
 const trs = tbl.match(/<tr>[\s\S]*?<\/tr>/g) || [];
@@ -143,13 +143,13 @@ eq('第二层表头 4 个 th（文件夹/点歌屏两格被 rowspan 占着）', 
 eq('每行 6 个 td', trs.slice(2).map(r => (r.match(/<td/g) || []).length), new Array(30).fill(6));
 eq('每行 1 个控件 × 2 幕', trs.slice(2).map(r => (r.match(/onchange="psSet\('/g) || []).length), new Array(30).fill(2));
 eq('每行 1 个点歌屏开关', trs.slice(2).map(r => (r.match(/onchange="psSetHdmi\(/g) || []).length), new Array(30).fill(1));
-has('没拨过的行点歌屏默认开（checked）', trs[2], 'name="psh-01" checked');
-eq('B02 关了点歌屏 → 这一行开关不带 checked', trs[3].indexOf('name="psh-02" checked') < 0, true);
+eq('没拨过的行点歌屏默认关（不带 checked）', trs[2].indexOf('name="psh-01" checked') < 0, true);
+has('02 行 A/B 两幕都开着 → 这一行开关带 checked', trs[3], 'name="psh-02" checked');
 has('开关列带竖分隔', trs[2], 'class="ps-sep">');
 has('A 幕 01 随机循环选中', trs[2], "psSet('A','01','order',this.value)\"><option value=\"seq\">顺序循环</option><option value=\"shuffle\" selected>");
 has('B 幕 02 随机循环选中', trs[3], '<option value="shuffle" selected>随机循环');
 has('素材数按幕各算各的（A01=2，B01=—）', trs[2], 'class="wp-cnt has" title="第A幕 文件夹01 里有几个素材（0 个的话设了也没画面）">2</td>');
-has('已设格数进工具条（A01/随机 + A02、B02/关点歌屏）', tbl, '已设 3 格');
+has('已设格数进工具条（A01/随机 + A02、B02/开点歌屏）', tbl, '已设 3 格');
 has('硬切口径写在表前（免得有人以为还有叠化可开）', tbl, '素材轮播的交接一律硬切');
 has('保存/重读两个入口', tbl, 'onclick="psSave()"');
 has('重读入口', tbl, 'onclick="psReload()"');

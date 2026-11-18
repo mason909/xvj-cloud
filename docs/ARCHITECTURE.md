@@ -560,7 +560,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 ### 5.6 播放设置（A-12）
 
 `scenes[X].play_settings` 每格两个键：`order`（`'seq'` 顺序循环 | `'shuffle'` 随机循环，缺省 seq）
-与 `hdmi`（`false` = 这一格在播时关掉点歌屏/HDMI 采集窗口；缺省 = 开）。两者都是"默认不落键"。
+与 `hdmi`（`true` = 这一格在播时显示点歌屏/HDMI 采集窗口；缺省 = 关，2026-11-18 用户定调默认全关）。两者都是"默认不落键"。
 
 > **叠化（`dissolve` / `dissolve_ms`）已于 2026-11-12 从三端整条删除**：第二路预卷播放器、alpha/音量交叉淡入、
 > 同步组的淡入闸门一起没了，素材轮播交接**一律硬切**（切墙板 / 切幕 / 试播接管本来也是硬切）。
@@ -574,9 +574,10 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   同格多扇窗要共洗一次，见 §5.7 的 `folderPlaylists`。
 - **改设置不动映射** → 服务端发 `update_windows` 轻通道；但设置不在窗口 `content` 里，内容签名比不出它，
   所以本机另记 `appliedPlaySettingsJson`，真变了就把受影响那几扇的清单按新设置重排（`playFolderInWindow` 原地换列表）。
-- **点歌屏开关（`hdmi`，2026-11-18）**：前端按文件夹一行一控（拨一下同时写 A/B 两幕——墙板一格一码不分幕，
+- **点歌屏开关（`hdmi`，2026-11-18，默认关）**：前端按文件夹一行一控（拨一下同时写 A/B 两幕——墙板一格一码不分幕，
   两幕永远同格）。设备端 `applyHdmiVisibility` 在每次窗口应用后执行：当前在播的格子（`videoSurfaces` 的 folderKey）
-  里**任一格 `hdmi` 开着就显示**所有 HDMI 窗口，全关才 `GONE`；没有在播格子时按显示处理。
+  里**任一格 `hdmi === true` 才显示**所有 HDMI 窗口，否则 `GONE`；没有在播格子时（纯色/HDMI 房间）按显示处理——
+  这时没有格子能表达"关"。存量库里遗留的 `hdmi:false` 是旧口径，现在等于默认，写库/下发时丢掉。
   `GONE` 让 TextureView 销毁 SurfaceTexture → 既有 `onSurfaceTextureDestroyed` 停采集，
   重新显示时既有 `onSurfaceTextureAvailable` 重接 —— **没有新增采集侧记账**。走原地路径，不触发全量重建。
 
