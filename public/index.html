@@ -859,9 +859,9 @@ function createPlayer(url, type, container, poster) {
  *         unbind() 解绑授权、unbindRoom() 只解房间绑定
  * 【F-06】房间列表刷新 lr()   　【F-06b】选择房间渲染 sr()
  *         【F-06c】新建房间 createRoom()   　【F-06d】房间工作台 rmDevice()
- *         【F-06e】工作台模式开关与互斥 sfW()/sfCrop()/sfWP()/sfPS()（草稿确认统一在 _exitTableModes()）
- *         【F-06f】墙板配置表 renderWpEditor()/wpSave()（码值表 + 总闸/串口参数）
- *         【F-06g】播放设置表 renderPsEditor()/psSave()（每格随机/顺序循环；素材轮播交接一律硬切）
+ *         【F-06e】工作台模式开关与互斥 sfW()/sfCrop()/sfWP()/sfPS()（四张表改动即保存，切换不弹确认框）
+ *         【F-06f】墙板配置表 renderWpEditor()/wpSave()（码值表 + 总闸/串口参数，均改动即自动保存）
+ *         【F-06g】播放设置表 renderPsEditor()/psSave()（每格随机/顺序循环与点歌屏开关，改动即自动保存；轮播交接硬切）
  *         【F-06h】墙板学习 _wpCodeCellHtml()/wpLearnCell()/wpLearnDone()/wpSetCode()
  *                 （码值框可直接敲键盘改/删；开「墙板学习」后点框 → 按键 → 码值填入并自动保存）
  * 【F-07】素材推送 showPushDialog() & doPushToRoom()
@@ -913,11 +913,14 @@ var s = {
     _wpFrames: [],         // 这间房各设备的最近帧上报原样留着（GET /api/devices?room_id= 的 d.frames），渲染时再并一份
     _wpLearnUntil: 0,      // 本地倒计时，只管界面；设备端窗长由 wallpanel_learn 自己管
     _wpLearnTimer: null,   // 等按键时每秒拉一次帧的句柄（收窗/关表/换房间都要停）
-    _wpSaveQ: null,        // 码值自动保存的串行队列（两次录制挨得近时不至于后一次 GET 拿到前一次还没落库的 config）
+    _wpSaveQ: null,        // 墙板写库的串行队列（码值 / 串口参数挨得近时不至于后一次 GET 拿到前一次还没落库的 config）
+    _wpErr: '',            // 串口/总闸自动保存失败的一行红字（成功后清掉）
     _psMode: false,        // 工作台「播放设置」编辑模式（同上，与窗口/截取/墙板三者互斥）
     _psDraft: null,        // 播放设置草稿 {roomId, A:{格:{order,hdmi}}, B:{}, base:''}，只跟当前房间绑定
-    _psNote: '',           // 全局复制成功后的一行回执
+    _psNote: '',           // 自动保存/全局复制成功后的一行回执
+    _psErr: '',            // 播放设置自动保存失败的一行红字（成功后清掉）
     _psCopying: false,     // 全局复制进行中（防连点）
+    _psSaveQ: null,        // 播放设置写库的串行队列（同 _wpSaveQ：两次改动挨得近时后一次不能拿着旧 config PUT）
     _snap: localStorage.getItem('xsnap') !== '0',   // 窗口画布吸附开关（纯编辑辅助，本地偏好，默认开）
     fs: [],
     ms: [],
@@ -938,6 +941,11 @@ var s = {
     _lmCallCounter: 0,
     _lastLmCallId: ''
 };
+// 墙板配置 / 播放设置两张表的「改动即保存」：防抖后写一次，连续拖档位合并成一次读后写。
+// 快照在改动那一刻取（见 _wpAutoSaveSoon / _psAutoSaveSoon），所以写完前切表、换房间都不会丢这一笔。
+var TABLE_AUTO_SAVE_MS = 500;
+var _wpAutoTimer = null;
+var _psAutoTimer = null;
 
 /**
  * 收起/展开左侧主菜单（不传参即切换）。收起后主显示区多出 174px，
@@ -1651,8 +1659,8 @@ async function lr() {
 // 【F-06b】 选择房间渲染 // function sr(id)
 async function sr(id) {
     if (s.rf && s.rf !== id) {
-        // 两张总表的草稿都是按房间绑的，切走就没了（模式本身保留，新房间按它自己的配置重画一张表）
-        if (!_confirmDropWpDraft() || !_confirmDropPsDraft()) return;
+        // 两张总表的草稿都是按房间绑的，切走就没了；改动本身已由防抖自动保存（快照在改动那一刻取，
+        // 所以即使写还在路上，也照样落在旧房间名下，不会丢）
         // 切房间：窗口数据按房间隔离，不能带上一房间的缓存进来；防抖里最后一次编辑先落回旧房间
         await _resetWinEditorState();
         s._wpDraft = null;        // 墙板表草稿同样按房间隔离，重绘时按新房间的配置重建
@@ -2099,7 +2107,8 @@ async function switchScene(id) {
 
 // 【F-06e】 工作台模式开关与互斥
 // 右侧工作区同一时刻只摆一样：窗口编辑器（输入截取画板依附于它）/ 墙板配置表 / 播放设置表。
-// 打开任意一个之前先过 _exitTableModes()：另两张表若有未保存草稿就问一句，用户选留下就把刚拨的开关拨回去。
+// 打开任意一个之前先过 _exitTableModes() 把另两张表收掉；四张表的改动都是改动即落库，
+// 没有"切走就丢"的草稿，所以这里不再弹确认框。
 // 开关显示态以 rmDevice() 按 s 上的模式标志重画为准；sfCrop 是例外 —— 它不一定重渲染工作区，
 // 所以自己就地补一次滑条底色/圆点（_exitCropMode 复位时同样走这套）。
 
@@ -2112,9 +2121,8 @@ function sfW() {
     var wt = document.getElementById('winToggle');
     if (!wt) return;
     if (wt.checked) {
-        // 开关 ON → 进入窗口模式。墙板表/播放设置表若有未保存的草稿，先问一句；
-        // 用户选留下只需把这颗开关拨回去（此刻除了 checked 什么都没动）
-        if (!_exitTableModes()) { wt.checked = false; return; }
+        // 开关 ON → 进入窗口模式，墙板表/播放设置表收起（它们的改动已经/正在自动落库）
+        _exitTableModes();
         s._windowEditorActive = true;
         s._selWin = null;
         if (!s._curScene) s._curScene = 'A';
@@ -2146,9 +2154,8 @@ function _exitCropMode() {
 function sfCrop() {
     var ct = document.getElementById('cropToggle');
     if (!ct) return;
-    // 打开取景要连带打开窗口配置，而窗口配置与墙板表/播放设置表互斥 → 先确认能离开那两张表。
-    // 这一步在任何状态改动之前：用户选留下时回退只要把 checked 拨回去。
-    if (ct.checked && !_exitTableModes()) { ct.checked = false; return; }
+    // 打开取景要连带打开窗口配置，而窗口配置与墙板表/播放设置表互斥 → 先把那两张表收掉
+    if (ct.checked) _exitTableModes();
     s._cropMode = !!ct.checked;
     var cs = document.getElementById('cropSlider');
     var ck = document.getElementById('cropKnob');
@@ -2179,7 +2186,8 @@ function sfCrop() {
 // 码值自动填进那一列并当场保存。落库形状只有 config.wallpanel_bindings = [{frame, folder, source}]：
 // 编号（panel_no）与默认编号已于 2026-11-13 整条删除；分幕录码同日删掉。
 // 同一格可以录两个码（一路点歌机、一路墙板），谁按到都切到这一格，A/B 两幕通用。
-// 串口参数（节点/波特率/字符格式）与串口总闸仍走显式「保存」：它们决定收不收得到帧，改错要能回头。
+// 串口参数（节点/波特率/字符格式）与串口总闸同样是改动即保存（500ms 防抖，见 _wpAutoSaveSoon）：
+// 它们决定收不收得到帧，改错要能马上被设备用上，也能随时点「保存」立即落库。
 // ============================================================================
 
 // 串口硬件参数（与服务端 WALLPANEL_BAUDS / WALLPANEL_DEFAULT_PATH 同一份口径，改一边要改另一边）：
@@ -2255,8 +2263,8 @@ function _wpCodeCount(m) {
 }
 
 /**
- * 墙板表草稿是否有未保存改动（硬件那行与码值表各比各的基线）。
- * 草稿只活在 s._wpDraft：不落库、也不进 s.rooms 那份 config，离开模式就没了。
+ * 墙板表草稿是否有还没落库的改动（硬件那行与码值表各比各的基线）。
+ * 草稿只活在 s._wpDraft，但改动由自动保存的快照落库 —— 这里只驱动「保存中…」标记与红字。
  */
 function _wpDirty() {
     var d = s._wpDraft;
@@ -2264,16 +2272,11 @@ function _wpDirty() {
     return _wpHwSnap(d) !== d.baseHw || _wpCodeSnap(d) !== d.baseCode;
 }
 
-/** 有未保存草稿就问一句；返回 false = 用户要留下（调用方负责把刚拨的开关还原） */
-function _confirmDropWpDraft() {
-    if (!_wpDirty()) return true;
-    return confirm('墙板串口/总闸还有未保存的改动，离开这张表就丢了，不会自动落库。\n确定离开？');
-}
-
-/** 退出墙板模式：草稿是没落库的编辑态，随模式一起丢，重开时按云端真值重建。确认框由调用方弹（见 _exitTableModes） */
+/** 退出墙板模式：草稿随模式一起丢，重开时按云端真值重建；还没落库的改动由自动保存的快照兜住（见 _wpAutoSaveSoon） */
 function _exitWpMode() {
     s._wpMode = false;
     s._wpDraft = null;
+    s._wpErr = '';
     _wpLearnReset();
 }
 
@@ -2297,10 +2300,8 @@ function _wpLearnReset() {
 async function sfWP() {
     var bt = document.getElementById('wpToggle');
     if (!bt) return;
-    // 关表：草稿只活在内存里，先问一句再丢（开表那个方向不会有本房间的草稿，不用问）
-    if (!bt.checked && !_confirmDropWpDraft()) { bt.checked = true; return; }
-    if (bt.checked && !_exitTableModes()) { bt.checked = false; return; }
-    await flushAutoSync();   // 墙板表保存是「GET 最新 config → 改码值/串口 → 整份 PUT」，防抖里还压着一次窗口编辑的话，
+    if (bt.checked) _exitTableModes();   // 开表：播放设置表收起；那张表的改动已/正在自动落库，不用弹框
+    await flushAutoSync();   // 墙板表写库是「GET 最新 config → 改自己的键 → 整份 PUT」，防抖里还压着一次窗口编辑的话，
                              // 那份 GET 拿到的是编辑前的 windows，PUT 回去等于把刚改的跟随/文件夹抹掉（和切幕同一个坑）
     s._wpMode = !!bt.checked;
     if (s._wpMode) {
@@ -2308,8 +2309,7 @@ async function sfWP() {
         _exitCropMode();
         if (!s._curScene) s._curScene = 'A';
     } else {
-        s._wpDraft = null;
-        _wpLearnReset();
+        _exitWpMode();
     }
     rmDevice();
 }
@@ -2566,15 +2566,16 @@ function _wpTableHtml() {
         + ' onchange="wpSetStop(this.value)">' + _wpOptNums(WP_SERIAL_STOP_BITS, d.stopBits) + '</select></label>';
     if (!WP_SERIAL_PATH_RE.test(d.path)) h += '<span class="wp-warn">串口节点形状不对（要 /dev/ 下的设备名）</span>';
     h += '<span id="wpBound" style="font-size:var(--fs-micro);color:#666">已录 ' + bound + ' 个码</span>';
-    if (_wpDirty()) h += '<span class="wp-warn">● 有未保存改动</span>';
+    if (_wpDirty()) h += '<span class="wp-warn">● 保存中…</span>';
     h += '<span style="flex:1"></span>';
     h += '<button class="btn btn-sync" id="wpCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的总闸、串口节点/波特率/字符格式与码值表覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="wpCopyAll()">全局复制</button>';
-    h += '<button class="btn btn-primary" id="wpSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="保存串口参数与总闸（码值是录完立刻保存的，不用点这里）" onclick="wpSave()">保存</button>';
-    h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未保存的串口/总闸改动，按云端当前配置重画" onclick="wpReload()">重读</button>';
+    h += '<button class="btn btn-primary" id="wpSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="改动会自动保存；这里可立即落库，或重试上一次失败" onclick="wpSave()">保存</button>';
+    h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="wpReload()">重读</button>';
     h += '</div>';
+    if (s._wpErr) h += '<div class="wp-warn" style="color:#e94560">' + esc(s._wpErr) + '</div>';
 
     if (!s._wpLearnMode) {
-        h += '<div class="wp-hint">两列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。</div>';
+        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存。两列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。</div>';
     } else if (_wpLearning()) {
         var left = Math.max(0, Math.ceil((s._wpLearnUntil - Date.now()) / 1000));
         var cell = s._wpLearnCell;
@@ -2832,6 +2833,90 @@ function _wpAutoSaveCodes(okMsg, soft) {
     return s._wpSaveQ;
 }
 
+/**
+ * 串口参数/总闸的自动保存：改完 500ms 落库一次（连续拖档位只写一次）。
+ * 快照含房间号，在改动这一刻取 —— 随后切表、换房间、写还在路上，这一笔照样落在被改的那间房。
+ */
+function _wpAutoSaveSoon() {
+    var d = _wpDraftOf();
+    if (!d || !s.rf) return;
+    if (!WP_SERIAL_PATH_RE.test(d.path)) {
+        // 节点名形状不对就不发：服务端会 400，打字途中弹框比什么都不烦人。表格里常驻那句警告负责说明
+        s._wpErr = '串口节点形状不对，串口参数还没保存';
+        renderWpEditor();
+        return;
+    }
+    var snap = _wpSerialSnap(d);
+    if (_wpAutoTimer) clearTimeout(_wpAutoTimer);
+    _wpAutoTimer = setTimeout(function () {
+        _wpAutoTimer = null;
+        _wpSaveSnap(snap);
+    }, TABLE_AUTO_SAVE_MS);
+}
+
+/** 串口那一段的落库快照（只含六项硬件字段；码值表由 _wpAutoSaveCodes 各管各的） */
+function _wpSerialSnap(d) {
+    return {
+        roomId: s.rf,
+        want: _wpHwSnap(d),
+        fields: {
+            wallpanel_enabled: d.enabled === true,
+            wallpanel_serial_path: d.path,
+            wallpanel_baud: d.baud,
+            wallpanel_data_bits: d.dataBits,
+            wallpanel_parity: d.parity,
+            wallpanel_stop_bits: d.stopBits
+        }
+    };
+}
+
+/**
+ * 把一份快照落库：与码值保存共用一条串行队列（两次读后写交叠会互相抹掉对方刚写的键）。
+ * 只改 snap.fields 里的键（+ 可选 wallpanel_bindings），其它配置一概不碰。
+ * resolve(null) = 成功；resolve(Error) = 失败（表格红字已经更新，调用方自己决定要不要再 alert）。
+ * 成功回填基线用快照那一刻的 want：写飞在路上时又改的那一格不在快照里，未保存标记该继续亮着。
+ */
+function _wpSaveSnap(snap) {
+    var job = function () {
+        return flushAutoSync()
+            .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(snap.roomId)); })
+            .then(function (roomObj) {
+                if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
+                var cfg = _loadRoomCfg(roomObj);
+                Object.keys(snap.fields).forEach(function (k) { cfg[k] = snap.fields[k]; });
+                delete cfg.wallpanel_default_no;
+                return apiCall('/api/rooms/' + encodeURIComponent(snap.roomId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: JSON.stringify(cfg) })
+                }).then(function () { return cfg; });
+            })
+            .then(function (cfg) {
+                var idx = s.rooms.findIndex(function (x) { return x.id === snap.roomId; });
+                if (idx >= 0) {
+                    var room = JSON.parse(JSON.stringify(s.rooms[idx]));
+                    room.config = JSON.stringify(cfg);
+                    s.rooms[idx] = room;
+                }
+                var cur = s._wpDraft;
+                if (cur && cur.roomId === snap.roomId) {
+                    cur.baseHw = snap.want;
+                    if (snap.wantCode != null) cur.baseCode = snap.wantCode;
+                }
+                s._wpErr = '';
+                if (s._wpMode && cur) { s._wpNote = '已自动保存'; renderWpEditor(); }
+                return null;
+            })
+            .catch(function (e) {
+                s._wpErr = '自动保存失败：' + e.message + '（点「保存」可重试）';
+                if (s._wpMode) renderWpEditor();
+                return e;
+            });
+    };
+    s._wpSaveQ = (s._wpSaveQ || Promise.resolve()).then(job, job);
+    return s._wpSaveQ;
+}
+
 /** 保存前自检：条数上限（服务端同一道闸），形状在 _wpRule 那关已经丢干净了 */
 function _wpBindErrors(d) {
     var n = _wpBindFromCode(d || {}).length;
@@ -2863,21 +2948,23 @@ function renderWpEditor() {
     }
 }
 
-/** 改总闸（只动草稿，点「保存」才落库）；关闸时设备会停链路收不到帧，正在等的框顺势取消 */
+/** 改总闸（改动即自动保存；关闸时设备会停链路收不到帧，正在等的框顺势取消） */
 function wpSetGate(on) {
     var d = _wpDraftOf();
     if (!d) return;
     d.enabled = !!on;
     if (!d.enabled) _wpLearnCancel();
     renderWpEditor();
+    _wpAutoSaveSoon();
 }
 
-/** 串口节点：原样收进草稿（形状校验交给保存前的这道提示 + 服务端 400），失焦/回车才重绘，不然打字会被打断 */
+/** 串口节点：原样收进草稿（形状校验交给保存前的提示 + 服务端 400），失焦/回车才重绘，不然打字会被打断 */
 function wpSetPath(v) {
     var d = _wpDraftOf();
     if (!d) return;
     d.path = String(v == null ? '' : v).trim();
     renderWpEditor();
+    _wpAutoSaveSoon();
 }
 
 function wpSetBaud(v) {
@@ -2885,6 +2972,7 @@ function wpSetBaud(v) {
     if (!d) return;
     d.baud = _wpBaud(v);
     renderWpEditor();
+    _wpAutoSaveSoon();
 }
 
 /** 字符格式三格：档位都在白名单里，直接归一收进草稿（越界当没设，回落 8N1 = 历史行为） */
@@ -2893,6 +2981,7 @@ function wpSetBits(v) {
     if (!d) return;
     d.dataBits = _wpBit(v, WP_SERIAL_DATA_BITS, 8);
     renderWpEditor();
+    _wpAutoSaveSoon();
 }
 
 function wpSetParity(v) {
@@ -2900,6 +2989,7 @@ function wpSetParity(v) {
     if (!d) return;
     d.parity = _wpParity(v);
     renderWpEditor();
+    _wpAutoSaveSoon();
 }
 
 function wpSetStop(v) {
@@ -2907,11 +2997,14 @@ function wpSetStop(v) {
     if (!d) return;
     d.stopBits = _wpBit(v, WP_SERIAL_STOP_BITS, 1);
     renderWpEditor();
+    _wpAutoSaveSoon();
 }
 
-/** 丢掉草稿、现读云端最新配置重画（重读不写库，任何设备都不被打扰） */
+/** 丢掉草稿、现读云端最新配置重画（重读不写库；路上的自动保存先等它落地，免得读完又被旧快照覆盖） */
 async function wpReload() {
     if (!s.rf) return;
+    if (_wpAutoTimer) { clearTimeout(_wpAutoTimer); _wpAutoTimer = null; }
+    await (s._wpSaveQ || Promise.resolve());
     var roomObj;
     try { roomObj = await apiGet('/api/rooms/' + encodeURIComponent(s.rf)); }
     catch (e) { alert('重读失败: ' + e.message); return; }
@@ -2919,6 +3012,7 @@ async function wpReload() {
     var idx = s.rooms.findIndex(function (x) { return x.id === s.rf; });
     if (idx >= 0) s.rooms[idx] = roomObj;
     s._wpDraft = null;
+    s._wpErr = '';
     renderWpEditor();
 }
 
@@ -2939,9 +3033,8 @@ function _wpFieldsOf(d) {
 }
 
 /**
- * 保存这一页：先 GET 云端最新 config（s.rooms 可能已经是几分钟前的快照），
- * 只改墙板字段再 PUT，与调试开关同一套读后写。
- * 码值平时是录完立刻自动保存的，这里再写一遍是为了兜住"自动保存那一次失败"的情况。
+ * 保存这一页（通常是自动保存的重试/立即落库）：与自动保存共用一条队列，
+ * 先 GET 云端最新 config，只改墙板字段再 PUT；码值表一并写一遍，兜住"码值自动保存那一次失败"。
  */
 async function wpSave() {
     var d = _wpDraftOf();
@@ -2949,41 +3042,15 @@ async function wpSave() {
     if (!WP_SERIAL_PATH_RE.test(d.path)) { alert('串口节点要写成 /dev/ 下的设备名，例如 ' + WP_SERIAL_DEFAULT_PATH); return; }
     var bindErr = _wpBindErrors(d);
     if (bindErr.length) { alert('先处理码值：\n' + bindErr.join('\n')); return; }
+    if (_wpAutoTimer) { clearTimeout(_wpAutoTimer); _wpAutoTimer = null; }
+    var snap = _wpSerialSnap(d);
+    snap.fields.wallpanel_bindings = _wpBindFromCode(d);
+    snap.wantCode = _wpCodeSnap(d);
     var btn = document.getElementById('wpSaveBtn');
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
-    var cfg;
-    try {
-        // 先等窗口编辑真正落库：这次 GET→PUT 会整份覆盖 config，队列里还压着 windows 改动的话
-        // GET 到的就是旧值，PUT 回去等于把刚改的跟随/文件夹抹掉（进入本表时 sfWP 已 flush 过一次，
-        // 这里再 flush 一次是为了覆盖"表开着时切去别处编辑窗口再回来"那条路径）。
-        await flushAutoSync();
-        var roomObj = await apiGet('/api/rooms/' + encodeURIComponent(s.rf));
-        if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
-        cfg = _loadRoomCfg(roomObj);
-        var fields = _wpFieldsOf(d);
-        Object.keys(fields).forEach(function (k) { cfg[k] = fields[k]; });
-        delete cfg.wallpanel_default_no;          // 旧字段顺手清掉（设备端已不读）
-        await apiCall('/api/rooms/' + encodeURIComponent(s.rf), {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ config: JSON.stringify(cfg) })
-        });
-    } catch (e) {
-        // 失败时草稿基线没动：重绘后仍然标着「有未保存改动」，不会给人已经存好的假象
-        if (btn) { btn.disabled = false; btn.textContent = '保存'; }
-        alert('墙板配置保存失败: ' + e.message);
-        renderWpEditor();
-        return;
-    }
-    // 云端真值抄回列表缓存（省一次 lr 全量刷新），草稿置空让下次渲染按落库结果重建基线
-    var idx = s.rooms.findIndex(function (x) { return x.id === s.rf; });
-    if (idx >= 0) {
-        var newRoom = JSON.parse(JSON.stringify(s.rooms[idx]));
-        newRoom.config = JSON.stringify(cfg);
-        s.rooms[idx] = newRoom;
-    }
-    s._wpDraft = null;
-    renderWpEditor();
+    var err = await _wpSaveSnap(snap);
+    if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+    if (err) alert('墙板配置保存失败: ' + err.message);
 }
 
 /**
@@ -3105,34 +3172,17 @@ function _psSnap(d) {
     return JSON.stringify([srt(d.A), srt(d.B)]);
 }
 
-function _psDirty() {
-    var d = s._psDraft;
-    return !!(s._psMode && d && d.roomId === s.rf && _psSnap(d) !== d.base);
-}
-
-/** 有未保存草稿就问一句；返回 false = 用户要留下（调用方负责把刚拨的开关还原） */
-function _confirmDropPsDraft() {
-    if (!_psDirty()) return true;
-    return confirm('播放设置表还有未保存的改动（播放顺序/点歌屏），离开这张表就丢了，不会自动落库。\n确定离开？');
-}
-
-/** 退出播放设置模式：草稿随模式一起丢，重开时按云端真值重建。确认框由调用方弹（见 _exitTableModes） */
+/** 退出播放设置模式：草稿随模式一起丢，重开时按云端真值重建；还没落库的改动由自动保存的快照兜住 */
 function _exitPsMode() {
     s._psMode = false;
     s._psDraft = null;
+    s._psErr = '';
 }
 
-/**
- * 进入某个编辑模式前，把另外两张总表（墙板 / 播放设置）退干净。
- * 确认框只在这一个地方弹：每张脏表一句，问完再统一清状态 ——
- * 原先 _confirmDropXDraft 问一遍、_exitXMode 里又问一遍，同一份草稿连着吃两个一模一样的框。
- * @return {boolean} false = 用户选择留下；调用方把刚拨的开关还原即可（此刻还没动任何状态）
- */
+/** 进入某个编辑模式前，把另外两张总表（墙板 / 播放设置）收掉；它们的改动都已/正在自动落库，不弹确认框 */
 function _exitTableModes() {
-    if (!_confirmDropWpDraft() || !_confirmDropPsDraft()) return false;
     _exitWpMode();
     _exitPsMode();
-    return true;
 }
 
 /**
@@ -3142,16 +3192,15 @@ function _exitTableModes() {
 async function sfPS() {
     var pt = document.getElementById('psToggle');
     if (!pt) return;
-    if (!pt.checked && !_confirmDropPsDraft()) { pt.checked = true; return; }
-    if (pt.checked && !_exitTableModes()) { pt.checked = false; return; }
-    await flushAutoSync();   // 保存是整份 config 读后写，防抖里还压着窗口编辑的话会把刚改的 windows 抹掉
+    if (pt.checked) _exitTableModes();   // 开表：墙板表收起
+    await flushAutoSync();   // 写库是整份 config 读后写，防抖里还压着窗口编辑的话会把刚改的 windows 抹掉
     s._psMode = !!pt.checked;
     if (s._psMode) {
         s._windowEditorActive = false;
         _exitCropMode();
         if (!s._curScene) s._curScene = 'A';
     } else {
-        s._psDraft = null;
+        _exitPsMode();
     }
     rmDevice();
 }
@@ -3206,14 +3255,15 @@ function _psTableHtml() {
     var h = '<div class="wp-bar">';
     h += '<span style="font-size:var(--fs-meta);color:#ccc">按文件夹设置播放行为</span>';
     h += '<span style="font-size:var(--fs-micro);color:#666">已设 ' + set + ' 格</span>';
-    if (_psSnap(d) !== d.base) h += '<span class="wp-warn">● 有未保存改动</span>';
+    if (_psSnap(d) !== d.base) h += '<span class="wp-warn">● 保存中…</span>';
     if (s._psNote) h += '<span style="font-size:var(--fs-micro);color:#4caf50">✓ ' + esc(s._psNote) + '</span>';
+    if (s._psErr) h += '<span class="wp-warn" style="color:#e94560">' + esc(s._psErr) + '</span>';
     h += '<span style="flex:1"></span>';
     h += '<button class="btn btn-sync" id="psCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的播放设置（每格的播放顺序与点歌屏开关）覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="psCopyAll()">全局复制</button>';
-    h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" onclick="psSave()">保存</button>';
-    h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未保存的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
+    h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="改动会自动保存；这里可立即落库，或重试上一次失败" onclick="psSave()">保存</button>';
+    h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关。</div>';
+    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
         + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th>'
@@ -3244,7 +3294,7 @@ function renderPsEditor() {
 }
 
 /**
- * 改一格草稿（只动内存，点「保存」才落库）；回到全默认就删键，与服务端"默认值不落键"同口径。
+ * 改一格草稿并立刻自动保存；回到全默认就删键，与服务端"默认值不落键"同口径。
  * 按整格对象改：拨顺序不能把点歌屏开关抹掉，反之亦然。
  */
 function _psSetCell(sc, fid, field, v) {
@@ -3263,7 +3313,7 @@ function _psSetCell(sc, fid, field, v) {
 }
 function psSet(sc, fid, field, v) {
     if (sc !== 'A' && sc !== 'B') return;
-    if (_psSetCell(sc, fid, field, v)) renderPsEditor();
+    if (_psSetCell(sc, fid, field, v)) { renderPsEditor(); _psAutoSaveSoon(); }
 }
 
 /** 点歌屏开关按行拨：A、B 两幕同时落同一个值（理由见本节表头注释） */
@@ -3271,11 +3321,14 @@ function psSetHdmi(fid, on) {
     _psSetCell('A', fid, 'hdmi', on);
     _psSetCell('B', fid, 'hdmi', on);
     renderPsEditor();
+    _psAutoSaveSoon();
 }
 
-/** 丢掉草稿、现读云端最新配置重画（重读不写库，任何设备都不被打扰） */
+/** 丢掉草稿、现读云端最新配置重画（重读不写库；路上的自动保存先等它落地，免得读完又被旧快照覆盖） */
 async function psReload() {
     if (!s.rf) return;
+    if (_psAutoTimer) { clearTimeout(_psAutoTimer); _psAutoTimer = null; }
+    await (s._psSaveQ || Promise.resolve());
     var roomObj;
     try { roomObj = await apiGet('/api/rooms/' + encodeURIComponent(s.rf)); }
     catch (e) { alert('重读失败: ' + e.message); return; }
@@ -3283,48 +3336,83 @@ async function psReload() {
     var idx = s.rooms.findIndex(function (x) { return x.id === s.rf; });
     if (idx >= 0) s.rooms[idx] = roomObj;
     s._psDraft = null;
+    s._psErr = '';
     renderPsEditor();
 }
 
 /**
- * 整表保存：与 wpSave 同一套读后写 —— 先 flushAutoSync 再 GET 云端最新 config，只改 play_settings 两幕再 PUT。
- * 两幕都必须带：服务端 mergeSceneConfig 是「带键即按传入落库、没带才继承」，少带一幕那一幕的清设置就落不下去。
- * 全空时带 {} 也安全：buildPrefixedScenes 不给空表落键，rev 不动，设备不会白重同步一次。
+ * 改一格后的自动保存：500ms 防抖落一次库。
+ * 快照（房间 + 两幕设置）在改动这一刻取，随后切表/换房间、写还在路上，这一笔照样落在被改的那间房。
+ */
+function _psAutoSaveSoon() {
+    var d = _psDraftOf();
+    if (!d || !s.rf) return;
+    var snap = { roomId: s.rf, want: _psSnap(d), A: JSON.parse(JSON.stringify(d.A)), B: JSON.parse(JSON.stringify(d.B)) };
+    if (_psAutoTimer) clearTimeout(_psAutoTimer);
+    _psAutoTimer = setTimeout(function () {
+        _psAutoTimer = null;
+        _psSaveSnap(snap);
+    }, TABLE_AUTO_SAVE_MS);
+}
+
+/**
+ * 把一份快照落库：串行队列（与全局复制/「保存」按钮共用），先 flushAutoSync 再 GET 最新 config，
+ * 只换 scenes.A/B.play_settings 再 PUT。两幕都必须带：服务端 mergeSceneConfig 是「带键即按传入落库、
+ * 没带才继承」，少带一幕那一幕的清设置就落不下去；全空带 {} 也安全（不落键、rev 不动）。
+ * resolve(null) = 成功；resolve(Error) = 失败（红字已更新，调用方决定是否再 alert）。
+ */
+function _psSaveSnap(snap) {
+    if (!snap || !snap.roomId) return Promise.resolve(null);
+    var job = function () {
+        return flushAutoSync()
+            .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(snap.roomId)); })
+            .then(function (roomObj) {
+                if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
+                var cfg = _loadRoomCfg(roomObj);
+                cfg.scenes.A.play_settings = JSON.parse(JSON.stringify(snap.A));
+                cfg.scenes.B.play_settings = JSON.parse(JSON.stringify(snap.B));
+                return apiCall('/api/rooms/' + encodeURIComponent(snap.roomId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: JSON.stringify(cfg) })
+                }).then(function () { return cfg; });
+            })
+            .then(function (cfg) {
+                var idx = s.rooms.findIndex(function (x) { return x.id === snap.roomId; });
+                if (idx >= 0) {
+                    var room = JSON.parse(JSON.stringify(s.rooms[idx]));
+                    room.config = JSON.stringify(cfg);
+                    s.rooms[idx] = room;
+                }
+                var cur = s._psDraft;
+                if (cur && cur.roomId === snap.roomId) cur.base = snap.want;   // 写飞在路上时又改的格不在快照里，标记继续亮
+                s._psErr = '';
+                if (s._psMode && cur) { s._psNote = '已自动保存'; renderPsEditor(); }
+                return null;
+            })
+            .catch(function (e) {
+                s._psErr = '自动保存失败：' + e.message + '（点「保存」可重试）';
+                if (s._psMode) renderPsEditor();
+                return e;
+            });
+    };
+    s._psSaveQ = (s._psSaveQ || Promise.resolve()).then(job, job);
+    return s._psSaveQ;
+}
+
+/**
+ * 保存这一页（通常是自动保存的重试/立即落库）：快照按当前草稿取，走同一条串行队列。
  */
 async function psSave() {
     var d = _psDraftOf();
     if (!d || !s.rf) return;
+    if (_psAutoTimer) { clearTimeout(_psAutoTimer); _psAutoTimer = null; }
     var btn = document.getElementById('psSaveBtn');
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
-    var cfg;
-    try {
-        await flushAutoSync();
-        var roomObj = await apiGet('/api/rooms/' + encodeURIComponent(s.rf));
-        if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
-        cfg = _loadRoomCfg(roomObj);
-        cfg.scenes.A.play_settings = d.A;
-        cfg.scenes.B.play_settings = d.B;
-        await apiCall('/api/rooms/' + encodeURIComponent(s.rf), {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ config: JSON.stringify(cfg) })
-        });
-    } catch (e) {
-        // 失败时草稿基线没动：重绘后仍标着「有未保存改动」，不会给人已经存好的假象
-        if (btn) { btn.disabled = false; btn.textContent = '保存'; }
-        alert('播放设置保存失败: ' + e.message);
-        renderPsEditor();
-        return;
-    }
-    var idx = s.rooms.findIndex(function (x) { return x.id === s.rf; });
-    if (idx >= 0) {
-        var newRoom = JSON.parse(JSON.stringify(s.rooms[idx]));
-        newRoom.config = JSON.stringify(cfg);
-        s.rooms[idx] = newRoom;
-    }
-    s._psDraft = null;
-    s._psNote = '';
-    renderPsEditor();
+    var err = await _psSaveSnap({ roomId: s.rf, want: _psSnap(d),
+        A: JSON.parse(JSON.stringify(d.A)), B: JSON.parse(JSON.stringify(d.B)) });
+    if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+    if (err) alert('播放设置保存失败: ' + err.message);
 }
 
 /**

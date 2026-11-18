@@ -1,7 +1,7 @@
 // 一次性自检：把前端「窗口写库串行队列」从 public/index.html 抠出来跑断言（不起服务、不连库、不动数据）。
 // 这块改动的全部风险都在时序上（谁先发、谁后发、排队期间用户切了房间怎么办），所以断言只盯时序。
 const fs = require('fs');
-const src = fs.readFileSync(require('path').join(__dirname, 'public/index.html'), 'utf8');
+const src = fs.readFileSync(require('path').join(__dirname, 'public/index.html'), 'utf8').replace(/\r\n/g, '\n');
 
 function grab(name) {
   const i = src.indexOf('function ' + name + '(');

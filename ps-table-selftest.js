@@ -15,29 +15,37 @@ function grab(name) {
 }
 const names = ['_psCell', '_psTableOf', '_psSnap',
   '_psGroupHtml', '_psSetCell', '_psHdmiSw', '_psDraftOf', '_psTableHtml', 'psSet', 'psSetHdmi',
-  // 切表时的「丢掉未保存草稿」闸门：确认框弹几次是这段的价值所在，所以连同墙板那半一起抠进来
-  '_psDirty', '_confirmDropPsDraft', '_exitPsMode', '_wpDirty', '_wpHwSnap', '_wpCodeSnap', '_confirmDropWpDraft', '_exitWpMode', '_exitTableModes'];
-const consts = src.match(/^var (PS_ORDERS|WP_SOURCES) = .*$/gm).join('\n');
+  // 自动保存：psSet 改完就排防抖，_psSaveSnap 才是真正落库的那一段（读后写 + 基线回填）
+  '_psAutoSaveSoon', '_psSaveSnap',
+  // 切表：四张表都改动即保存，两个退出函数只需把状态与学习清干净，不再弹确认框
+  '_exitPsMode', '_wpDirty', '_wpHwSnap', '_wpCodeSnap', '_exitWpMode', '_exitTableModes'];
+const consts = src.match(/^var (PS_ORDERS|WP_SOURCES|TABLE_AUTO_SAVE_MS|_wpAutoTimer|_psAutoTimer) = .*$/gm).join('\n');
 const code = consts + '\n' + names.map(grab).join('\n');
 
 const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escA = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 // psSet / _psDraftOf 摸得到工作台状态与重绘，给它们一份最小替身（重绘只记次数，不碰 DOM）
-const s = { rf: 'r1', _psMode: true, _psDraft: null, _wpMode: false, _wpDraft: null, rooms: [] };
+const s = { rf: 'r1', _psMode: true, _psDraft: null, _psSaveQ: null, _psNote: '', _psErr: '',
+  _wpMode: false, _wpDraft: null, _wpErr: '', rooms: [] };
 let renders = 0;
-// confirm 由页面全局函数变成注入替身：记下每句文案，答复由下面的开关决定
-const asks = [];
-let askAnswer = true;
-const confirm = msg => { asks.push(String(msg)); return askAnswer; };
+// 自动保存最后落到这两个接口上：GET 回来的房间、PUT 出去的请求体，都记下来给断言用
+let apiRoom = null;
+const puts = [];
+let putFails = null;
+const apiGet = url => Promise.resolve(apiRoom);
+const apiCall = (url, opt) => putFails ? Promise.reject(new Error(putFails))
+  : Promise.resolve(puts.push({ url, body: JSON.parse(opt.body) }));
 // 学习态（候选帧 + 倒计时）归墙板表自己管，这里只证明退出时把它叫醒了
 let learns = 0;
 const box = {};
-new Function('exports', 'esc', 'escA', 's', '_loadRoomCfg', 'renderPsEditor', 'confirm', '_wpLearnReset',
+new Function('exports', 'esc', 'escA', 's', '_loadRoomCfg', 'renderPsEditor', 'flushAutoSync', 'apiGet', 'apiCall', '_wpLearnReset',
   code + '\nObject.assign(exports,{' + names.join(',') + '});')(
   box, esc, escA, s,
   r => { const c = JSON.parse(r.config || '{}'); c.scenes = c.scenes || {}; ['A', 'B'].forEach(k => { c.scenes[k] = c.scenes[k] || {}; c.scenes[k].folder_mappings = c.scenes[k].folder_mappings || {}; }); return c; },
   () => { renders++; },
-  confirm,
+  () => Promise.resolve(),
+  apiGet,
+  apiCall,
   () => { learns++; });
 const T = box;
 
@@ -154,9 +162,10 @@ has('硬切口径写在表前（免得有人以为还有叠化可开）', tbl, '
 has('保存/重读两个入口', tbl, 'onclick="psSave()"');
 has('全局复制入口（覆盖本店其余房间的播放设置）', tbl, 'onclick="psCopyAll()"');
 has('重读入口', tbl, 'onclick="psReload()"');
-eq('干净草稿不标未保存', tbl.indexOf('● 有未保存改动') >= 0, false);
+has('表头写明改动自动保存', tbl, '改动会自动保存');
+eq('干净草稿不标保存中', tbl.indexOf('● 保存中…') >= 0, false);
 T.psSet('A', '05', 'order', 'shuffle');
-has('改一格就标未保存', T._psTableHtml(), '● 有未保存改动');
+has('改一格就标保存中', T._psTableHtml(), '● 保存中…');
 s.rooms = [];
 s._psDraft = null;
 has('房间还没加载完 → 给一句人话而不是半屏空表', T._psTableHtml(), '房间数据还没加载完');
@@ -164,7 +173,7 @@ has('房间还没加载完 → 给一句人话而不是半屏空表', T._psTable
 eq('切房间后旧草稿不复用', (() => { seed(); s.rf = 'r2'; s.rooms = [{ id: 'r2', config: '{"scenes":{"A":{"play_settings":{"05":{"order":"shuffle"}}}}}' }]; return T._psDraftOf().A; })(),
   { '05': { order: 'shuffle' } });
 
-console.log('_exitTableModes（切到另一张总表时的丢弃确认：每张脏表只问一句）:');
+console.log('_exitTableModes（切表直接收摊，不再弹「未保存就丢」确认框）:');
 s.rf = 'r1';
 const psDraft = dirty => { const d = { roomId: 'r1', A: {}, B: {} }; d.base = T._psSnap(d); if (dirty) d.A['01'] = { order: 'shuffle' }; return d; };
 const wpDraft = dirty => {
@@ -176,25 +185,45 @@ const wpDraft = dirty => {
 const reset = (psDirty, wpDirty) => {
   s._psMode = true; s._wpMode = true;
   s._psDraft = psDraft(psDirty); s._wpDraft = wpDraft(wpDirty);
-  asks.length = 0; askAnswer = true;
 };
-eq('两张表都干净 → 一句都不问', (() => { reset(false, false); return [T._exitTableModes(), asks.length]; })(), [true, 0]);
-eq('只有播放表脏 → 问一句（曾经问两句：闸门和退出函数各弹一次）',
-  (() => { reset(true, false); return [T._exitTableModes(), asks.length]; })(), [true, 1]);
-eq('问过就清干净：模式、草稿和学习态一起走', (() => { reset(true, false); learns = 0; T._exitTableModes(); return [s._psMode, s._psDraft, s._wpMode, s._wpDraft, learns]; })(), [false, null, false, null, 1]);
-eq('回答"留下" → 不动任何状态', (() => { reset(true, false); askAnswer = false; const d = s._psDraft; return [T._exitTableModes(), asks.length, s._psMode, s._psDraft === d]; })(), [false, 1, true, true]);
-eq('只有墙板表脏 → 问的是墙板上那句',
-  (() => { reset(false, true); const r = T._exitTableModes(); return [r, asks.length, /墙板串口/.test(asks[0])]; })(), [true, 1, true]);
-eq('只改学习绑定也算墙板表脏（草稿闸门要盖住新加的那一格）', (() => {
-  reset(false, false);
-  s._wpDraft.code['01'] = { panel: 'F50A00010300' };
-  const dirty = T._wpDirty();
-  return [dirty, T._exitTableModes(), asks.length];
-})(), [true, true, 1]);
-eq('两张都脏 → 各问一句，不重复',
-  (() => { reset(true, true); const r = T._exitTableModes(); return [r, asks.length, /播放设置表/.test(asks[1])]; })(), [true, 2, true]);
-eq('前一张留下 → 后一张不再被打扰',
-  (() => { reset(true, true); askAnswer = false; const r = T._exitTableModes(); return [r, asks.length, s._psMode, s._wpMode]; })(), [false, 1, true, true]);
+eq('两张表都开着 → 一起收起，不问一句', (() => {
+  reset(true, true); T._exitTableModes();
+  return [s._psMode, s._wpMode, s._psDraft, s._wpDraft];
+})(), [false, false, null, null]);
+eq('草稿脏不脏都照收（改动由自动保存落库，不再拦人）', (() => { reset(false, false); T._exitTableModes(); return [s._psMode, s._wpMode]; })(), [false, false]);
+eq('退出时墙板学习态复位', (() => { reset(true, true); learns = 0; T._exitTableModes(); return learns; })(), 1);
+eq('退出顺手清掉上一轮的红字', (() => {
+  reset(true, true); s._psErr = 'x'; s._wpErr = 'y'; T._exitTableModes();
+  return [s._psErr, s._wpErr];
+})(), ['', '']);
 
-console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
-process.exit(fail ? 1 : 0);
+(async () => {
+  console.log('_psSaveSnap（自动保存的落库段：读后写只换 play_settings）:');
+  s.rf = 'r1'; s._psMode = true; s._psSaveQ = null; s._psErr = ''; s._psNote = '';
+  s.rooms = [{ id: 'r1', config: JSON.stringify({ scenes: { A: { play_settings: {} }, B: { play_settings: {} } } }) }];
+  s._psDraft = { roomId: 'r1', A: {}, B: {} };
+  s._psDraft.base = T._psSnap(s._psDraft);
+  apiRoom = { id: 'r1', config: JSON.stringify({ scenes: {
+    A: { windows: [{ id: 'w1' }], play_settings: { '09': { order: 'shuffle' } } },
+    B: { folder_mappings: { '02': ['x'] } } } }) };
+  puts.length = 0; putFails = null;
+  const snap = { roomId: 'r1', want: T._psSnap({ A: { '01': { order: 'shuffle', hdmi: true } }, B: {} }),
+    A: { '01': { order: 'shuffle', hdmi: true } }, B: {} };
+  const r1 = await T._psSaveSnap(snap);
+  eq('成功返回 null', r1, null);
+  eq('只发一次 PUT', puts.length, 1);
+  const cfg = JSON.parse(puts[0].body.config);
+  eq('两幕的 play_settings 都按快照写（B 空表也带上）',
+    [cfg.scenes.A.play_settings, cfg.scenes.B.play_settings], [{ '01': { order: 'shuffle', hdmi: true } }, {}]);
+  eq('别的键原样保留（windows / folder_mappings 不被抹）',
+    [cfg.scenes.A.windows.length, !!cfg.scenes.B.folder_mappings['02']], [1, true]);
+  eq('基线回填到快照 → 不再标保存中，回执变绿字',
+    [s._psDraft.base === snap.want, s._psNote, s._psErr], [true, '已自动保存', '']);
+  putFails = 'boom';
+  const r2 = await T._psSaveSnap({ roomId: 'r1', want: 'W', A: {}, B: {} });
+  eq('失败返回 Error 并在表头留红字', [r2 && r2.message, /自动保存失败/.test(s._psErr)], ['boom', true]);
+  eq('失败不动基线（未落库标记继续亮，可重试）', s._psDraft.base === snap.want, true);
+
+  console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败');
+  process.exit(fail ? 1 : 0);
+})();
