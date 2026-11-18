@@ -97,6 +97,14 @@
  *   单独变更走轻量 set_wallpanel；载荷在 roomWallpanelFields 一处收口。
  *   判义次序（设备端）：学习绑定表命中就切 → 不中只留痕不动画面（没有编号兜底）。
  *
+ * DMX512（副板串口）房间级字段（与墙板同级的 config 顶层键）：
+ *   dmx_enabled: Boolean           // 副板串口监听总闸，严格 true 才算开；与墙板的门是两扇（两条物理链路）
+ *   dmx_serial_path: String        // 副板在主板上挂的 UART 节点（默认 /dev/ttyS4，同小麦 x9/x10 机型）
+ *   dmx_baud: 档位                // 默认 115200（厂商该机型档位）；见 DMX_BAUDS
+ *   通道表现由设备端定义，不入库：帧里第 N 个通道（1~20，副板一帧只带 20 路）就是文件夹 NN，
+ *   值变动即触发（同 485 的"按了一次码"），只对 play_settings[NN].dmx=true 的格子生效。
+ *   同样不进 rev，单独变更走轻量 set_dmx；载荷在 roomDmxFields 一处收口。
+ *
  * 输出基准（与 debug 同级的 config 顶层键，任务 #177）：
  *   output: { w: Number, h: Number } | 缺省
  *     编辑器画布与设备窗口几何共用的那把尺，单位=输出屏像素。窗口 x/y/width/height 都在这个坐标系里。
@@ -163,17 +171,17 @@
  *   - 第二幕（场景B）默认窗口为空，由用户手动配置
  *   - 【同步触发口径】房间 config 落库后一律只经 notifyRoomConfigChanged 决定是否打扰设备：
  *     映射变了→sync_room_materials，窗口/总亮度/播放设置变了→update_windows，debug 变了→set_debug，
- *     墙板字段变了→set_wallpanel，没变→一条不发。四类是**并列判定**（同一次 PUT 既改窗口又开总闸就两条都发，
+ *     墙板字段变了→set_wallpanel，DMX 字段变了→set_dmx，没变→一条不发。五类是**并列判定**（同一次 PUT 既改窗口又开总闸就两条都发，
  *     命中全量同步时轻枪省掉——它的载荷已带这些字段）。前端不再自己补 POST /sync（手工点「同步当前房间」按钮除外）。
  *     兜底是 rev 对账：命令里带 rev=roomSceneDigest(config)，设备心跳回传已应用的 rev，
  *     服务端发现落后就补发一次（3 分钟/台节流），所以设备离线期间的变更会在上线后收敛。
- *     ⚠️ set_debug / set_wallpanel 是指纹之外的两个例外：debug 和墙板字段都故意不进指纹
+ *     ⚠️ set_debug / set_wallpanel / set_dmx 是指纹之外的三个例外：debug、墙板、DMX 字段都故意不进指纹
  *     （开个开关不该惊动素材同步，见 roomSceneDigest），所以它们对不上账、不会被对账补发。
  *     命令是 QoS1 非 retain，设备在线但正好掉线那一跳就会丢，靠下次重连时 auth_result
  *     （以及手工同步的 sync 载荷）里的同名字段自愈。现场口径：「云端开了开关但大屏没反应」
  *     先让设备重连一次（或点一次手工同步），别急着怀疑开关本身。
  *   - 【config 写库口径】POST /rooms 与 PUT /rooms/:id 共用一个净化入口 prepareRoomConfig：
- *     JSON 合法性 → scenes 脏键过滤 → 顶层键"incoming 覆盖、其余继承 DB" → 墙板字段按下发口径归一 →
+ *     JSON 合法性 → scenes 脏键过滤 → 顶层键"incoming 覆盖、其余继承 DB" → 墙板/DMX 字段按下发口径归一 →
  *     播放设置校验 → 逐幕合并。任一步不过就 400，绝不带病入库：
  *     脏值一旦落库，后续不重填那一项的 PUT 会继承它再撞上同一道校验，这间房就再也存不进配置了。
  *   - 【试播 preview_material】唯一一条"不进 config"的命令：不落库、不带 rev、不触发对账，
@@ -355,6 +363,16 @@ const WALLPANEL_DEFAULT_PATH = '/dev/ttyUSB0';
 const WALLPANEL_DATA_BITS = [5, 6, 7, 8];
 const WALLPANEL_PARITIES = ['none', 'odd', 'even'];
 const WALLPANEL_STOP_BITS = [1, 2];
+/**
+ * DMX512 副板串口（与 485 墙板是两条独立链路，各有一扇门）：
+ * 节点默认对齐小麦 x9/x10 机型的 ttyS4，波特率默认 115200（厂商该机型走的就是这一档）；
+ * CX3588 台架与量产小板的实际挂载口若不同，在配置表里改，写错值写库前 400。
+ * 字符格式固定 8N1：副板吐的是自家的二进制帧（0x5a10…头 + 20 字节通道值），不是线路上的 DMX512 电平，
+ * 没有厂家会用奇偶校验去跑它，所以不像 485 那样开放三档。
+ */
+const DMX_BAUDS = [9600, 19200, 38400, 57600, 115200];
+const DMX_DEFAULT_PATH = '/dev/ttyS4';
+const DMX_DEFAULT_BAUD = 115200;
 /** 帧指纹 = 1~64 字节的大写十六进制（APK 的 WallPanelHex.isValid 同一把尺）。
  *  最小 1 字节：小麦那族功能码就是单字节（D3、B5 这种），两位 hex 必须能落库、能学习。 */
 const WALLPANEL_FRAME_HEX_RE = /^([0-9A-F]{2}){1,64}$/;
@@ -526,6 +544,10 @@ function prepareRoomConfig(raw, existingCfg) {
   var wpErr = findWallpanelFieldError(merged);
   if (wpErr) return { error: wpErr };
   Object.assign(merged, roomWallpanelFields(merged));
+  // DMX 副板串口同理（同一套理由：确定形状落库，非法值先 400）
+  var dmxErr = findDmxFieldError(merged);
+  if (dmxErr) return { error: dmxErr };
+  Object.assign(merged, roomDmxFields(merged));
   // 编号/默认编号体系已删（2026-11-13）：存量 config 里残留的这个键随下一次写入清掉，
   // 免得"配置表里还挂着一个设备端根本不读的数"
   delete merged.wallpanel_default_no;
@@ -623,8 +645,8 @@ function mergePrefixedMappings(prefixedScenes) {
  * 用途有两处：① 写接口落库后比对新旧，配置真变了才打扰设备；② 随命令下发给设备，
  * 设备心跳回传，服务端发现不一致就补发一次同步（对账，替代"每个入口都记得补一枪"）。
  * 键序已由 buildPrefixedScenes 归一化；A/B 显式定序，避免 DB 里键顺序变了被当成内容变了。
- * ⚠️ 指纹只算 scenes：config 顶层的 debug 与 wallpanel_*（总闸/串口节点/波特率/学习表）都不进 rev。
- * 它们各走轻量命令（set_debug / set_wallpanel），不该因为"开个调试"就触发一次素材全量同步；
+ * ⚠️ 指纹只算 scenes：config 顶层的 debug、wallpanel_*（总闸/串口节点/波特率/学习表）与 dmx_* 都不进 rev。
+ * 它们各走轻量命令（set_debug / set_wallpanel / set_dmx），不该因为"开个调试"就触发一次素材全量同步；
  * 代价是掉了那一跳不会被心跳对账补回来，只能靠重连或手工同步自愈（见 notifyRoomConfigChanged）。
  */
 function roomSceneDigest(cfg) {
@@ -784,6 +806,37 @@ function roomWallpanelFields(cfg) {
 
 /** 墙板字段指纹（只用于"这一枪是不是只改了墙板"的判定，不是配置 rev） */
 function roomWallpanelDigest(cfg) { return JSON.stringify(roomWallpanelFields(cfg)); }
+
+/**
+ * DMX512 副板串口字段：与墙板同构的确定形状（没配 = false / 默认节点 / 默认速率）。
+ * 通道表不在这里：设备端固定"第 N 个通道 → 文件夹 NN"（副板一帧只带 20 路），
+ * 要不要接这一路只由每格 play_settings.dmx 决定，服务端不存第二份映射。
+ */
+function roomDmxFields(cfg) {
+  var path = cfg && cfg.dmx_serial_path;
+  return {
+    dmx_enabled: !!(cfg && cfg.dmx_enabled === true),
+    dmx_serial_path: isSafeSerialPath(path) ? path : DMX_DEFAULT_PATH,
+    dmx_baud: wallpanelBitChoice(cfg && cfg.dmx_baud, DMX_BAUDS, DMX_DEFAULT_BAUD)
+  };
+}
+
+/** DMX 字段指纹（同墙板：只用来决定要不要补一枪 set_dmx，不是配置 rev） */
+function roomDmxDigest(cfg) { return JSON.stringify(roomDmxFields(cfg)); }
+
+/** DMX 串口字段写入校验：理由同 findWallpanelFieldError（静默回落 = 表里一套、设备演另一套） */
+function findDmxFieldError(cfg) {
+  var path = cfg.dmx_serial_path;
+  if (path !== undefined && path !== null && path !== '' && !isSafeSerialPath(path)) {
+    return 'DMX 串口节点只能是 /dev/ 下的设备名（字母、数字、-、_），例如 /dev/ttyS4';
+  }
+  var baud = cfg.dmx_baud;
+  if (baud !== undefined && baud !== null && baud !== '' &&
+      wallpanelBitChoice(baud, DMX_BAUDS, NaN) !== Number(baud)) {
+    return 'DMX 波特率只能是 ' + DMX_BAUDS.join(' / ') + ' 之一';
+  }
+  return null;
+}
 
 /**
  * 墙板硬件字段（串口节点 / 波特率 / 字符格式 / 学习表）写入校验：非法值 roomWallpanelFields
@@ -977,7 +1030,7 @@ function roomSyncFields(cfg) {
     debug: roomDebugFlag(cfg),
     // null = 房间没设输出基准，设备按 1920×1080 设计稿轴向换算（历史口径）
     output: roomOutputField(cfg)
-  }, roomWallpanelFields(cfg), {
+  }, roomWallpanelFields(cfg), roomDmxFields(cfg), {
     rev: roomSceneDigest(cfg)
   });
 }
@@ -997,7 +1050,8 @@ function syncCommandPayload(roomId, cfg) {
  * - 只有窗口/总亮度/播放设置/输出基准变了 → update_windows（APK 原地改视图，不碰素材；结构或播放设置变化时自行回退重建）
  * - debug 变了             → set_debug（轻量，不动素材、不重建，见 APK setDebugMode）
  * - 墙板字段变了           → set_wallpanel（同上轻量，见 APK applyWallPanelEnabled；含开关/节点/波特率/学习表）
- * - 后两类与前两类是并列判定：同一次 PUT 既改窗口又开总闸，就 update_windows + set_wallpanel 两条都发
+ * - DMX 字段变了           → set_dmx（同上轻量，见 APK applyDmxEnabled；含开关/节点/波特率）
+ * - 后三类与前两类是并列判定：同一次 PUT 既改窗口又开总闸，就 update_windows + set_wallpanel 两条都发
  * - 都没变                 → 一条都不发：前端补写、脚本幂等写、重复 PUT 都不再产生第二次重建
  * 这条规则替代了原先"每个写接口各自记得通知 / 前端各自补一枪"的分散时机，
  * 因此 rmRoomMat、doPushToRoom 这类"先 PUT 再 DELETE 再 sync"的连写会自然收敛成一次下发。
@@ -1027,6 +1081,9 @@ function notifyRoomConfigChanged(roomId, oldCfgStr, newCfgStr, reason, cb) {
   }
   if (!heavyCarriesFlags && roomWallpanelDigest(oldCfg) !== roomWallpanelDigest(newCfg)) {
     commands.push(['墙板', Object.assign({ action: 'set_wallpanel' }, roomWallpanelFields(newCfg), { timestamp: Date.now() })]);
+  }
+  if (!heavyCarriesFlags && roomDmxDigest(oldCfg) !== roomDmxDigest(newCfg)) {
+    commands.push(['DMX', Object.assign({ action: 'set_dmx' }, roomDmxFields(newCfg), { timestamp: Date.now() })]);
   }
   if (commands.length === 0) { if (cb) cb(0); return; }
 
@@ -1980,7 +2037,7 @@ app.post('/api/devices/:id/block', (req, res) => {
 // 未知 action 一律 400，不透传 —— command 主题上的指令设备是照单执行的，不能靠前端自觉。
 // 老 APK(167) 里那条 preset_sync 分支只是留着没人调用，服务端先收掉入口即可，不需要设备升级。
 const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
-                        'update_windows', 'delete_material', 'update', 'set_debug', 'set_wallpanel',
+                        'update_windows', 'delete_material', 'update', 'set_debug', 'set_wallpanel', 'set_dmx',
                         'preview_material', 'preview_stop', 'wallpanel_learn',
                         // 退出到桌面/唤回：释放画面并把原厂桌面顶到身前，进程与 MQTT 不动，
                         // 设备侧只吃 action（APK【A-15】）；唤回靠设备上的 root am start，服务端不补载荷

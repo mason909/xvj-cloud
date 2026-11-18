@@ -2238,6 +2238,8 @@ function sfCrop() {
 // 同一格可以录两个码（一路点歌机、一路墙板），谁按到都切到这一格，A/B 两幕通用。
 // 串口参数（节点/波特率/字符格式）与串口总闸同样是改动即保存（500ms 防抖，见 _wpAutoSaveSoon）：
 // 它们决定收不收得到帧，改错要能马上被设备用上，也能随时点「保存」立即落库。
+// 第二条参数条是 DMX512 副板（另一条物理链路）：总闸/节点/波特率三项，通道 N 的值变动 = 按了一次，
+// 落到文件夹 NN，哪些格接这一路由「播放设置」的 dmx 列决定（见服务端 roomDmxFields / APK DmxLink）。
 // ============================================================================
 
 // 串口硬件参数（与服务端 WALLPANEL_BAUDS / WALLPANEL_DEFAULT_PATH 同一份口径，改一边要改另一边）：
@@ -2253,6 +2255,13 @@ var WP_SERIAL_PARITIES = [
     { v: 'none', n: '无' }, { v: 'odd', n: '奇' }, { v: 'even', n: '偶' }
 ];
 var WP_SERIAL_STOP_BITS = [1, 2];
+
+// DMX512 副板（XM-Dmx1 那族）是另一条物理链路：速率档位更少、字符格式由副板固件定死 8N1，
+// 所以这里只有总闸/节点/波特率三项（与服务端 DMX_BAUDS / DMX_DEFAULT_PATH / DMX_DEFAULT_BAUD、
+// APK DmxLink 同一份口径）。副板一帧 20 路，通道 N ↔ 文件夹 NN；哪些格接这一路在「播放设置」里开。
+var DMX_BAUDS = [9600, 19200, 38400, 57600, 115200];
+var DMX_DEFAULT_PATH = '/dev/ttyS4';
+var DMX_DEFAULT_BAUD = 115200;
 
 /**
  * 学习绑定表（config.wallpanel_bindings，与服务端 normalizeWallpanelBindings / APK WallPanelBindings 同一份）：
@@ -2270,6 +2279,15 @@ var WP_LEARN_POLL_MS = 1000;       // 等按键时的取帧间隔（设备侧每
 
 /** 串口节点显示值：非法形状（老数据/手填脏值）一律回落到默认节点，跟服务端 roomWallpanelFields 同口径 */
 function _wpPath(v) { return typeof v === 'string' && WP_SERIAL_PATH_RE.test(v) ? v : WP_SERIAL_DEFAULT_PATH; }
+
+/** DMX 副板节点：同一把尺、不同默认值（小麦 x9/x10 机型挂 ttyS4，服务端 roomDmxFields 同口径） */
+function _dmxPath(v) { return typeof v === 'string' && WP_SERIAL_PATH_RE.test(v) ? v : DMX_DEFAULT_PATH; }
+
+/** DMX 波特率：只收档内整数，档外 = 出厂档 115200（副板不能"不改速率"，上来就是定速） */
+function _dmxBaud(v) {
+    var n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
+    return DMX_BAUDS.indexOf(n) >= 0 ? n : DMX_DEFAULT_BAUD;
+}
 
 /** 波特率：只收档内整数（数字或数字字符串），其余 = null = 不改 termios，用驱动默认 */
 function _wpBaud(v) {
@@ -2291,7 +2309,8 @@ function _wpParity(v) {
 
 /** 硬件那一段的快照（判「有没有未保存改动」用）：录码是即时保存的，不参与这一份 */
 function _wpHwSnap(d) {
-    return JSON.stringify([d.enabled, d.path, d.baud, d.dataBits, d.parity, d.stopBits]);
+    return JSON.stringify([d.enabled, d.path, d.baud, d.dataBits, d.parity, d.stopBits,
+        d.dmxEnabled, d.dmxPath, d.dmxBaud]);
 }
 
 /** 码值表的快照（键排序后序列化）：整表写入顺序与两列的录入顺序都不该被当成内容差异 */
@@ -2446,6 +2465,8 @@ function _wpDraftOf() {
               dataBits: _wpBit(cfg.wallpanel_data_bits, WP_SERIAL_DATA_BITS, 8),
               parity: _wpParity(cfg.wallpanel_parity),
               stopBits: _wpBit(cfg.wallpanel_stop_bits, WP_SERIAL_STOP_BITS, 1),
+              dmxEnabled: cfg.dmx_enabled === true,
+              dmxPath: _dmxPath(cfg.dmx_serial_path), dmxBaud: _dmxBaud(cfg.dmx_baud),
               code: _wpCodeOf(cfg) };
     d.baseHw = _wpHwSnap(d);
     d.baseCode = _wpCodeSnap(d);
@@ -2471,6 +2492,13 @@ function _wpOptNums(allowed, cur) {
 function _wpParityOptions(cur) {
     return WP_SERIAL_PARITIES.map(function (p) {
         return '<option value="' + p.v + '"' + (cur === p.v ? ' selected' : '') + '>' + p.n + '</option>';
+    }).join('');
+}
+
+/** DMX 波特率选项：没有「驱动默认」这一格 —— 副板是定速发送，设备端必须按档设下去才收得对 */
+function _dmxBaudOptions(b) {
+    return DMX_BAUDS.map(function (n) {
+        return '<option value="' + n + '"' + (b === n ? ' selected' : '') + '>' + n + '</option>';
     }).join('');
 }
 
@@ -2618,14 +2646,33 @@ function _wpTableHtml() {
     h += '<span id="wpBound" style="font-size:var(--fs-micro);color:#666">已录 ' + bound + ' 个码</span>';
     if (_wpDirty()) h += '<span class="wp-warn">● 保存中…</span>';
     h += '<span style="flex:1"></span>';
-    h += '<button class="btn btn-sync" id="wpCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的总闸、串口节点/波特率/字符格式与码值表覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="wpCopyAll()">全局复制</button>';
+    h += '<button class="btn btn-sync" id="wpCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的总闸、串口节点/波特率/字符格式、码值表与 DMX512 设置覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="wpCopyAll()">全局复制</button>';
     h += '<button class="btn btn-primary" id="wpSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="改动会自动保存；这里可立即落库，或重试上一次失败" onclick="wpSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="wpReload()">重读</button>';
+    h += '</div>';
+
+    // DMX512 副板是另一条物理链路（与 485 各开各的门）：一帧 20 路，通道 N 的值变动 = 按了一次，
+    // 落到文件夹 NN；哪些格接这一路在「播放设置」的 DMX512控制 列里开。字符格式由副板固件定死 8N1，
+    // 所以这里比 485 那行少三格格式选择，只留总闸/节点/波特率。
+    h += '<div class="wp-bar" style="margin-top:6px">';
+    h += '<span title="' + escA('设备是否监听 DMX512 副板串口；关着时副板链路根本不开，通道变动不会有任何反应') + '">'
+        + _wbSw('DMX512 总闸', ['wpDmxGate', 'wpDmxGateSlider', 'wpDmxGateKnob'], d.dmxEnabled, '#4caf50', 'wpSetDmxGate(this.checked)')
+        + '</span>';
+    h += '<label style="display:flex;align-items:center;gap:6px"><span style="font-size:var(--fs-meta);color:#ccc">DMX 串口</span>'
+        + '<input id="dmxPath" value="' + escA(d.dmxPath) + '" size="12" spellcheck="false" autocomplete="off"'
+        + ' title="' + escA('DMX 副板在设备上的串口节点，小麦 x9/x10 机型是 /dev/ttyS4；不确定的话在设备上 ls /dev/tty* 看一眼') + '"'
+        + ' onchange="wpSetDmxPath(this.value)"></label>';
+    h += '<label style="display:flex;align-items:center;gap:6px"><span style="font-size:var(--fs-meta);color:#ccc">波特率</span>'
+        + '<select class="wp-sel" id="dmxBaud" style="width:88px"'
+        + ' title="' + escA('DMX 副板上行帧的速率；该机型出厂档是 115200') + '"'
+        + ' onchange="wpSetDmxBaud(this.value)">' + _dmxBaudOptions(d.dmxBaud) + '</select></label>';
+    if (!WP_SERIAL_PATH_RE.test(d.dmxPath)) h += '<span class="wp-warn">DMX 串口节点形状不对（要 /dev/ 下的设备名）</span>';
+    h += '<span style="font-size:var(--fs-micro);color:#666">通道 1~20 ↔ 文件夹 01~20；哪些文件夹接 DMX 在「播放设置」里开</span>';
     h += '</div>';
     if (s._wpErr) h += '<div class="wp-warn" style="color:#e94560">' + esc(s._wpErr) + '</div>';
 
     if (!s._wpLearnMode) {
-        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存。两列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。</div>';
+        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存（两路串口各管各的）。两列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。DMX512 不需要学码：通道 N 直接就是文件夹 NN。</div>';
     } else if (_wpLearning()) {
         var left = Math.max(0, Math.ceil((s._wpLearnUntil - Date.now()) / 1000));
         var cell = s._wpLearnCell;
@@ -2890,9 +2937,11 @@ function _wpAutoSaveCodes(okMsg, soft) {
 function _wpAutoSaveSoon() {
     var d = _wpDraftOf();
     if (!d || !s.rf) return;
-    if (!WP_SERIAL_PATH_RE.test(d.path)) {
-        // 节点名形状不对就不发：服务端会 400，打字途中弹框比什么都不烦人。表格里常驻那句警告负责说明
-        s._wpErr = '串口节点形状不对，串口参数还没保存';
+    // 节点名形状不对就不发：服务端会 400，打字途中弹框比什么都不烦人。表格里常驻那句警告负责说明
+    var pathErr = !WP_SERIAL_PATH_RE.test(d.path) ? '墙板串口节点形状不对，串口参数还没保存'
+        : (!WP_SERIAL_PATH_RE.test(d.dmxPath) ? 'DMX 串口节点形状不对，串口参数还没保存' : '');
+    if (pathErr) {
+        s._wpErr = pathErr;
         renderWpEditor();
         return;
     }
@@ -2904,7 +2953,7 @@ function _wpAutoSaveSoon() {
     }, TABLE_AUTO_SAVE_MS);
 }
 
-/** 串口那一段的落库快照（只含六项硬件字段；码值表由 _wpAutoSaveCodes 各管各的） */
+/** 串口那一段的落库快照（只含硬件字段；码值表由 _wpAutoSaveCodes 各管各的） */
 function _wpSerialSnap(d) {
     return {
         roomId: s.rf,
@@ -2915,7 +2964,10 @@ function _wpSerialSnap(d) {
             wallpanel_baud: d.baud,
             wallpanel_data_bits: d.dataBits,
             wallpanel_parity: d.parity,
-            wallpanel_stop_bits: d.stopBits
+            wallpanel_stop_bits: d.stopBits,
+            dmx_enabled: d.dmxEnabled === true,
+            dmx_serial_path: d.dmxPath,
+            dmx_baud: d.dmxBaud
         }
     };
 }
@@ -3050,6 +3102,31 @@ function wpSetStop(v) {
     _wpAutoSaveSoon();
 }
 
+/** DMX512 总闸（另一条物理链路，与 485 总闸各开各的；关着时副板串口不开） */
+function wpSetDmxGate(on) {
+    var d = _wpDraftOf();
+    if (!d) return;
+    d.dmxEnabled = !!on;
+    renderWpEditor();
+    _wpAutoSaveSoon();
+}
+
+function wpSetDmxPath(v) {
+    var d = _wpDraftOf();
+    if (!d) return;
+    d.dmxPath = String(v == null ? '' : v).trim();
+    renderWpEditor();
+    _wpAutoSaveSoon();
+}
+
+function wpSetDmxBaud(v) {
+    var d = _wpDraftOf();
+    if (!d) return;
+    d.dmxBaud = _dmxBaud(v);
+    renderWpEditor();
+    _wpAutoSaveSoon();
+}
+
 /** 丢掉草稿、现读云端最新配置重画（重读不写库；路上的自动保存先等它落地，免得读完又被旧快照覆盖） */
 async function wpReload() {
     if (!s.rf) return;
@@ -3078,7 +3155,10 @@ function _wpFieldsOf(d) {
         wallpanel_data_bits: d.dataBits,
         wallpanel_parity: d.parity,
         wallpanel_stop_bits: d.stopBits,
-        wallpanel_bindings: _wpBindFromCode(d)
+        wallpanel_bindings: _wpBindFromCode(d),
+        dmx_enabled: d.dmxEnabled === true,
+        dmx_serial_path: d.dmxPath,
+        dmx_baud: d.dmxBaud
     };
 }
 
@@ -3090,6 +3170,7 @@ async function wpSave() {
     var d = _wpDraftOf();
     if (!d || !s.rf) return;
     if (!WP_SERIAL_PATH_RE.test(d.path)) { alert('串口节点要写成 /dev/ 下的设备名，例如 ' + WP_SERIAL_DEFAULT_PATH); return; }
+    if (!WP_SERIAL_PATH_RE.test(d.dmxPath)) { alert('DMX 串口节点要写成 /dev/ 下的设备名，例如 ' + DMX_DEFAULT_PATH); return; }
     var bindErr = _wpBindErrors(d);
     if (bindErr.length) { alert('先处理码值：\n' + bindErr.join('\n')); return; }
     if (_wpAutoTimer) { clearTimeout(_wpAutoTimer); _wpAutoTimer = null; }
@@ -3104,10 +3185,10 @@ async function wpSave() {
 }
 
 /**
- * 全局复制：把当前房间的墙板字段（总闸/串口/字符格式/码值表）覆盖到**本店**其余房间。
+ * 全局复制：把当前房间的墙板字段（总闸/串口/字符格式/码值表 + DMX512 总闸/节点/波特率）覆盖到**本店**其余房间。
  * 墙板码值只对同店同批设备有意义，跨店复制等于把别人家的按键映射写进来，所以范围以当前房间的
  * store_name 为界，不是全平台所有房间。
- * 每间房都走读后写、只动 wallpanel_* 七项，其它配置（场景/窗口/播放设置/调试）一概不碰；
+ * 每间房都走读后写、只动 wallpanel_* 七项与 dmx_* 三项，其它配置（场景/窗口/播放设置/调试）一概不碰；
  * 复制完把当前房间也存一次，保证"复制出去的"就是"这里留下的"。
  * 一间失败不拦后面：最后报出成功数与失败名单。
  */
@@ -3115,6 +3196,7 @@ async function wpCopyAll() {
     var d = _wpDraftOf();
     if (!d || !s.rf || s._wpCopying) return;
     if (!WP_SERIAL_PATH_RE.test(d.path)) { alert('串口节点要写成 /dev/ 下的设备名，例如 ' + WP_SERIAL_DEFAULT_PATH); return; }
+    if (!WP_SERIAL_PATH_RE.test(d.dmxPath)) { alert('DMX 串口节点要写成 /dev/ 下的设备名，例如 ' + DMX_DEFAULT_PATH); return; }
     var bindErr = _wpBindErrors(d);
     if (bindErr.length) { alert('先处理码值：\n' + bindErr.join('\n')); return; }
     var btn = document.getElementById('wpCopyBtn');
@@ -3132,8 +3214,8 @@ async function wpCopyAll() {
     catch (e) { if (btn) btn.disabled = false; alert('取房间列表失败: ' + e.message); return; }
     var others = list.filter(function (r) { return r && r.id !== s.rf; });
     if (!others.length) { if (btn) btn.disabled = false; alert('本店没有其它房间可覆盖。'); return; }
-    if (!confirm('把当前房间的墙板设置（总闸、串口节点/波特率/字符格式、码值表）覆盖到「' + store + '」的其余 '
-        + others.length + ' 间房？\n\n它们原本的墙板设置会被整体替换，其它配置与其他店铺不受影响。')) {
+    if (!confirm('把当前房间的墙板设置（总闸、串口节点/波特率/字符格式、码值表、DMX512 总闸/串口/波特率）覆盖到「' + store + '」的其余 '
+        + others.length + ' 间房？\n\n它们原本的墙板与 DMX 设置会被整体替换，其它配置与其他店铺不受影响。')) {
         if (btn) btn.disabled = false;
         return;
     }
@@ -3324,7 +3406,7 @@ function _psTableHtml() {
     h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="改动会自动保存；这里可立即落库，或重试上一次失败" onclick="psSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关、DMX512 控制关。</div>';
+    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关、DMX512 控制关。开了 DMX512 控制的格子：通道 N 的值一变就切到文件夹 NN，再变一次播下一支（同 485 按键）；DMX 串口在「墙板配置」里设。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
         + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th>'

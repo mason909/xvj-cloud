@@ -15,11 +15,13 @@ function grab(name) {
 const names = ['_wpFrame', '_wpCell', '_wpSrc', '_wpSrcName', '_wpRule', '_wpRulesOf', '_wpCodeOf', '_wpBindFromCode',
   '_wpCodeSnap', '_wpCodeCount', '_wpHwSnap', '_wpDirty', '_wpBindErrors', '_wpCodeIntent',
   '_wpMergeFrames', '_wpFreshFrames', '_wpLearning', '_wpGateHint', '_wpCodeCellHtml',
-  '_wpFieldsOf', '_wpPath', '_wpBaud', '_wpBit', '_wpParity', '_wpBaudOptions', '_wpOptNums', '_wpParityOptions'];
-// 纯函数引用的模块级常量（串口节点形状/档位、帧闸、绑定上限、码值两列、格子数）
+  '_wpFieldsOf', '_wpPath', '_wpBaud', '_wpBit', '_wpParity', '_wpBaudOptions', '_wpOptNums', '_wpParityOptions',
+  '_dmxPath', '_dmxBaud', '_dmxBaudOptions'];
+// 纯函数引用的模块级常量（串口节点形状/档位、帧闸、绑定上限、码值两列、格子数、DMX 副板档位）
 const consts = ['WP_SERIAL_BAUDS', 'WP_SERIAL_DEFAULT_PATH', 'WP_SERIAL_PATH_RE',
   'WP_SERIAL_DATA_BITS', 'WP_SERIAL_PARITIES', 'WP_SERIAL_STOP_BITS',
-  'WP_FRAME_HEX_RE', 'WP_BINDINGS_MAX', 'WP_SOURCES', 'WP_FOLDER_COUNT'];
+  'WP_FRAME_HEX_RE', 'WP_BINDINGS_MAX', 'WP_SOURCES', 'WP_FOLDER_COUNT',
+  'DMX_BAUDS', 'DMX_DEFAULT_PATH', 'DMX_DEFAULT_BAUD'];
 // 常量声明有跨行的（WP_SERIAL_PARITIES 是对象数组），也有行尾挂注释的（WP_FOLDER_COUNT）：
 // 按行累加到某个以 ";"（可带行尾注释）收尾的行为止
 function grabConst(name) {
@@ -120,7 +122,8 @@ eq('已录条数按格计数（一格两码算两个）',
 console.log('_wpCodeSnap / _wpHwSnap / _wpDirty:');
 const draft = (extra) => Object.assign({
   roomId: 'r1', enabled: false, path: '/dev/ttyUSB0', baud: null,
-  dataBits: 8, parity: 'none', stopBits: 1, code: {}
+  dataBits: 8, parity: 'none', stopBits: 1, code: {},
+  dmxEnabled: false, dmxPath: '/dev/ttyS4', dmxBaud: 115200
 }, extra || {});
 eq('码值表键序不同不算改动',
   T._wpCodeSnap({ code: { '02': { panel: 'BB' }, '01': { panel: 'AA' } } }) === T._wpCodeSnap({ code: { '01': { panel: 'AA' }, '02': { panel: 'BB' } } }),
@@ -128,14 +131,17 @@ eq('码值表键序不同不算改动',
 eq('同一格换到另一列算改动',
   T._wpCodeSnap({ code: { '01': { panel: 'AA' } } }) === T._wpCodeSnap({ code: { '01': { player: 'AA' } } }), false);
 eq('码值变了算改动', T._wpCodeSnap({ code: { '01': { panel: 'AA' } } }) === T._wpCodeSnap({ code: { '01': { panel: 'AB' } } }), false);
-eq('硬件六项都进基线', [
+eq('硬件九项都进基线（485 六项 + DMX 三项）', [
   T._wpHwSnap(draft({ baud: 9600 })) === T._wpHwSnap(draft({ baud: null })),
   T._wpHwSnap(draft({ dataBits: 7 })) === T._wpHwSnap(draft({ dataBits: 8 })),
   T._wpHwSnap(draft({ parity: 'odd' })) === T._wpHwSnap(draft({ parity: 'none' })),
   T._wpHwSnap(draft({ stopBits: 2 })) === T._wpHwSnap(draft({ stopBits: 1 })),
   T._wpHwSnap(draft({ path: '/dev/ttyS1' })) === T._wpHwSnap(draft({ path: '/dev/ttyUSB0' })),
-  T._wpHwSnap(draft({ enabled: true })) === T._wpHwSnap(draft({ enabled: false }))
-], [false, false, false, false, false, false]);
+  T._wpHwSnap(draft({ enabled: true })) === T._wpHwSnap(draft({ enabled: false })),
+  T._wpHwSnap(draft({ dmxEnabled: true })) === T._wpHwSnap(draft({ dmxEnabled: false })),
+  T._wpHwSnap(draft({ dmxPath: '/dev/ttyS6' })) === T._wpHwSnap(draft({ dmxPath: '/dev/ttyS4' })),
+  T._wpHwSnap(draft({ dmxBaud: 9600 })) === T._wpHwSnap(draft({ dmxBaud: 115200 }))
+], [false, false, false, false, false, false, false, false, false]);
 (() => {
   const d = draft();
   d.baseHw = T._wpHwSnap(d);
@@ -183,16 +189,34 @@ eq('基线里已有的帧被滤掉，大小写统一后再比',
 eq('没有基线 → 全收', T._wpFreshFrames([{ frames: [{ hex: 'F505', n: 1, age: 0 }] }]).length, 1);
 
 console.log('_wpFieldsOf（保存与全局复制共用的落库字段口径）:');
-eq('七个键、总闸严格布尔、码值表归一成平铺数组（带来源）',
+eq('十个键、总闸严格布尔、码值表归一成平铺数组（带来源）、DMX 三项原样带走',
   T._wpFieldsOf({ enabled: 'true', path: '/dev/ttyS1', baud: 9600, dataBits: 8, parity: 'none', stopBits: 1,
+    dmxEnabled: true, dmxPath: '/dev/ttyS6', dmxBaud: 38400,
     code: { '03': { panel: 'f50521' }, '01': { player: 'd3', panel: 'b5' } } }),
   { wallpanel_enabled: false, wallpanel_serial_path: '/dev/ttyS1', wallpanel_baud: 9600, wallpanel_data_bits: 8,
     wallpanel_parity: 'none', wallpanel_stop_bits: 1,
     wallpanel_bindings: [{ frame: 'B5', folder: '01', source: 'panel' }, { frame: 'D3', folder: '01', source: 'player' },
-      { frame: 'F50521', folder: '03', source: 'panel' }] });
-eq('开闸 + 空表也能原样给出', T._wpFieldsOf({ enabled: true, path: '/dev/ttyUSB0', baud: null, dataBits: 5, parity: 'even', stopBits: 2, code: {} }),
+      { frame: 'F50521', folder: '03', source: 'panel' }],
+    dmx_enabled: true, dmx_serial_path: '/dev/ttyS6', dmx_baud: 38400 });
+eq('开闸 + 空表也能原样给出（DMX 总闸严格 true 才算开）',
+  T._wpFieldsOf({ enabled: true, path: '/dev/ttyUSB0', baud: null, dataBits: 5, parity: 'even', stopBits: 2, code: {},
+    dmxEnabled: 'true', dmxPath: '/dev/ttyS4', dmxBaud: 115200 }),
   { wallpanel_enabled: true, wallpanel_serial_path: '/dev/ttyUSB0', wallpanel_baud: null, wallpanel_data_bits: 5,
-    wallpanel_parity: 'even', wallpanel_stop_bits: 2, wallpanel_bindings: [] });
+    wallpanel_parity: 'even', wallpanel_stop_bits: 2, wallpanel_bindings: [],
+    dmx_enabled: false, dmx_serial_path: '/dev/ttyS4', dmx_baud: 115200 });
+
+console.log('_dmxPath / _dmxBaud / _dmxBaudOptions（DMX 副板：同一把节点尺、定速档位）:');
+eq('节点形状对就原样收，脏值回落 /dev/ttyS4（与 roomDmxFields 同口径）',
+  [T._dmxPath('/dev/ttyS6'), T._dmxPath(' ttyS6'), T._dmxPath(''), T._dmxPath(null), T._dmxPath(7), T._dmxPath('/dev/ttyS4')],
+  ['/dev/ttyS6', '/dev/ttyS4', '/dev/ttyS4', '/dev/ttyS4', '/dev/ttyS4', '/dev/ttyS4']);
+eq('速率只收档内，档外 = 出厂 115200（副板没有「驱动默认」这一档）',
+  [T._dmxBaud(9600), T._dmxBaud('19200'), T._dmxBaud(12345), T._dmxBaud(null), T._dmxBaud(''), T._dmxBaud(115200)],
+  [9600, 19200, 115200, 115200, 115200, 115200]);
+eq('下拉只列五档且选中当前档（没有驱动默认选项）',
+  (() => {
+    const h = T._dmxBaudOptions(38400);
+    return [h.indexOf('驱动默认') < 0, h.split('<option').length - 1, h.indexOf('value="38400" selected') >= 0];
+  })(), [true, 5, true]);
 
 console.log('_wpGateHint（总闸关着时的提示，常驻警告与学习空帧共用）:');
 eq('开闸 = 空串', T._wpGateHint({ enabled: true }), '');

@@ -21,12 +21,13 @@ const names = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isS
   'buildPrefixedScenes', 'mergePrefixedMappings',
   'roomSceneDigest', 'isSafeDeviceId', 'parseRoomConfig', 'isSafeFolderName', 'isSafeSerialPath',
   'roomDebugFlag', 'roomWallpanelFields', 'roomWallpanelDigest', 'findWallpanelFieldError', 'resolvePreviewTarget',
+  'roomDmxFields', 'roomDmxDigest', 'findDmxFieldError',
   'wallpanelBitOk', 'wallpanelBitChoice', 'findBitChoiceError', 'normalizeWallpanelRule', 'normalizeWallpanelBindings', 'findWallpanelBindingsError',
   'outputPx', 'roomOutputField', 'findOutputError', 'rememberDeviceScreen', 'deviceScreen',
   'normalizeDeviceFrames', 'rememberDeviceFrames', 'deviceFrames',
   'roomSyncFields', 'windowCommandPayload'];
 // 模块级常量（编号区间、波特率档、默认节点、播放设置取值域、串口字符格式档、学习表判据）：抠出来的函数直接引用它们，不带上就 ReferenceError
-const consts = src.match(/^const (WALLPANEL_BAUDS|WALLPANEL_DEFAULT_PATH|PLAY_ORDERS|PLAY_DISSOLVE_MS_MIN|OUTPUT_MIN_PX|DEVICE_SCREEN_TTL|WALLPANEL_DATA_BITS|WALLPANEL_PARITIES|WALLPANEL_STOP_BITS|WALLPANEL_FRAME_HEX_RE|WALLPANEL_BINDINGS_MAX|WALLPANEL_BINDING_SOURCES|WALLPANEL_LEARN_MAX_S|PRESET_FOLDER_RE|DEVICE_FRAMES_TTL|DEVICE_FRAMES_MAX).*$/gm).join('\n')
+const consts = src.match(/^const (WALLPANEL_BAUDS|WALLPANEL_DEFAULT_PATH|DMX_BAUDS|DMX_DEFAULT_PATH|DMX_DEFAULT_BAUD|PLAY_ORDERS|PLAY_DISSOLVE_MS_MIN|OUTPUT_MIN_PX|DEVICE_SCREEN_TTL|WALLPANEL_DATA_BITS|WALLPANEL_PARITIES|WALLPANEL_STOP_BITS|WALLPANEL_FRAME_HEX_RE|WALLPANEL_BINDINGS_MAX|WALLPANEL_BINDING_SOURCES|WALLPANEL_LEARN_MAX_S|PRESET_FOLDER_RE|DEVICE_FRAMES_TTL|DEVICE_FRAMES_MAX).*$/gm).join('\n')
   // 任务 #177：设备自报屏幕像素的缓存在同一层，编辑器"取本机"读的就是它
   + '\n' + src.match(/^const deviceScreenAt = .*$/m)[0]
   // 【S-06f】帧台账同上，另外 TTL 也要能改：过期淘汰那条分支只能靠拨时间戳测
@@ -107,6 +108,33 @@ eq('回落值不产生假变更（新旧两侧同一函数）',
 eq('学习表落库顺序不影响指纹（同组绑定不虚报"墙板配置变了"）',
   T.roomWallpanelDigest({ wallpanel_bindings: [{ frame: 'F505', folder: '07' }, { frame: 'AA55', folder: '01' }] })
     === T.roomWallpanelDigest({ wallpanel_bindings: [{ frame: 'AA55', folder: '01' }, { frame: 'F505', folder: '07' }] }), true);
+
+console.log('roomDmxFields / roomDmxDigest:');
+const DMX_BASE = { dmx_enabled: false, dmx_serial_path: '/dev/ttyS4', dmx_baud: 115200 };
+eq('缺省 → 关 + 默认节点 + 115200（小麦那台机器的出厂档）', T.roomDmxFields({}), DMX_BASE);
+eq('非严格 true 不算开', T.roomDmxFields({ dmx_enabled: 'true' }), DMX_BASE);
+eq('合法节点 + 档内速率原样落形状', T.roomDmxFields({ dmx_serial_path: '/dev/ttyS7', dmx_baud: '9600' }),
+  { dmx_enabled: false, dmx_serial_path: '/dev/ttyS7', dmx_baud: 9600 });
+eq('非法节点回落默认（脏路径不跟着下发）', T.roomDmxFields({ dmx_serial_path: '/dev/../etc/passwd' }).dmx_serial_path, '/dev/ttyS4');
+eq('档外速率回落默认 115200', T.roomDmxFields({ dmx_baud: 1200 }).dmx_baud, 115200);
+eq('开关变了才算 DMX 变', T.roomDmxDigest({ dmx_enabled: true }) !== T.roomDmxDigest({}), true);
+eq('换节点/速率也算 DMX 变（走 set_dmx，不进 rev）',
+  [T.roomDmxDigest({ dmx_serial_path: '/dev/ttyS3' }) !== T.roomDmxDigest({}),
+   T.roomDmxDigest({ dmx_baud: 19200 }) !== T.roomDmxDigest({})], [true, true]);
+eq('回落值不产生假变更（新旧两侧同一函数）',
+  T.roomDmxDigest({ dmx_serial_path: '../x', dmx_baud: 7777 }) === T.roomDmxDigest({}), true);
+eq('DMX 与墙板各算各的（改墙板不该补发 set_dmx）',
+  T.roomDmxDigest({ wallpanel_enabled: true }) === T.roomDmxDigest({}), true);
+
+console.log('findDmxFieldError（写入侧，非法值不许静默回落）:');
+eq('没带 → null', T.findDmxFieldError({}), null);
+eq('空串 → null（就是"用默认"）', T.findDmxFieldError({ dmx_serial_path: '', dmx_baud: '' }), null);
+eq('合法形状 → null', T.findDmxFieldError({ dmx_serial_path: '/dev/ttyS4', dmx_baud: 115200 }), null);
+eq('数字型 baud 字符串认', T.findDmxFieldError({ dmx_baud: '9600' }), null);
+eq('越界 baud 报出可选档', T.findDmxFieldError({ dmx_baud: 1200 }),
+  'DMX 波特率只能是 9600 / 19200 / 38400 / 57600 / 115200 之一');
+eq('非 /dev/ 路径报错', T.findDmxFieldError({ dmx_serial_path: 'ttyS4' }).slice(0, 5), 'DMX 串');
+eq('对象型 baud 不当数字蒙混', T.findDmxFieldError({ dmx_baud: { v: 9600 } }) !== null, true);
 
 console.log('findWallpanelFieldError（写入侧，非法值不许静默回落）:');
 eq('没带 → null', T.findWallpanelFieldError({}), null);
@@ -287,6 +315,16 @@ eq('硬件字段按下发口径落库（"true" 不是开）', T.prepareRoomConfi
 eq('非法串口节点写库被拦（不静默回落成默认口）', T.prepareRoomConfig({ wallpanel_serial_path: '/dev/tty USB0' }, null).error,
   '串口节点只能是 /dev/ 下的设备名（字母、数字、-、_），例如 /dev/ttyUSB0');
 eq('非法波特率写库被拦', T.prepareRoomConfig({ wallpanel_baud: 10000 }, null).error !== null, true);
+eq('DMX 非法串口节点写库被拦（理由同墙板：静默回落会让表和设备演两回事）',
+  T.prepareRoomConfig({ dmx_serial_path: '/dev/tty S4' }, null).error,
+  'DMX 串口节点只能是 /dev/ 下的设备名（字母、数字、-、_），例如 /dev/ttyS4');
+eq('DMX 非法波特率写库被拦', T.prepareRoomConfig({ dmx_baud: 1200 }, null).error,
+  'DMX 波特率只能是 9600 / 19200 / 38400 / 57600 / 115200 之一');
+eq('DMX 总闸按严格 true 入闸（"true" 不是开）', T.prepareRoomConfig({ dmx_enabled: 'true' }, null).cfg.dmx_enabled, false);
+eq('新房间出生即带齐 DMX 字段', (() => {
+  const c = T.prepareRoomConfig({}, null).cfg;
+  return Object.keys(c).filter(k => k.indexOf('dmx') === 0).sort();
+})(), ['dmx_baud', 'dmx_enabled', 'dmx_serial_path']);
 eq('新房间出生即带齐全部墙板字段（前端读库不再遇到 undefined 形状）', (() => {
   const c = T.prepareRoomConfig({}, null).cfg;
   return Object.keys(c).filter(k => k.indexOf('wallpanel') === 0).sort();
