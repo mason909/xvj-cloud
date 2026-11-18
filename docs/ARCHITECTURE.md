@@ -574,6 +574,8 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   同格多扇窗要共洗一次，见 §5.7 的 `folderPlaylists`。
 - **改设置不动映射** → 服务端发 `update_windows` 轻通道；但设置不在窗口 `content` 里，内容签名比不出它，
   所以本机另记 `appliedPlaySettingsJson`，真变了就把受影响那几扇的清单按新设置重排（`playFolderInWindow` 原地换列表）。
+- **全局复制（2026-11-18）**：播放设置表工具条的「全局复制」把当前房间两幕的 `play_settings` 覆盖到同店其余房间，
+  读后写只换这两键（其它配置与其它店铺不碰）；复制的是当前草稿，结束后当前房间同存一次。
 - **点歌屏开关（`hdmi`，2026-11-18，默认关）**：前端按文件夹一行一控（拨一下同时写 A/B 两幕——墙板一格一码不分幕，
   两幕永远同格）。设备端 `applyHdmiVisibility` 在每次窗口应用后执行：当前在播的格子（`videoSurfaces` 的 folderKey）
   里**任一格 `hdmi === true` 才显示**所有 HDMI 窗口，否则 `GONE`；没有在播格子时（纯色/HDMI 房间）按显示处理——
