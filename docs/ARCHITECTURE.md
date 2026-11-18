@@ -526,9 +526,11 @@ content.folderId 非空 → 只播指定那格；不在映射或那格空 → nu
 并**必须把它塞回 `allWindows`** —— 后面那圈选文件夹的循环按 `allWindows` 查配置，漏了就是"视图建了、素材也在、画面全黑"。
 第二幕默认窗口为空，由用户手动配置。
 
-`HDMI` 仍是**占位 View**（`createHdmiView` 只显示 "HDMI N" 文本），没有真实采集；
+`HDMI` 走**真实采集**（2026-11-18 起）：`HdmiCapture` 把 HDMI IN 经 Rockchip 相机 HAL 拉成 1920×1080 流，
+直接喂 `createHdmiView` 的 TextureView，**整帧拉伸铺满窗口**——不保比例、不做自动裁边，源画面是什么就拉成什么，
+与素材窗同一套取景/旋转/镜像矩阵；占位文字只在「待授权 / 无信号 / 接入中」时显示。
 `color`（测试背景）自 2026-11-17 起固定渲染测试图卡 `assets/testcard.jpg`（`createColorView`，
-1920 宽共享位图、居中裁切；图卡缺失才退回 `color` 纯色）。`HdmiManager` / `HdmiProcessor` 仍是 `// disabled`。
+1920 宽共享位图、居中裁切；图卡缺失才退回 `color` 纯色）。
 
 ### 5.5 素材同步
 
@@ -765,7 +767,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 | type | 含义 | 附加字段 | 设备实现 |
 |---|---|---|---|
 | `SCENE_A` / `SCENE_B` | 播该幕对应文件夹的素材 | `folderId`（裸编号 `"01"`）、`follow`（Boolean，墙板跟随） | 独立 ExoPlayer + TextureView |
-| `HDMI` | HDMI 输入 | `inputIndex`（0-based） | **占位 TextView，采集未实现** |
+| `HDMI` | HDMI 输入 | `inputIndex`（0-based） | `HdmiCapture` 相机 HAL 采集 1080p → TextureView 整帧拉伸铺满（不保比例、无自动裁边） |
 | `color` | 测试背景（**小写**） | `color`（兜底纯色，如 `"#000000"`） | 固定显示 `assets/testcard.jpg`（KZOO 测试图卡，居中裁切铺满；图卡缺失才用颜色） |
 
 > 测试背景与实际产物同一张图：云端/前端预览是 `public/testcard.jpg`，设备端打包的是同一张
@@ -803,7 +805,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 | **P1-4** | `xvj/auth/response` 是全设备共享广播，载荷带完整 scenes/folder_mappings → 场端任意设备可读到别店配置 | **未修**。改 per-device `xvj/device/{id}/auth` 必须**先发新 APK（同时订阅两个主题）再改服务端只发定向**，顺序不能反 |
 | **P3-10** | `x-api-key` 内嵌在公开的 `index.html` 里，写接口等于无鉴权 | **已修**（2026-11-12，见【S-14】）：管理台改为口令登录换 12h 会话 cookie，页面与仓库里都不再有凭据；`API_KEY` 已轮换并只留在 `/etc/xvj/web.env`。**仍待**「店铺独立账号」做多用户登录态（现在是一把全员共用口令，只有"能不能改数据"，没有"谁改的"） |
 | broker 阶段3 | mosquitto ACL 未启用（`allow_anonymous true` 仍在） | 已在临时实例做过正/负对照验证；**前置条件是所有设备都装了 `clientId == deviceId` 的 167+**，提前开会把老包挡死 |
-| HDMI 输入 | `content.type = HDMI` 只有占位视图 | `HdmiManager` / `HdmiProcessor` 仍是 `// disabled`，真采集未实现 |
+| HDMI 输入 | 曾经只有占位视图 | **已实现**（2026-11-18）：相机 HAL 1080p 采集 + TextureView 整帧拉伸；自动去边曾短暂上线，因暗画面被误判黑边导致放大裁切，已移除 |
 | **开机自启** | Manifest 声明了 `.BootReceiver`（`BOOT_COMPLETED`，`exported=true`），但 `BootReceiver.kt` 只有一行 `// disabled`，**类不存在** → 广播投递时 `ClassNotFoundException`，开机自启这条链路是断的 | 未修。`MainActivity` 带 `HOME` category，盒子设成默认桌面时仍能起；要真自启得补回 receiver 类（需构建）。另有 `.SettingsActivity` / `.FolderManagerActivity` 两条同样悬空的声明，无人启动，属可删的死条目 |
 | 墙板真机验证 | 485 物理层（波特率/字符格式/电气）未抓包，未知厂家帧的空闲断帧阈值（2 字符时间）只在盒子上才算得准 | 「按键→切窗」「学习绑定→切窗」「试播抢占跟随窗」只过了纯函数用例；真机第一眼要看的是设备列表里回传的 `frames`（分帧对不对全靠它）。另：编号层已于 2026-11-13 下线，但带编号的 APK 还没出过包，现场装的仍是旧口径 |
 | 同帧精度 | 一格只挂一扇窗、或不同格并排：各路首帧凝滞不同（实测 0.12~0.55s），切点落不到同一帧 | 同格 ≥2 扇已改成 1 路解码 + GL 合成多视图（§5.7.1，任务 #175），天生同帧；**代码已就位、真机未验**（GL/EGL 首次在盒子上跑）。叠化那条路已于 2026-11-12 整条删除，同步巡检校正层已于 2026-11-13 随它一起删除 |
