@@ -2313,13 +2313,14 @@ function _wpHwSnap(d) {
         d.dmxEnabled, d.dmxPath, d.dmxBaud]);
 }
 
-/** 码值表的快照（键排序后序列化）：整表写入顺序与两列的录入顺序都不该被当成内容差异 */
+/** 码值表的快照（键排序后序列化）：整表写入顺序与两列的录入顺序都不该被当成内容差异；
+ *  全开/全关码与码值表一起录、一起自动保存，也算在这一份里 */
 function _wpCodeSnap(d) {
     var m = d.code || {};
-    return JSON.stringify(Object.keys(m).sort().map(function (f) {
+    return JSON.stringify([Object.keys(m).sort().map(function (f) {
         var c = m[f] || {};
         return [f].concat(WP_SOURCES.map(function (x) { return c[x.v] || ''; }));
-    }));
+    }), d.allOn || '', d.allOff || '']);
 }
 
 /** 已录多少条码（一格最多两条：点歌机一路 + 墙板一路） */
@@ -2453,6 +2454,30 @@ function _wpBindFromCode(d) {
     return out;
 }
 
+/** 与码值一起自动保存的三项：学习绑定表 + 全开/全关码（空 = 没配这一键，落 null） */
+function _wpCodeFields(d) {
+    return {
+        wallpanel_bindings: _wpBindFromCode(d),
+        wallpanel_on_frame: _wpFrame(d.allOn) || null,
+        wallpanel_off_frame: _wpFrame(d.allOff) || null
+    };
+}
+
+/** 一只框当前该显示的值（三种框共用：文件夹两列 + 全开/全关）。全开/全关用伪格名 ON/OFF 走同一套学习链 */
+function _wpCodeValue(d, fid, src) {
+    if (fid === 'ON') return (d && d.allOn) || '';
+    if (fid === 'OFF') return (d && d.allOff) || '';
+    return ((d && d.code && d.code[fid]) || {})[src] || '';
+}
+
+/** 学习提示里的人话名（文件夹格 / 全开码 / 全关码） */
+function _wpTargetName(cell) {
+    if (!cell) return '';
+    if (cell.fid === 'ON') return '全开码';
+    if (cell.fid === 'OFF') return '全关码';
+    return '文件夹 ' + cell.fid + ' 的' + _wpSrcName(cell.src);
+}
+
 /** 草稿：只认当前房间（切房间在 sr 里作废），数据取 s.rooms 缓存 —— 与窗口编辑器同一口径；
  *  真正落库时才现读云端最新 config，避免拿几分钟前的快照整份 PUT 覆盖掉期间的改动 */
 function _wpDraftOf() {
@@ -2467,7 +2492,9 @@ function _wpDraftOf() {
               stopBits: _wpBit(cfg.wallpanel_stop_bits, WP_SERIAL_STOP_BITS, 1),
               dmxEnabled: cfg.dmx_enabled === true,
               dmxPath: _dmxPath(cfg.dmx_serial_path), dmxBaud: _dmxBaud(cfg.dmx_baud),
-              code: _wpCodeOf(cfg) };
+              code: _wpCodeOf(cfg),
+              // 墙板开关键轮流发两个码：全关=所有窗口盖黑，全开=撤掉黑布回到原画面
+              allOn: _wpFrame(cfg.wallpanel_on_frame), allOff: _wpFrame(cfg.wallpanel_off_frame) };
     d.baseHw = _wpHwSnap(d);
     d.baseCode = _wpCodeSnap(d);
     s._wpDraft = d;
@@ -2529,6 +2556,35 @@ function _wpCodeCellHtml(fid, src, d) {
         + '</span>';
 }
 
+/**
+ * 全开/全关码框：与文件夹码框同一套交互（手输 / 点框等按键 / × 清掉 / 自动保存）。
+ * 伪格名 ON/OFF 让学习链不必分叉；两个码彼此独立（墙板开关键按一下发一个）。
+ */
+function _wpAllCodeCellHtml(which, d) {
+    var fid = which === 'on' ? 'ON' : 'OFF';
+    var code = _wpCodeValue(d, fid, 'panel');
+    var name = which === 'on' ? '全开码' : '全关码';
+    var waiting = !!(_wpLearning() && s._wpLearnCell && s._wpLearnCell.fid === fid);
+    var cls = 'wp-code' + (code ? ' bound' : '') + (waiting ? ' learning' : '');
+    var tip = waiting ? '正在等按键：敲键盘就是手输（会取消学习），点框可取消'
+        : (code ? '已录 ' + code + '：直接改，回车或点开别处保存；打开「墙板学习」后点框可重学'
+                : (s._wpLearnMode ? '直接敲十六进制录码；或点一下再按墙板上那颗开关键'
+                                   : '直接敲十六进制录码；打开「墙板学习」后点框可按键学'));
+    return '<span class="wp-code-wrap">'
+        + '<input class="' + cls + '" data-kind="all" data-fid="' + fid + '" data-src="panel"'
+        + ' value="' + escA(code) + '"'
+        + ' placeholder="' + escA(waiting ? '等按键…' : '点此录码') + '"'
+        + ' aria-label="' + escA(name) + '"'
+        + ' title="' + escA(tip) + '" spellcheck="false" autocomplete="off"'
+        + ' onclick="wpLearnCell(\'' + fid + '\', \'panel\')"'
+        + ' onkeydown="wpCodeKey(event, \'' + fid + '\', \'panel\')"'
+        + ' onchange="wpSetAllCode(\'' + which + '\', this.value, this)">'
+        + '<button class="wp-code-x" title="清掉这个码（立刻保存）"'
+        + ' style="' + (code && !waiting ? '' : 'display:none') + '"'
+        + ' onclick="wpClearAllCode(\'' + which + '\')">×</button>'
+        + '</span>';
+}
+
 /** 手输的值该做什么：空 = 删这格，脏 = 不落库，同值 = 不动，合法 = 写入（纯函数，自检直接跑） */
 function _wpCodeIntent(raw, had) {
     var text = typeof raw === 'string' ? raw.trim() : '';
@@ -2545,7 +2601,7 @@ function wpCodeKey(ev, fid, src) {
     if (ev.key === 'Escape') {
         ev.preventDefault();
         var d = _wpDraftOf();
-        ev.target.value = ((d && d.code && d.code[fid]) || {})[src] || '';
+        ev.target.value = _wpCodeValue(d, fid, src);
         ev.target.blur();
     }
 }
@@ -2574,6 +2630,43 @@ function wpSetCode(fid, src, raw, el) {
         });
 }
 
+/** 手输全开/全关码：口径同 wpSetCode（空 = 清掉，脏 = 不落库，同值 = 不动），只是不挂文件夹 */
+function wpSetAllCode(which, raw, el) {
+    var d = _wpDraftOf();
+    if (!d || !s.rf) return;
+    var key = which === 'on' ? 'allOn' : 'allOff';
+    var name = which === 'on' ? '全开码' : '全关码';
+    var had = d[key] || '';
+    var act = _wpCodeIntent(raw, had);
+    if (act.kind === 'none') { if (el) el.value = had; _wpPaintCodes(); return; }
+    if (act.kind === 'bad') {
+        if (el) el.value = had;
+        alert('码值要是 1~64 字节的十六进制（如 D3、F50521030000），字符间的空格会被忽略。');
+        _wpPaintCodes();
+        return;
+    }
+    if (act.kind === 'clear') d[key] = '';
+    else _wpPutAll(which, act.hex);
+    if (el) el.value = act.kind === 'clear' ? '' : act.hex;
+    _wpPaintCodes();
+    _wpAutoSaveCodes((act.kind === 'clear' ? '已清掉' : '已录') + name
+        + (act.kind === 'clear' ? '' : '：' + act.hex), true).catch(function (e) {
+            alert('码值已改，但自动保存失败：' + e.message + '\n点右上「保存」也能把它存下去。');
+        });
+}
+
+/** 清掉全开/全关码（立刻保存；只刷框，不整表重画） */
+function wpClearAllCode(which) {
+    var d = _wpDraftOf();
+    var key = which === 'on' ? 'allOn' : 'allOff';
+    if (!d || !d[key]) return;
+    d[key] = '';
+    _wpPaintCodes();
+    _wpAutoSaveCodes('已清掉' + (which === 'on' ? '全开码' : '全关码'), true).catch(function (e) {
+        alert('清掉了，但自动保存失败：' + e.message + '\n点右上「保存」也能把它存下去。');
+    });
+}
+
 /**
  * 只把各格的框刷成草稿的样子（值/金边/清空键/已录计数）。
  * 手输不走整表重画：连续敲几格时外层 DOM 一换，焦点和刚敲的字就没了。
@@ -2587,7 +2680,7 @@ function _wpPaintCodes() {
     for (var i = 0; i < list.length; i++) {
         var fid = list[i].getAttribute('data-fid');
         var src = _wpSrc(list[i].getAttribute('data-src'));
-        var code = ((m[fid] || {})[src]) || '';
+        var code = _wpCodeValue(d, fid, src);
         if (list[i] !== active) list[i].value = code;   // 正在敲的那一格不碰它已敲的字
         list[i].classList.toggle('bound', !!code);
         list[i].placeholder = '点此录码';
@@ -2672,12 +2765,12 @@ function _wpTableHtml() {
     if (s._wpErr) h += '<div class="wp-warn" style="color:#e94560">' + esc(s._wpErr) + '</div>';
 
     if (!s._wpLearnMode) {
-        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存（两路串口各管各的）。两列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。DMX512 不需要学码：通道 N 直接就是文件夹 NN。</div>';
+        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存（两路串口各管各的）。两列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。最上面一行是全开/全关码：墙板那颗开关键按一下发一个码（两个码各自独立），全关=所有窗口盖黑（播放不停），全开=撤掉黑布回到原画面。DMX512 不需要学码：通道 N 直接就是文件夹 NN。</div>';
     } else if (_wpLearning()) {
         var left = Math.max(0, Math.ceil((s._wpLearnUntil - Date.now()) / 1000));
         var cell = s._wpLearnCell;
         h += '<div class="wp-hint" style="color:#f5a623">正在等按键（还剩 ' + left + ' 秒）：请按「'
-            + esc(cell ? ('文件夹 ' + cell.fid + ' 的' + _wpSrcName(cell.src)) : '') + '」对应的那颗键；点同一个框可取消。'
+            + esc(_wpTargetName(cell)) + '」对应的那颗键；点同一个框可取消。'
             + (_wpMergeFrames(s._wpFrames || []).length ? ''
                 : (d.enabled ? '　还没收到过帧：先确认串口节点/波特率/字符格式与中控一致。'
                              : '　还没收到过帧。' + _wpGateHint(d) + '。'))
@@ -2695,7 +2788,18 @@ function _wpTableHtml() {
     // 关闸是最容易踩的坑（设备连串口都不开），所以不是只在点学习时拦一次，而是常驻一句；
     // 学习已开时上面那条提示负责说清楚并给动作，这里不重复
     if (!d.enabled && !s._wpLearnMode) h += '<div class="wp-warn" style="margin-top:6px">' + esc(_wpGateHint(d)) + '</div>';
-    if (d.enabled && bound === 0) h += '<div class="wp-warn" id="wpEmptyWarn" style="margin-top:6px">串口总闸已开但一个码都没录：按任何键都不会有反应</div>';
+    if (d.enabled && bound === 0 && !d.allOn && !d.allOff) h += '<div class="wp-warn" id="wpEmptyWarn" style="margin-top:6px">串口总闸已开但一个码都没录：按任何键都不会有反应</div>';
+
+    // 全开/全关：墙板开关键轮流发两个码，是两个独立动作（不是同一个帧的两种解释）。
+    // 列宽与下面的码值表对齐，现场一眼就能看出这两格和格子的码是同一套录入方式
+    h += '<table class="wp-tbl wp-codes" style="margin-top:8px"><thead><tr><th>全开全关</th>'
+        + '<th colspan="2" style="font-weight:normal;color:#888">一键黑屏 / 恢复（播放不停）</th>'
+        + '<th>全开码</th><th>全关码</th></tr></thead><tbody>';
+    h += '<tr><td class="wp-fid">全开全关</td>'
+        + '<td colspan="2" class="wp-cnt" title="墙板那颗开关键按一下发一个码（两码轮流）；全关=所有窗口盖黑、播放继续；全开=撤掉黑布回到原画面">按开关键学习</td>'
+        + '<td>' + _wpAllCodeCellHtml('on', d) + '</td>'
+        + '<td>' + _wpAllCodeCellHtml('off', d) + '</td></tr>';
+    h += '</tbody></table>';
 
     // 一格可录两个码（点歌机一路、墙板一路），A/B 两幕通用：按不按得动只看这格在"当前这一幕"里有没有素材
     h += '<table class="wp-tbl wp-codes"><thead><tr><th>文件夹</th><th>A幕素材</th><th>B幕素材</th><th>点歌机码</th><th>墙板码</th></tr></thead><tbody>';
@@ -2841,20 +2945,21 @@ function _wpFreshFrames(devList) {
     return _wpMergeFrames(devList).filter(function (f) { return !(s._wpBaseline && s._wpBaseline[f.hex]); });
 }
 
-/** 录到一帧：填进点中的那一列、立刻保存、收窗 */
+/** 录到一帧：填进点中的那一格（或全开/全关码）、立刻保存、收窗 */
 function wpLearnDone(hex) {
     var cell = s._wpLearnCell;
     if (!_wpDraftOf() || !cell) return;
     _wpLearnCancel();
-    _wpPutCode(cell.fid, cell.src, hex);
+    if (cell.fid === 'ON' || cell.fid === 'OFF') _wpPutAll(cell.fid === 'ON' ? 'on' : 'off', hex);
+    else _wpPutCode(cell.fid, cell.src, hex);
     s._wpFrames = [];
     renderWpEditor();
-    _wpAutoSaveCodes('已录文件夹 ' + cell.fid + ' 的' + _wpSrcName(cell.src) + '：' + hex).catch(function (e) {
+    _wpAutoSaveCodes('已录' + _wpTargetName(cell) + '：' + hex).catch(function (e) {
         alert('码值已填进框，但自动保存失败：' + e.message + '\n点右上「保存」也能把它存下去。');
     });
 }
 
-/** 写一格码值：一个码只能落一格（含两列之间），原来占这个码的那一列让位 */
+/** 写一格码值：一个码只能落一格（含两列之间、含全开/全关），原来占这个码的那个框让位 */
 function _wpPutCode(fid, src, hex) {
     var d = _wpDraftOf();
     if (!d) return;
@@ -2864,7 +2969,28 @@ function _wpPutCode(fid, src, hex) {
         WP_SOURCES.forEach(function (x) { if (c[x.v] === hex) delete c[x.v]; });
         if (!c.player && !c.panel) delete m[k];
     });
+    if (d.allOn === hex) d.allOn = '';
+    if (d.allOff === hex) d.allOff = '';
     (m[fid] = m[fid] || {})[_wpSrc(src)] = hex;
+}
+
+/** 写全开/全关码（which = on/off）：同帧只能有一个动作，占着这一帧的文件夹框或另一个动作让位 */
+function _wpPutAll(which, hex) {
+    var d = _wpDraftOf();
+    if (!d) return;
+    var m = d.code = d.code || {};
+    Object.keys(m).forEach(function (k) {
+        var c = m[k] || {};
+        WP_SOURCES.forEach(function (x) { if (c[x.v] === hex) delete c[x.v]; });
+        if (!c.player && !c.panel) delete m[k];
+    });
+    if (which === 'on') {
+        d.allOn = hex;
+        if (d.allOff === hex) d.allOff = '';
+    } else {
+        d.allOff = hex;
+        if (d.allOn === hex) d.allOn = '';
+    }
 }
 
 /** 删掉一格某一列的码（整个文件夹空到没码就把键也去掉） */
@@ -2897,14 +3023,14 @@ function wpClearCode(fid, src) {
 function _wpAutoSaveCodes(okMsg, soft) {
     var d = _wpDraftOf();
     if (!d || !s.rf) return Promise.resolve();
-    var want = _wpCodeSnap(d), binds = _wpBindFromCode(d);
+    var want = _wpCodeSnap(d), fields = _wpCodeFields(d);
     var job = function () {
         return flushAutoSync()
             .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(s.rf)); })
             .then(function (roomObj) {
                 if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
                 var cfg = _loadRoomCfg(roomObj);
-                cfg.wallpanel_bindings = binds;
+                Object.keys(fields).forEach(function (k) { cfg[k] = fields[k]; });
                 delete cfg.wallpanel_default_no;   // 旧字段顺手清掉（设备端已不读）
                 return apiCall('/api/rooms/' + encodeURIComponent(s.rf), {
                     method: 'PUT',
@@ -3156,6 +3282,8 @@ function _wpFieldsOf(d) {
         wallpanel_parity: d.parity,
         wallpanel_stop_bits: d.stopBits,
         wallpanel_bindings: _wpBindFromCode(d),
+        wallpanel_on_frame: _wpFrame(d.allOn) || null,
+        wallpanel_off_frame: _wpFrame(d.allOff) || null,
         dmx_enabled: d.dmxEnabled === true,
         dmx_serial_path: d.dmxPath,
         dmx_baud: d.dmxBaud
@@ -3175,7 +3303,7 @@ async function wpSave() {
     if (bindErr.length) { alert('先处理码值：\n' + bindErr.join('\n')); return; }
     if (_wpAutoTimer) { clearTimeout(_wpAutoTimer); _wpAutoTimer = null; }
     var snap = _wpSerialSnap(d);
-    snap.fields.wallpanel_bindings = _wpBindFromCode(d);
+    Object.assign(snap.fields, _wpCodeFields(d));
     snap.wantCode = _wpCodeSnap(d);
     var btn = document.getElementById('wpSaveBtn');
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }

@@ -22,7 +22,7 @@ const names = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isS
   'roomSceneDigest', 'isSafeDeviceId', 'parseRoomConfig', 'isSafeFolderName', 'isSafeSerialPath',
   'roomDebugFlag', 'roomWallpanelFields', 'roomWallpanelDigest', 'findWallpanelFieldError', 'resolvePreviewTarget',
   'roomDmxFields', 'roomDmxDigest', 'findDmxFieldError',
-  'wallpanelBitOk', 'wallpanelBitChoice', 'findBitChoiceError', 'normalizeWallpanelRule', 'normalizeWallpanelBindings', 'findWallpanelBindingsError',
+  'wallpanelBitOk', 'wallpanelBitChoice', 'normalizeWallpanelCode', 'findBitChoiceError', 'normalizeWallpanelRule', 'normalizeWallpanelBindings', 'findWallpanelBindingsError',
   'outputPx', 'roomOutputField', 'findOutputError', 'rememberDeviceScreen', 'deviceScreen',
   'normalizeDeviceFrames', 'rememberDeviceFrames', 'deviceFrames',
   'roomSyncFields', 'windowCommandPayload'];
@@ -80,8 +80,9 @@ eq('A/B 各存各的（两幕是两套物理目录）', (() => {
 
 console.log('roomWallpanelFields / roomWallpanelDigest:');
 const WP_BASE = { wallpanel_enabled: false, wallpanel_serial_path: '/dev/ttyUSB0',
-  wallpanel_baud: null, wallpanel_data_bits: 8, wallpanel_parity: 'none', wallpanel_stop_bits: 1, wallpanel_bindings: [] };
-eq('缺省 → false + 默认节点 + 驱动波特率 + 8N1 + 空学习表', T.roomWallpanelFields({}), WP_BASE);
+  wallpanel_baud: null, wallpanel_data_bits: 8, wallpanel_parity: 'none', wallpanel_stop_bits: 1, wallpanel_bindings: [],
+  wallpanel_on_frame: null, wallpanel_off_frame: null };
+eq('缺省 → false + 默认节点 + 驱动波特率 + 8N1 + 空学习表 + 无全开/全关码', T.roomWallpanelFields({}), WP_BASE);
 eq('非严格 true 不算开', T.roomWallpanelFields({ wallpanel_enabled: 'true' }), WP_BASE);
 eq('存量默认编号不再下发', 'wallpanel_default_no' in T.roomWallpanelFields({ wallpanel_default_no: 9 }), false);
 eq('合法节点 + 档内波特率原样落形状', T.roomWallpanelFields({ wallpanel_serial_path: '/dev/ttyS1', wallpanel_baud: '115200' }).wallpanel_serial_path, '/dev/ttyS1');
@@ -108,6 +109,31 @@ eq('回落值不产生假变更（新旧两侧同一函数）',
 eq('学习表落库顺序不影响指纹（同组绑定不虚报"墙板配置变了"）',
   T.roomWallpanelDigest({ wallpanel_bindings: [{ frame: 'F505', folder: '07' }, { frame: 'AA55', folder: '01' }] })
     === T.roomWallpanelDigest({ wallpanel_bindings: [{ frame: 'AA55', folder: '01' }, { frame: 'F505', folder: '07' }] }), true);
+
+console.log('全开/全关码（wallpanel_on_frame / wallpanel_off_frame）:');
+eq('码归一成大写，空 = 没配', (() => {
+  const f = T.roomWallpanelFields({ wallpanel_on_frame: ' 06f0 ', wallpanel_off_frame: '' });
+  return [f.wallpanel_on_frame, f.wallpanel_off_frame];
+})(), ['06F0', null]);
+eq('全开/全关码变了只走轻枪（不进 rev）',
+  [T.roomWallpanelDigest({ wallpanel_on_frame: '06F0' }) !== T.roomWallpanelDigest({}),
+   T.roomWallpanelDigest({ wallpanel_off_frame: '06F1' }) !== T.roomWallpanelDigest({})], [true, true]);
+eq('脏码写库被拦（静默回落会让现场"学了却没生效"）',
+  [T.findWallpanelFieldError({ wallpanel_on_frame: '06F' }), T.findWallpanelFieldError({ wallpanel_off_frame: 'ZZ' })],
+  ['全开码要是 1~64 字节的十六进制（两个字符一字节），例如 06F0',
+   '全关码要是 1~64 字节的十六进制（两个字符一字节），例如 06F1']);
+eq('全开码和全关码不能同帧（开关键轮流发两个码，两码各自独立）',
+  T.findWallpanelFieldError({ wallpanel_on_frame: '06f0', wallpanel_off_frame: '06F0' }),
+  '全开码和全关码不能是同一个帧：一个键轮流发两个码，两个码要各自独立');
+eq('全开/全关码不能占用学习表里的帧',
+  [T.findWallpanelFieldError({ wallpanel_bindings: [{ frame: '06F0', folder: '01' }], wallpanel_on_frame: '06F0' }),
+   T.findWallpanelFieldError({ wallpanel_bindings: [{ frame: '06F1', folder: '02' }], wallpanel_off_frame: '06F1' })],
+  ['全开码 06F0 已经绑在文件夹 01 上：同一帧不能既是切换又是全开/全关',
+   '全关码 06F1 已经绑在文件夹 02 上：同一帧不能既是切换又是全开/全关']);
+eq('合法两码写库原样归一', (() => {
+  const c = T.prepareRoomConfig({ wallpanel_on_frame: '06f0', wallpanel_off_frame: '06f1' }, null).cfg;
+  return c ? [c.wallpanel_on_frame, c.wallpanel_off_frame] : null;
+})(), ['06F0', '06F1']);
 
 console.log('roomDmxFields / roomDmxDigest:');
 const DMX_BASE = { dmx_enabled: false, dmx_serial_path: '/dev/ttyS4', dmx_baud: 115200 };
@@ -329,7 +355,8 @@ eq('新房间出生即带齐全部墙板字段（前端读库不再遇到 undefi
   const c = T.prepareRoomConfig({}, null).cfg;
   return Object.keys(c).filter(k => k.indexOf('wallpanel') === 0).sort();
 })(), ['wallpanel_baud', 'wallpanel_bindings', 'wallpanel_data_bits',
-  'wallpanel_enabled', 'wallpanel_parity', 'wallpanel_serial_path', 'wallpanel_stop_bits']);
+  'wallpanel_enabled', 'wallpanel_off_frame', 'wallpanel_on_frame', 'wallpanel_parity',
+  'wallpanel_serial_path', 'wallpanel_stop_bits']);
 eq('脏绑定不会锁死这间房：出生时归一（缺来源按墙板码），后续 PUT 继承的是干净表', (() => {
   const born = T.prepareRoomConfig({ wallpanel_bindings: [{ frame: 'f505', folder: 'A02' }] }, null).cfg;
   return T.prepareRoomConfig({ scenes: { A: { folder_mappings: {} } } }, born).cfg.wallpanel_bindings;

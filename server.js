@@ -93,9 +93,16 @@
  *                                    // 一路墙板（panel），谁先到都切到这一格，A/B 两幕通用。
  *                                    // 同帧只有一条、同格同一列也只有一条（后写覆盖），总条数截
  *                                    // WALLPANEL_BINDINGS_MAX，脏形状写库前 400。
+ *   wallpanel_on_frame / wallpanel_off_frame: String | null
+ *                                    // 一键全开/全关的两个码（墙板开关键交替发这两个帧，彼此独立）。
+ *                                    // 全关 = 所有窗口盖黑布（播放不停，只在画面上盖一层）；
+ *                                    // 全开 = 撤掉黑布，回到按之前那份画面继续播。
+ *                                    // 两个码形状闸同绑定帧；彼此不能相同，也不能与绑定表里任何帧重复
+ *                                    // （同一帧不能既是切换又是全开/全关），写库前 400。
  *   这些都进不了 rev（同 debug）：学习时"按一键记一条"绝不该引发全量素材重下/重建，
  *   单独变更走轻量 set_wallpanel；载荷在 roomWallpanelFields 一处收口。
- *   判义次序（设备端）：学习绑定表命中就切 → 不中只留痕不动画面（没有编号兜底）。
+ *   判义次序（设备端）：全开/全关码命中 → 盖/撤黑布且不再往下查 → 学习绑定表命中就切 →
+ *   不中只留痕不动画面（没有编号兜底）。
  *
  * DMX512（副板串口）房间级字段（与墙板同级的 config 顶层键）：
  *   dmx_enabled: Boolean           // 副板串口监听总闸，严格 true 才算开；与墙板的门是两扇（两条物理链路）
@@ -790,6 +797,15 @@ function findWallpanelBindingsError(raw) {
  * ⚠️ 这几项和 debug 一样故意不进 rev（见 roomSceneDigest）：换个串口或学一个键，
  *    都不该让整间房重新对账素材 —— 它们走 roomWallpanelDigest 那一枪轻量的 set_wallpanel。
  */
+/**
+ * 全开/全关码（config.wallpanel_on_frame / wallpanel_off_frame）的规范化：形状闸同绑定帧，
+ * 不合法 = null（= 没配这一键），报错归 findWallpanelFieldError（写入侧）。
+ */
+function normalizeWallpanelCode(raw) {
+  var hex = (typeof raw === 'string' ? raw.trim().toUpperCase() : '');
+  return WALLPANEL_FRAME_HEX_RE.test(hex) ? hex : null;
+}
+
 function roomWallpanelFields(cfg) {
   var path = cfg && cfg.wallpanel_serial_path;
   var parity = cfg && cfg.wallpanel_parity;
@@ -800,7 +816,9 @@ function roomWallpanelFields(cfg) {
     wallpanel_data_bits: wallpanelBitChoice(cfg && cfg.wallpanel_data_bits, WALLPANEL_DATA_BITS, 8),
     wallpanel_parity: WALLPANEL_PARITIES.indexOf(parity) >= 0 ? parity : 'none',
     wallpanel_stop_bits: wallpanelBitChoice(cfg && cfg.wallpanel_stop_bits, WALLPANEL_STOP_BITS, 1),
-    wallpanel_bindings: normalizeWallpanelBindings(cfg && cfg.wallpanel_bindings)
+    wallpanel_bindings: normalizeWallpanelBindings(cfg && cfg.wallpanel_bindings),
+    wallpanel_on_frame: normalizeWallpanelCode(cfg && cfg.wallpanel_on_frame),
+    wallpanel_off_frame: normalizeWallpanelCode(cfg && cfg.wallpanel_off_frame)
   };
 }
 
@@ -860,7 +878,28 @@ function findWallpanelFieldError(cfg) {
   if (parity !== undefined && parity !== null && parity !== '' && WALLPANEL_PARITIES.indexOf(parity) < 0) {
     return '校验位只能是 ' + WALLPANEL_PARITIES.join(' / ') + '，留空则用 none';
   }
-  return findWallpanelBindingsError(cfg.wallpanel_bindings);
+  var bindsErr = findWallpanelBindingsError(cfg.wallpanel_bindings);
+  if (bindsErr) return bindsErr;
+  var onRaw = cfg.wallpanel_on_frame, offRaw = cfg.wallpanel_off_frame;
+  var onHex = normalizeWallpanelCode(onRaw), offHex = normalizeWallpanelCode(offRaw);
+  if (onRaw !== undefined && onRaw !== null && onRaw !== '' && !onHex) {
+    return '全开码要是 1~64 字节的十六进制（两个字符一字节），例如 06F0';
+  }
+  if (offRaw !== undefined && offRaw !== null && offRaw !== '' && !offHex) {
+    return '全关码要是 1~64 字节的十六进制（两个字符一字节），例如 06F1';
+  }
+  if (onHex && offHex && onHex === offHex) {
+    return '全开码和全关码不能是同一个帧：一个键轮流发两个码，两个码要各自独立';
+  }
+  var binds = normalizeWallpanelBindings(cfg.wallpanel_bindings);
+  var conflict = null;
+  binds.some(function (r) {
+    if (r.frame === onHex) conflict = '全开码 ' + onHex + ' 已经绑在文件夹 ' + r.folder + ' 上';
+    if (r.frame === offHex) conflict = '全关码 ' + offHex + ' 已经绑在文件夹 ' + r.folder + ' 上';
+    return conflict !== null;
+  });
+  if (conflict) return conflict + '：同一帧不能既是切换又是全开/全关';
+  return null;
 }
 
 /** 档位类字段的写入校验公共段：没带/空算过，带了就必须在白名单内 */

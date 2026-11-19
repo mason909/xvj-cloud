@@ -16,7 +16,9 @@ const names = ['_wpFrame', '_wpCell', '_wpSrc', '_wpSrcName', '_wpRule', '_wpRul
   '_wpCodeSnap', '_wpCodeCount', '_wpHwSnap', '_wpDirty', '_wpBindErrors', '_wpCodeIntent',
   '_wpMergeFrames', '_wpFreshFrames', '_wpLearning', '_wpGateHint', '_wpCodeCellHtml',
   '_wpFieldsOf', '_wpPath', '_wpBaud', '_wpBit', '_wpParity', '_wpBaudOptions', '_wpOptNums', '_wpParityOptions',
-  '_dmxPath', '_dmxBaud', '_dmxBaudOptions'];
+  '_dmxPath', '_dmxBaud', '_dmxBaudOptions',
+  // 全开/全关：伪格名 ON/OFF 与文件夹格共用一条学习链，码值的唯一性也由写入口维护
+  '_wpCodeFields', '_wpCodeValue', '_wpTargetName', '_wpPutCode', '_wpPutAll'];
 // 纯函数引用的模块级常量（串口节点形状/档位、帧闸、绑定上限、码值两列、格子数、DMX 副板档位）
 const consts = ['WP_SERIAL_BAUDS', 'WP_SERIAL_DEFAULT_PATH', 'WP_SERIAL_PATH_RE',
   'WP_SERIAL_DATA_BITS', 'WP_SERIAL_PARITIES', 'WP_SERIAL_STOP_BITS',
@@ -42,7 +44,9 @@ const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g,
 const escA = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 // s 是页面的全局状态：_wpDirty / _wpFreshFrames / _wpCodeCellHtml 会读它，测试里按用例改
 const s = {};
-new Function('exports', 'esc', 'escA', 's', code + '\nObject.assign(exports,{' + names.join(',') + '});')(box, esc, escA, s);
+// _wpPutCode / _wpPutAll 经 _wpDraftOf 拿草稿；测试里直接喂一份当前草稿，不碰房间缓存
+let curDraft = null;
+new Function('exports', 'esc', 'escA', 's', '_wpDraftOf', code + '\nObject.assign(exports,{' + names.join(',') + '});')(box, esc, escA, s, () => curDraft);
 const T = box;
 
 let pass = 0, fail = 0;
@@ -189,21 +193,59 @@ eq('基线里已有的帧被滤掉，大小写统一后再比',
 eq('没有基线 → 全收', T._wpFreshFrames([{ frames: [{ hex: 'F505', n: 1, age: 0 }] }]).length, 1);
 
 console.log('_wpFieldsOf（保存与全局复制共用的落库字段口径）:');
-eq('十个键、总闸严格布尔、码值表归一成平铺数组（带来源）、DMX 三项原样带走',
+eq('十一个键、总闸严格布尔、码值表归一成平铺数组（带来源）、DMX 三项与全开/全关码原样带走',
   T._wpFieldsOf({ enabled: 'true', path: '/dev/ttyS1', baud: 9600, dataBits: 8, parity: 'none', stopBits: 1,
     dmxEnabled: true, dmxPath: '/dev/ttyS6', dmxBaud: 38400,
+    allOn: '06f0', allOff: '06F1',
     code: { '03': { panel: 'f50521' }, '01': { player: 'd3', panel: 'b5' } } }),
   { wallpanel_enabled: false, wallpanel_serial_path: '/dev/ttyS1', wallpanel_baud: 9600, wallpanel_data_bits: 8,
     wallpanel_parity: 'none', wallpanel_stop_bits: 1,
     wallpanel_bindings: [{ frame: 'B5', folder: '01', source: 'panel' }, { frame: 'D3', folder: '01', source: 'player' },
       { frame: 'F50521', folder: '03', source: 'panel' }],
+    wallpanel_on_frame: '06F0', wallpanel_off_frame: '06F1',
     dmx_enabled: true, dmx_serial_path: '/dev/ttyS6', dmx_baud: 38400 });
-eq('开闸 + 空表也能原样给出（DMX 总闸严格 true 才算开）',
+eq('开闸 + 空表也能原样给出（DMX 总闸严格 true 才算开；没录全开/全关 = null，不落空串）',
   T._wpFieldsOf({ enabled: true, path: '/dev/ttyUSB0', baud: null, dataBits: 5, parity: 'even', stopBits: 2, code: {},
     dmxEnabled: 'true', dmxPath: '/dev/ttyS4', dmxBaud: 115200 }),
   { wallpanel_enabled: true, wallpanel_serial_path: '/dev/ttyUSB0', wallpanel_baud: null, wallpanel_data_bits: 5,
     wallpanel_parity: 'even', wallpanel_stop_bits: 2, wallpanel_bindings: [],
+    wallpanel_on_frame: null, wallpanel_off_frame: null,
     dmx_enabled: false, dmx_serial_path: '/dev/ttyS4', dmx_baud: 115200 });
+
+console.log('全开/全关码（伪格名 ON/OFF 走同一套学习链）:');
+eq('_wpCodeValue 三种框各读各的槽', (() => {
+  const d = { code: { '01': { panel: 'F505', player: 'D3' } }, allOn: '06F0', allOff: '06F1' };
+  return [T._wpCodeValue(d, 'ON', 'panel'), T._wpCodeValue(d, 'OFF', 'panel'),
+    T._wpCodeValue(d, '01', 'panel'), T._wpCodeValue(d, '01', 'player'), T._wpCodeValue(null, 'ON', 'panel')];
+})(), ['06F0', '06F1', 'F505', 'D3', '']);
+eq('_wpTargetName 说人话', [
+  T._wpTargetName({ fid: 'ON' }), T._wpTargetName({ fid: 'OFF' }),
+  T._wpTargetName({ fid: '01', src: 'panel' }), T._wpTargetName({ fid: '01', src: 'player' }),
+  T._wpTargetName(null)], ['全开码', '全关码', '文件夹 01 的墙板码', '文件夹 01 的点歌机码', '']);
+eq('_wpCodeFields：三键一起交给自动保存，空值落 null、小写归一', (() => {
+  const f = T._wpCodeFields({ code: { '02': { panel: 'aa55' } }, allOn: '06f0', allOff: '' });
+  return [f.wallpanel_on_frame, f.wallpanel_off_frame, f.wallpanel_bindings];
+})(), ['06F0', null, [{ frame: 'AA55', folder: '02', source: 'panel' }]]);
+eq('_wpCodeSnap：全开/全关变了一侧也算改动，缺键与空串同口径', [
+  T._wpCodeSnap({ code: {}, allOn: '06F0' }) === T._wpCodeSnap({ code: {} }),
+  T._wpCodeSnap({ code: {}, allOn: '06F0' }) === T._wpCodeSnap({ code: {}, allOn: '06F1' }),
+  T._wpCodeSnap({ code: {}, allOn: '06F0', allOff: '06F1' }) === T._wpCodeSnap({ code: {}, allOn: '06F1', allOff: '06F0' }),
+  T._wpCodeSnap({ code: {} }) === T._wpCodeSnap({ code: {}, allOn: '', allOff: '' })
+], [false, false, false, true]);
+eq('_wpPutAll：录全关码会把占着这一帧的文件夹框和另一侧动作让出来', (() => {
+  curDraft = { code: { '01': { panel: '06F0' }, '02': { player: 'AA55' } }, allOn: '06F0', allOff: '' };
+  T._wpPutAll('off', '06F0');
+  const a = JSON.parse(JSON.stringify(curDraft));
+  T._wpPutAll('on', '06F0');
+  return [a.code, a.allOn, a.allOff, curDraft.allOn, curDraft.allOff];
+})(), [{ '02': { player: 'AA55' } }, '', '06F0', '06F0', '']);
+eq('_wpPutCode：往文件夹格录码会清掉同帧的全开/全关码，其余不动', (() => {
+  curDraft = { code: {}, allOn: '06F0', allOff: '06F1' };
+  T._wpPutCode('03', 'panel', '06F1');
+  const a = JSON.parse(JSON.stringify(curDraft));
+  curDraft = null;
+  return [a.code, a.allOn, a.allOff];
+})(), [{ '03': { panel: '06F1' } }, '06F0', '']);
 
 console.log('_dmxPath / _dmxBaud / _dmxBaudOptions（DMX 副板：同一把节点尺、定速档位）:');
 eq('节点形状对就原样收，脏值回落 /dev/ttyS4（与 roomDmxFields 同口径）',
