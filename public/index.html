@@ -276,13 +276,21 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .ps-tbl th,.ps-tbl td{text-align:center}
 .ps-tbl th:first-child,.ps-tbl td:first-child{text-align:left}
 .ps-sep{border-left:1px solid #3a3a3a}
-/* 点歌屏开关列：复用 .wb-sw 的轨道/滑块骨架（44x24、18px、开位 left:23px），
-   表格里控件多、没有个别的 JS 上色，开态直接由 :checked 画（不用 id，30 行一套规则） */
-.ps-hdmi{width:64px}
+/* 点歌屏模式列：关 / 模式1 / 模式2 / 模式3 四态单选（分段控件）；
+   模式 = 点歌窗三套配置之一，选哪套这一格在播时就只出哪套点歌窗 */
+.ps-hdmi{width:180px}
 .ps-dmx{width:88px}
 .ps-tbl .wb-sw{display:inline-flex}
 .ps-tbl .wb-sw input:checked+.sl{background:#4caf50}
 .ps-tbl .wb-sw input:checked+.sl+.kb{left:23px}
+/* 点歌屏模式：四态单选（关 / 模式1 / 模式2 / 模式3），32行一色靠 .on 画 */
+.ps-seg{display:inline-flex;border:1px solid #3a3a3a;border-radius:4px;overflow:hidden}
+.ps-seg-item{position:relative;display:inline-flex;align-items:center;justify-content:center;padding:3px 5px;font-size:var(--fs-micro);color:#888;cursor:pointer;border-left:1px solid #3a3a3a;white-space:nowrap}
+.ps-seg-item:first-child{border-left:none}
+.ps-seg-item input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.ps-seg-item:hover{color:#ddd;background:#262626}
+.ps-seg-item.on{background:rgba(76,175,80,0.18);color:#4caf50;font-weight:600}
+.ps-seg-item:focus-within{outline:1px solid #4caf50;outline-offset:-1px}
 @media(max-width:1180px){
 .content{padding:18px}
 .wb-row{gap:12px}
@@ -875,7 +883,7 @@ function createPlayer(url, type, container, poster) {
  *         【F-06c】新建房间 createRoom()   　【F-06d】房间工作台 rmDevice()
  *         【F-06e】工作台模式开关与互斥 sfW()/sfCrop()/sfWP()/sfPS()（四张表改动即保存，切换不弹确认框）
  *         【F-06f】墙板配置表 renderWpEditor()/wpSave()（码值表 + 总闸/串口参数，均改动即自动保存）
- *         【F-06g】播放设置表 renderPsEditor()/psSave()（每格随机/顺序循环与点歌屏开关，改动即自动保存；轮播交接硬切）
+ *         【F-06g】播放设置表 renderPsEditor()/psSave()（每格随机/顺序循环与点歌屏模式、DMX512 开关，改动即自动保存；轮播交接硬切）
  *         【F-06h】墙板学习 _wpCodeCellHtml()/wpLearnCell()/wpLearnDone()/wpSetCode()
  *                 （码值框可直接敲键盘改/删；开「墙板学习」后点框 → 按键 → 码值填入并自动保存）
  * 【F-07】素材推送 showPushDialog() & doPushToRoom()
@@ -3449,7 +3457,7 @@ async function wpCopyAll() {
 
 // ============================================================================
 // 【F-06g】播放设置表（工作台「播放设置」模式）
-// 表形与墙板表同构：行 = 文件夹 01~30，列 = A幕 / B幕 各一组（素材数 + 播放顺序），另加点歌屏与 DMX512 两个开关列。
+// 表形与墙板表同构：行 = 文件夹 01~30，列 = A幕 / B幕 各一组（素材数 + 播放顺序），另加点歌屏模式（四态单选）与 DMX512 开关两列。
 // A、B 是两套独立的物理素材目录（scenea/01 与 sceneb/01 各播各的），所以设置也各存一份。
 // 落库形状 scenes[X].play_settings = {格: {order, hdmi, dmx}}，全默认的格子不落键、
 // 空表整个键都不下发 —— 与服务端 playSettingsValue / buildPrefixedScenes 同一口径，
@@ -3470,9 +3478,20 @@ function _psCell(v) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
     var o = {};
     if (v.order === 'shuffle') o.order = 'shuffle';
-    if (v.hdmi === true) o.hdmi = true;
+    if (v.hdmi === true) {
+        o.hdmi = true;
+        // 模式1 沿用存量形状（只落 hdmi:true），模式2/3 才多带一个 hdmi_mode ——
+        // 这样存量开着点歌屏的房间不会因为本次升级 rev 漂移、白重同步一次
+        if (v.hdmi_mode === 2 || v.hdmi_mode === 3) o.hdmi_mode = v.hdmi_mode;
+    }
     if (v.dmx === true) o.dmx = true;
     return Object.keys(o).length ? o : null;
+}
+
+/** 一格的「点歌屏模式」：0=关，1~3=模式N（老格子只有 hdmi:true 即模式1） */
+function _psHdmiModeOf(c) {
+    if (!c || c.hdmi !== true) return 0;
+    return (c.hdmi_mode === 2 || c.hdmi_mode === 3) ? c.hdmi_mode : 1;
 }
 
 /** 某一幕的设置表：01~30 之外的键原样留着（表只画 30 行，保存是整表 PUT，丢了等于替别人清设置） */
@@ -3493,7 +3512,7 @@ function _psSnap(d) {
         var o = {};
         Object.keys(m).sort().forEach(function (k) {
             var c = m[k];
-            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq', c.hdmi === true ? 'on' : 'off', c.dmx === true ? 'on' : 'off'];
+            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq', String(_psHdmiModeOf(c)), c.dmx === true ? 'on' : 'off'];
         });
         return o;
     };
@@ -3562,14 +3581,23 @@ function _psGroupHtml(sc, fid, cell, count, sep) {
     return h;
 }
 
-/** 一行的点歌屏开关：A、B 两幕只要有一幕开着就算开（设备端按"任一在播的格开着就显示"执行） */
-function _psHdmiSw(fid, d) {
-    var ca = d.A[fid], cb = d.B[fid];
-    var on = (ca && ca.hdmi === true) || (cb && cb.hdmi === true);
-    return '<label class="wb-sw" title="' + escA('开 = 这一格在播时显示所有点歌屏（HDMI 采集）窗口；关 = 隐藏它们并停掉采集。默认关') + '">'
-        + '<span class="tk"><input type="checkbox" name="psh-' + fid + '"' + (on ? ' checked' : '')
-        + ' aria-label="文件夹' + fid + ' 的点歌屏开关" onchange="psSetHdmi(\'' + fid + '\',this.checked)">'
-        + '<span class="sl"></span><span class="kb"></span></span></label>';
+/**
+ * 一行的点歌屏模式（单选）：关 / 模式1 / 模式2 / 模式3，默认关。
+ * A、B 两幕取较大模式显示（设备端按"任一在播的格"判定，取最大模式执行）。
+ * 模式 = 窗口配置里每扇点歌窗在属性栏标的那一套；选模式N 时屏上只显示模式N 的点歌窗。
+ */
+function _psHdmiSeg(fid, d) {
+    var mode = Math.max(_psHdmiModeOf(d.A[fid]), _psHdmiModeOf(d.B[fid]));
+    var h = '<div class="ps-seg" role="radiogroup" aria-label="文件夹' + fid + ' 的点歌屏模式">';
+    [0, 1, 2, 3].forEach(function(m) {
+        var tip = m === 0
+            ? '关 = 这一格在播时隐藏所有点歌窗并停掉采集（默认）'
+            : '模式' + m + ' = 这一格在播时只显示属性栏标了模式' + m + '的点歌窗';
+        h += '<label class="ps-seg-item' + (mode === m ? ' on' : '') + '" title="' + escA(tip) + '">'
+            + '<input type="radio" name="psh-' + fid + '" value="' + m + '"' + (mode === m ? ' checked' : '')
+            + ' onchange="psSetHdmi(\'' + fid + '\',' + m + ')"><span>' + (m === 0 ? '关' : '模式' + m) + '</span></label>';
+    });
+    return h + '</div>';
 }
 
 /** 一行的 DMX512 控制开关：一行一控写 A/B 两幕，口径与点歌屏同（默认关） */
@@ -3597,15 +3625,15 @@ function _psTableHtml() {
     if (s._psNote) h += '<span style="font-size:var(--fs-micro);color:#4caf50">✓ ' + esc(s._psNote) + '</span>';
     if (s._psErr) h += '<span class="wp-warn" style="color:#e94560">' + esc(s._psErr) + '</span>';
     h += '<span style="flex:1"></span>';
-    h += '<button class="btn btn-sync" id="psCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的播放设置（每格的播放顺序、点歌屏与 DMX512 开关）覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="psCopyAll()">全局复制</button>';
+    h += '<button class="btn btn-sync" id="psCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的播放设置（每格的播放顺序、点歌屏模式、DMX512 开关）覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="psCopyAll()">全局复制</button>';
     h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="改动会自动保存；这里可立即落库，或重试上一次失败" onclick="psSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关、DMX512 控制关。开了 DMX512 控制的格子：通道 N 的值一变就切到文件夹 NN，再变一次播下一支（同 485 按键）；DMX 串口在「墙板配置」里设。</div>';
+    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关（不显示点歌窗）、DMX512 控制关。点歌屏模式：点歌窗在「窗口配置」里按属性栏分成模式1/2/3 三套，这里选哪套，这一格在播时就只出哪套点歌窗。开了 DMX512 控制的格子：通道 N 的值一变就切到文件夹 NN，再变一次播下一支（同 485 按键）；DMX 串口在「墙板配置」里设。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
         + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th>'
-        + '<th rowspan="2" class="ps-sep ps-hdmi">点歌屏</th>'
+        + '<th rowspan="2" class="ps-sep ps-hdmi">点歌屏模式</th>'
         + '<th rowspan="2" class="ps-sep ps-dmx">DMX512控制</th></tr>'
         + '<tr><th>素材</th><th>播放顺序</th>'
         + '<th class="ps-sep">素材</th><th>播放顺序</th></tr>'
@@ -3615,7 +3643,7 @@ function _psTableHtml() {
         h += '<tr><td class="wp-fid">' + f + '</td>'
             + _psGroupHtml('A', f, d.A[f], (fm.A[f] || []).length, false)
             + _psGroupHtml('B', f, d.B[f], (fm.B[f] || []).length, true)
-            + '<td class="ps-sep">' + _psHdmiSw(f, d) + '</td>'
+            + '<td class="ps-sep">' + _psHdmiSeg(f, d) + '</td>'
             + '<td class="ps-sep">' + _psDmxSw(f, d) + '</td>'
             + '</tr>';
     }
@@ -3635,7 +3663,7 @@ function renderPsEditor() {
 
 /**
  * 改一格草稿并立刻自动保存；回到全默认就删键，与服务端"默认值不落键"同口径。
- * 按整格对象改：拨顺序不能把点歌屏开关抹掉，反之亦然。
+ * 按整格对象改：拨顺序不能把点歌屏模式抹掉，反之亦然。
  */
 function _psSetCell(sc, fid, field, v) {
     var d = _psDraftOf();
@@ -3646,7 +3674,14 @@ function _psSetCell(sc, fid, field, v) {
     if (field === 'order') {
         if (v === 'shuffle') cell.order = 'shuffle'; else delete cell.order;
     } else if (field === 'hdmi') {
-        if (v) cell.hdmi = true; else delete cell.hdmi;
+        // v = 0 关 / 1~3 模式N；模式1 不落 hdmi_mode（存量形状），关就把两个键一起删
+        if (v) {
+            cell.hdmi = true;
+            if (v === 2 || v === 3) cell.hdmi_mode = v; else delete cell.hdmi_mode;
+        } else {
+            delete cell.hdmi;
+            delete cell.hdmi_mode;
+        }
     } else if (field === 'dmx') {
         if (v) cell.dmx = true; else delete cell.dmx;
     } else return false;
@@ -3658,10 +3693,10 @@ function psSet(sc, fid, field, v) {
     if (_psSetCell(sc, fid, field, v)) { renderPsEditor(); _psAutoSaveSoon(); }
 }
 
-/** 点歌屏开关按行拨：A、B 两幕同时落同一个值（理由见本节表头注释） */
-function psSetHdmi(fid, on) {
-    _psSetCell('A', fid, 'hdmi', on);
-    _psSetCell('B', fid, 'hdmi', on);
+/** 点歌屏模式按行拨（0 关 / 1~3 模式N）：A、B 两幕同时落同一个值（理由见本节表头注释） */
+function psSetHdmi(fid, mode) {
+    _psSetCell('A', fid, 'hdmi', mode);
+    _psSetCell('B', fid, 'hdmi', mode);
     renderPsEditor();
     _psAutoSaveSoon();
 }
@@ -3766,7 +3801,7 @@ async function psSave() {
 }
 
 /**
- * 全局复制：把当前房间的播放设置（两幕每格的播放顺序 + 点歌屏开关 + DMX512 开关）覆盖到**本店**其余房间。
+ * 全局复制：把当前房间的播放设置（两幕每格的播放顺序 + 点歌屏模式 + DMX512 开关）覆盖到**本店**其余房间。
  * 边界与墙板表同一口径：只认当前房间的 store_name；每间房读后写、只换 scenes.A/B.play_settings，
  * 其它配置（窗口/墙板/输出基准）一概不碰。复制的是当前草稿，所以最后把自己也存一次，
  * 保证"复制出去的"就是"这里留下的"。一间失败不拦后面：最后报出成功数与失败名单。
@@ -3786,7 +3821,7 @@ async function psCopyAll() {
     catch (e) { alert('取房间列表失败: ' + e.message); return; }
     var others = list.filter(function (r) { return r && r.id !== s.rf; });
     if (!others.length) { alert('本店没有其它房间可覆盖。'); return; }
-    if (!confirm('把当前房间的播放设置（每格播放顺序、点歌屏开关、DMX512 开关）覆盖到「' + store + '」的其余 '
+    if (!confirm('把当前房间的播放设置（每格播放顺序、点歌屏模式、DMX512 开关）覆盖到「' + store + '」的其余 '
         + others.length + ' 间房？\n\n它们原本的播放设置会被整体替换，其它配置与其他店铺不受影响。')) return;
     var psA = JSON.parse(JSON.stringify(d.A)), psB = JSON.parse(JSON.stringify(d.B));
     s._psCopying = true;
@@ -4059,9 +4094,16 @@ function renderWinEditorFull() {
         h += '<div class="win-prop-row"><label>ID</label><input value="' + escA(w.id) + '" readonly style="color:#555;background:#1a1a1a"></div>';
         h += '<div class="win-prop-row"><label>名称</label><input id="wpName" value="' + escA(w.name||'') + '" oninput="updWinField(\'name\',this.value)"></div>';
         if (ctType === 'HDMI') {
-            // 点歌窗来源固定是点歌屏（点歌机 HDMI 采集），不存在第一幕/第二幕之选；
-            // 要换回素材窗就删掉重建（「素材窗」卡 + 添加）
-            h += '<div class="win-prop-row"><label>来源</label><span style="color:#aaa">📷 点歌屏（点歌机 HDMI 采集，固定）</span></div>';
+            // 点歌窗来源固定是点歌屏（点歌机 HDMI 采集，不存在第一幕/第二幕之选）；
+            // 模式 = 这扇窗归属哪一套配置：播放设置「点歌屏」列选模式 N 时，屏上只显示模式 N 的点歌窗。
+            // 三套配置 = 三组窗口（各自摆位/取景），不是同一扇窗存三份坐标。
+            var _wmode = _winHdmiMode(w);
+            h += '<div class="win-prop-row"><label>模式</label><div style="display:flex;gap:4px;flex:1">';
+            [1, 2, 3].forEach(function(_m) {
+                h += '<button class="win-content-type-btn' + (_wmode === _m ? ' active' : '') + '" onclick="updWinContent(\'mode\',' + _m + ')"'
+                    + ' style="flex:1;padding:3px 0;font-size:var(--fs-micro)" title="归属模式' + _m + '：播放设置「点歌屏」列选模式' + _m + '时，屏上只显示这一套点歌窗">模式' + _m + '</button>';
+            });
+            h += '</div></div>';
         } else {
             h += '<div class="win-content-type-row">';
             // 点歌屏不是可点类型：点歌窗只在「点歌窗」卡用「+ 添加」新建（素材窗同理）；
@@ -4161,7 +4203,7 @@ function renderWinCanvas(wins) {
         var rh = (w.height||180) * _canvasScale;
         var sel = w.id === selWinId;
         var ct = w.content || {};
-        var typeLabel = 'SCENE_A'===ct.type ? '第一幕' + (ct.folderId ? ' · ' + ct.folderId : '') : (ct.type === 'SCENE_B' ? '🎬 第二幕' + (ct.folderId ? ' · ' + ct.folderId : '') : (ct.type === 'HDMI' ? '📷 点歌屏' : (ct.type === 'color' ? '▣ 测试背景' : '▶')));
+        var typeLabel = 'SCENE_A'===ct.type ? '第一幕' + (ct.folderId ? ' · ' + ct.folderId : '') : (ct.type === 'SCENE_B' ? '🎬 第二幕' + (ct.folderId ? ' · ' + ct.folderId : '') : (ct.type === 'HDMI' ? '📷 点歌屏 · 模式' + _winHdmiMode(w) : (ct.type === 'color' ? '▣ 测试背景' : '▶')));
         var _isTestBg = ct.type === 'color';
         // 点歌窗用绿色整框区分（边框/底衬/缩放手柄/类型角标），素材窗维持品牌红
         var _isVideo = _winKind(w) === 'video';
@@ -4853,6 +4895,13 @@ function _winKind(w) {
     return (w && w.content && String(w.content.type || '').toUpperCase() === 'HDMI') ? 'video' : 'material';
 }
 
+// 点歌窗归属哪一套配置（1~3，缺省 1 = 存量窗口）。播放设置「点歌屏」列选哪一套，
+// 屏上就只显示那一套的点歌窗（设备端 applyHdmiVisibility 同一口径）。
+function _winHdmiMode(w) {
+    var m = Number(w && w.content && w.content.mode);
+    return (m === 2 || m === 3) ? m : 1;
+}
+
 function setWinTab(kind) {
     s._winTab = kind === 'video' ? 'video' : 'material';
     // 选中的是另一类窗口时取消选中：否则属性栏在编辑一个当前列表里看不见的窗口
@@ -4896,7 +4945,7 @@ function selWin(id) {
  * 添加新窗口
  * 自动生成唯一 ID，插入 windows 数组，触发 renderWinEditorFull()
  * 窗口默认：名字与类型跟随当前卡——素材窗=本幕场景窗「新窗口N」、跟随墙板；点歌窗=HDMI「点歌屏N」、
- * 不跟随墙板。尺寸取画布 1/3 的 16:9、落在左上角、zIndex 排到最后。
+ * 不跟随墙板、模式1（点歌窗有三套配置，模式在属性栏改）。尺寸取画布 1/3 的 16:9、落在左上角、zIndex 排到最后。
  * 跟随墙板（2026-11-17 用户定调：新建窗口一律默认跟随墙板，不需要的再去属性栏取消）
  */
 function addWin() {
@@ -4925,7 +4974,7 @@ function addWin() {
         var m = nameRe.exec(String(w.name == null ? '' : w.name).trim());
         if (m) maxNo = Math.max(maxNo, parseInt(m[1], 10));
     });
-    wins.push({ id: newId, name: namePrefix + (maxNo + 1), x: 0, y: 0, width: Math.round(_designW / 3), height: Math.round(_designH / 3), aspectRatio: '16:9', content: tab === 'video' ? { type: 'HDMI' } : { type: winType, follow: true }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
+    wins.push({ id: newId, name: namePrefix + (maxNo + 1), x: 0, y: 0, width: Math.round(_designW / 3), height: Math.round(_designH / 3), aspectRatio: '16:9', content: tab === 'video' ? { type: 'HDMI', mode: 1 } : { type: winType, follow: true }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
 
     // 双向隔离：A 的操作不动 B，反之亦然
     cfg.scenes[curS].windows = wins; // 当前场景：用含新窗口的拷贝覆盖回去

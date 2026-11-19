@@ -92,7 +92,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
     box.add();
     await tick();
     const w = box.s._winCache[box.s._winCache.length - 1];
-    eq('类型固定 HDMI（与当前幕无关）', w.content, { type: 'HDMI' });
+    eq('类型固定 HDMI 且默认模式1（与当前幕无关）', w.content, { type: 'HDMI', mode: 1 });
     eq('名字接着同类最大编号（点歌屏4；「点歌机」无编号、素材窗的 9 不参与）', w.name, '点歌屏4');
     eq('只落当前幕、带 sceneId', [box.cfg.scenes.A.windows.length, box.cfg.scenes.B.windows.length, h.puts[0].body.sceneId], [5, 0, 'A']);
     eq('新窗被选中', box.s._selWin && box.s._selWin.name, '点歌屏4');

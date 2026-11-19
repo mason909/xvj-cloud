@@ -65,9 +65,11 @@
  *   {
  *     A: { name: '第一幕',
  *          folder_mappings: { "01": [materialId, ...], "02": [...] },   // 键是未加前缀的两位编号；值是素材库 id 或预设素材 id，两种都合法
- *          play_settings: { "01": { order: 'shuffle', hdmi: true, dmx: true } },
+ *          play_settings: { "01": { order: 'shuffle', hdmi: true, hdmi_mode: 2, dmx: true } },
  *                         // 文件夹级播放设置：order='seq' 顺序循环 | 'shuffle' 随机循环；
  *                         // hdmi=true 表示这一格在播时显示点歌屏（HDMI 采集）窗口，缺省 = 关；
+ *                         // hdmi_mode ∈ {2,3} 选哪一套点歌窗（点歌窗在窗口配置里按 content.mode 分成 1~3 三套），
+ *                         // 缺键 = 模式1（存量形状，只落 hdmi:true 不落这个键）；
  *                         // dmx=true 表示这一格接受 DMX512 控制，缺省 = 关。
  *                         // 素材轮播交接一律硬切（叠化已于 2026-11-12 从三端删除，载荷里残留的 dissolve /
  *                         // dissolve_ms 键写库时被丢掉，不必清库）。
@@ -149,6 +151,8 @@
  *                         // 没有 IMAGE 分支，旧文档里的 'COLOR'/'VIDEO'/'IMAGE' 大写取值都不存在
  *       // type=HDMI 时：
  *       inputIndex?: Number,        // HDMI 输入索引（0-based）
+ *       mode?: Number,              // 归属模式 1~3（缺省 1）：点歌窗有三套配置，
+ *                         // 播放设置 play_settings 的 hdmi_mode 选哪套，屏上就只显示哪套点歌窗
  *       // type=color 时：
  *       color?: String,             // 兜底纯色，如 "#000000"（图卡缺失时用）
  *       // type=SCENE_A|SCENE_B 时：
@@ -405,6 +409,8 @@ function isSafeSerialPath(s) { return typeof s === 'string' && /^\/dev\/[A-Za-z0
  * 前端 _psCell/psSet* 与 APK 的 playSettingsOf：
  *   order       'seq'|'shuffle' 顺序循环（按文件名）/ 随机循环
  *   hdmi        true = 这一格在播时显示点歌屏（HDMI 采集）窗口；缺省 = 关
+ *   hdmi_mode   点歌窗三套配置里选哪一套（1~3）。缺键 = 1；模式1 不落这个键（存量形状），
+ *               只有 2/3 才落。设备端只显示 content.mode 与在播格模式相同的点歌窗（见 APK applyHdmiVisibility）
  *   dmx         true = 这一格接受 DMX512 控制；缺省 = 关（设备端 DMX 接收尚未实现，先按三端同一形状落设置）
  * A、B 是两套独立物理目录（scenea/01 与 sceneb/01 装的不是同一批片子），所以设置按幕各存一份。
  * 全默认的格子一律不落键：给每幕挂一张 30 格默认表会让 roomSceneDigest 当场全库漂移一次，
@@ -424,7 +430,11 @@ function playSettingsValue(v) {
   if (!isPlainObject(v)) return null;
   const out = {};
   if (v.order === 'shuffle') out.order = 'shuffle';
-  if (v.hdmi === true) out.hdmi = true;
+  if (v.hdmi === true) {
+    out.hdmi = true;
+    // 模式1 = 只落 hdmi:true（存量形状，存量房间 rev 不漂）；模式2/3 才多带 hdmi_mode
+    if (v.hdmi_mode === 2 || v.hdmi_mode === 3) out.hdmi_mode = v.hdmi_mode;
+  }
   if (v.dmx === true) out.dmx = true;
   return Object.keys(out).length ? out : null;
 }
@@ -468,6 +478,15 @@ function findPlaySettingsError(cfg) {
       }
       if (cell.hdmi !== undefined && cell.hdmi !== null && typeof cell.hdmi !== 'boolean') {
         return `${where} 的点歌屏开关只能是 true（显示）或 false（关闭）`;
+      }
+      if (cell.hdmi_mode !== undefined && cell.hdmi_mode !== null) {
+        if (cell.hdmi_mode !== 1 && cell.hdmi_mode !== 2 && cell.hdmi_mode !== 3) {
+          return `${where} 的点歌屏模式只能是 1、2、3（模式1/模式2/模式3）`;
+        }
+        // 模式挂在开关下面：只选模式不开开关是自相矛盾状态，写库前就拦下（同 order 那条理由）
+        if (cell.hdmi !== true) {
+          return `${where} 选了点歌屏模式${cell.hdmi_mode}，但点歌屏开关没开（hdmi 必须为 true）`;
+        }
       }
       if (cell.dmx !== undefined && cell.dmx !== null && typeof cell.dmx !== 'boolean') {
         return `${where} 的 DMX512 控制开关只能是 true（接受）或 false（不接受）`;
