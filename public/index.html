@@ -4173,10 +4173,9 @@ function renderWinCanvas(wins) {
         if (dim) el.style.opacity = _dimWinOpacity(w);
         var _wc = _cropOf(w);
         var _cropMark = (_wc.w >= 0.999 && _wc.h >= 0.999) ? '' : '✂ ';
-        // 窗口名常驻正中：编辑窗口时一眼对上号；半透明底衬保证在测试卡/亮素材上也读得清，
-        // pointer-events:none 不挡拖动与选中
-        el.innerHTML = '<span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:92%;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.5);color:#fff;font-size:var(--fs-ui);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none">' + esc(w.name||w.id) + '</span>'
-            + '<span style="position:absolute;top:3px;left:5px;font-size:var(--fs-micro);color:#ccc">' + _cropMark + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:var(--fs-micro);color:#888">' + esc(typeLabel) + '</span>';
+        // 窗口名回左上角（与裁剪✂标记同一行），中央让给素材本身；超长省略；不挡拖动与选中
+        el.innerHTML = '<span style="position:absolute;top:3px;left:5px;font-size:var(--fs-micro);color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%;pointer-events:none">' + _cropMark + esc(w.name||w.id) + '</span>'
+            + '<span style="position:absolute;bottom:3px;right:5px;font-size:var(--fs-micro);color:#888">' + esc(typeLabel) + '</span>';
         el.dataset.winId = w.id;
         if (dim) {
             el.setAttribute('aria-hidden', 'true');
