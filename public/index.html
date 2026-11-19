@@ -53,7 +53,7 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .menu li{padding:12px 20px;cursor:pointer;color:#999;transition:all 0.2s}
 .menu li:hover{background:#2a2a2a;color:#fff}
 .menu li.active{background:#e94560;color:#fff}
-.main{margin-left:220px;flex:1}
+.main{margin-left:220px;flex:1;min-width:0}
 /* 顶栏吸顶：工作台往下滚就看不到当前是哪个房间，改一次配置要滚回顶部确认一遍 */
 .header{position:sticky;top:0;z-index:40;background:#242424;padding:12px 24px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .header h1{font-size:var(--fs-title)}
@@ -73,6 +73,11 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .content{padding:24px}
 .folder-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
 .tabs{display:flex;flex-wrap:wrap;gap:8px;padding:10px}
+/* 01-30 文件夹条必须一行：换行会把 --editor-inset 的高度账算错，窄了就横向滚动 */
+.tabs-oneline{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;min-width:0}
+.tabs-oneline .tab{flex:0 0 auto}
+.tabs-oneline::-webkit-scrollbar{height:6px}
+.tabs-oneline::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:3px}
 /* .tab 原先被拆在 76/79/83 三处声明，后一处盖前一处，读到第二处就以为知道长什么样。合成一条。 */
 .tab{position:relative;display:inline-flex;flex-direction:column;align-items:center;gap:2px;padding:8px 12px;min-width:50px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:6px;cursor:pointer}
 .tab-n{font-size:var(--fs-ui);font-weight:bold}
@@ -1102,7 +1107,7 @@ async function lm() {
 
 function rf() {
     var b = document.getElementById('fb');
-    var h = '<div class="tabs">';
+    var h = '<div class="tabs tabs-oneline">';
     s.fs.forEach(function(x) {
         var note = s.folders && s.folders[x] || '';
         // 备注是自由文本（服务端只卡长度不卡内容），这里不过 esc() 就等于一个存活的存储型 XSS：
@@ -1443,7 +1448,7 @@ async function lp() {
 
 function prf() {
     var b = document.getElementById('pfb');
-    var h = '<div class="tabs">';
+    var h = '<div class="tabs tabs-oneline">';
     for (var i = 1; i <= 30; i++) {
         var f = i.toString().padStart(2, '0');
         var act = s.pf === f ? 'active' : '';
@@ -1886,7 +1891,7 @@ function rmDevice() {
         sceneFM = (_rc2.scenes && _rc2.scenes[curS] && _rc2.scenes[curS].folder_mappings) || {};
     } catch(e) {}
     
-    h += '<div class="tabs" style="margin-top:10px;' + hideTabs + '">';
+    h += '<div class="tabs tabs-oneline" style="margin-top:10px;' + hideTabs + '">';
     for (var i = 1; i <= 30; i++) {
         var f = i.toString().padStart(2, '0');
         var act = s.f === f ? 'active' : '';
@@ -1947,10 +1952,14 @@ function rmDevice() {
     // 前者跟着上方选中的 01-30 标签走（停在 03 就只灌 03），后者是显式的批量动作、要二次确认。
     // 中间的状态条是"上一次单击发给了哪扇窗 / 为什么没发出去"的记录（见 pvMat），不代表此刻屏上真在播 ——
     // 下发是单向 MQTT，设备端的实情只在「日志」页上看得到（运维浮层仍只认 debug）。
-    var h2 = '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><span style="font-weight:bold">已映射素材</span><span>'
-        + '<span id="pvBar">' + _pvBarHtml() + '</span>'
-        + '<button class="btn btn-primary" style="padding:5px 15px;font-size:var(--fs-meta)" title="只映射上方当前选中的 ' + esc(s.f || '') + ' 文件夹" onclick="mapPreset()">映射本文件夹预设</button>'
-        + '<button class="btn" style="padding:5px 10px;font-size:var(--fs-meta);margin-left:6px;background:#6c757d;color:#fff" title="把预设库 01-30 全部映射进当前场景，设备会照着清单整个下一遍（量大，会重建播放器）" onclick="mapPreset(\'ALL\')">映射整库</button>'
+    // 这一条只占一行：状态条吃剩余宽度并省略，按钮不压缩不换行（窄屏时宁可状态条被截短）
+    var h2 = '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;flex-wrap:nowrap">'
+        + '<span style="font-weight:bold;white-space:nowrap;flex:0 0 auto">已映射素材</span>'
+        + '<span style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap">'
+        + '<span id="pvBar" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _pvBarHtml() + '</span>'
+        + '<button class="btn btn-primary" style="padding:5px 15px;font-size:var(--fs-meta);flex:0 0 auto" title="只映射上方当前选中的 ' + esc(s.f || '') + ' 文件夹" onclick="mapPreset()">映射本文件夹预设</button>'
+        + '<button class="btn btn-sync" id="folderCopyBtn" style="padding:5px 10px;font-size:var(--fs-meta);flex:0 0 auto" title="把当前场景、当前文件夹 ' + esc(s.f || '') + ' 的素材清单覆盖到本店所有房间的同名文件夹（完全同步：多删少补、顺序一致；目标多出的素材会被移除）" onclick="copyFolderAll()">全局复制</button>'
+        + '<button class="btn" style="padding:5px 10px;font-size:var(--fs-meta);background:#6c757d;color:#fff;flex:0 0 auto" title="把预设库 01-30 全部映射进当前场景，设备会照着清单整个下一遍（量大，会重建播放器）" onclick="mapPreset(\'ALL\')">映射整库</button>'
         + '</span></div>';
     h2 += '<div class="mm-grid">';
     if (all.length === 0) {
@@ -5191,6 +5200,69 @@ async function mapPreset(scope) {
         scope: whole ? 'ALL' : fid, count: count
     });
     updateRoomDebugToggle();
+}
+
+// 文件夹级「全局复制」：把当前房间、当前幕、当前文件夹的素材清单覆盖到本店其余房间的同名文件夹。
+// 完全同步 = 目标这一格整体替换（多删少补、顺序一致）；当前清单为空则删掉目标该键。
+// 只动 scenes[curS].folder_mappings[fid]，窗口/墙板/播放设置与其它店铺一概不碰。
+async function copyFolderAll() {
+    var fid = s.f;
+    if (!s.rf) { alert('请先选择房间'); return; }
+    if (typeof fid !== 'string' || !/^(0[1-9]|[12]\d|30)$/.test(fid)) { alert('请先在上方选择一个素材文件夹标签（01-30）'); return; }
+    if (s._folderCopying) return;
+    var curS = s._curScene === 'B' ? 'B' : 'A';
+    var cur = (s.rooms || []).find(function (r) { return r && r.id === s.rf; });
+    var store = cur && cur.store_name;
+    if (!store) {
+        try { cur = await apiGet('/api/rooms/' + encodeURIComponent(s.rf)); store = cur && cur.store_name; }
+        catch (e) { /* 下面统一报错 */ }
+    }
+    if (!store) { alert('拿不到当前房间的店铺，无法确定复制范围。'); return; }
+    var src, list;
+    try {
+        await flushAutoSync();
+        var srcRoom = await apiGet('/api/rooms/' + encodeURIComponent(s.rf));
+        if (!srcRoom || srcRoom.error) throw new Error((srcRoom && srcRoom.error) || '房间不存在');
+        src = ((_loadRoomCfg(srcRoom).scenes[curS].folder_mappings || {})[fid] || []).slice();
+        list = asList(await apiGet('/api/rooms?store=' + encodeURIComponent(store)));
+    } catch (e) { alert('读取房间配置失败: ' + e.message); return; }
+    var others = list.filter(function (r) { return r && r.id !== s.rf; });
+    if (!others.length) { alert('本店没有其它房间可覆盖。'); return; }
+    if (!confirm('把当前房间「' + (curS === 'A' ? '第一幕' : '第二幕') + ' / ' + fid + '」的 ' + src.length + ' 条素材清单覆盖到「' + store + '」的其余 ' + others.length + ' 间房？\n\n完全同步：同名文件夹整体替换，目标多出的素材会被移除（设备下次同步会删文件），当前清单为空则清空目标。其它文件夹、其它幕与其它店铺不受影响。')) return;
+    s._folderCopying = true;
+    var btn = document.getElementById('folderCopyBtn');
+    if (btn) btn.disabled = true;
+    var ok = 0, bad = [];
+    try {
+        for (var i = 0; i < others.length; i++) {
+            var r = others[i];
+            if (btn) btn.textContent = '复制中 ' + (i + 1) + '/' + others.length + '…';
+            try {
+                var roomObj = await apiGet('/api/rooms/' + encodeURIComponent(r.id));
+                if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
+                var cfg = _loadRoomCfg(roomObj);
+                if (src.length) cfg.scenes[curS].folder_mappings[fid] = src.slice();
+                else delete cfg.scenes[curS].folder_mappings[fid];
+                await apiCall('/api/rooms/' + encodeURIComponent(r.id), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: JSON.stringify(cfg) })
+                });
+                ok++;
+            } catch (e) { bad.push((r.name || r.id) + '：' + e.message); }
+        }
+    } finally {
+        s._folderCopying = false;
+        var btn2 = document.getElementById('folderCopyBtn');
+        if (btn2) { btn2.disabled = false; btn2.textContent = '全局复制'; }
+    }
+    alert('已把 ' + fid + ' 文件夹（' + (curS === 'A' ? '第一幕' : '第二幕') + '）同步到本店 ' + ok + ' 间房'
+        + (bad.length ? '，' + bad.length + ' 间失败：\n' + bad.join('\n') : ''));
+    logAction('folder_copy_all', 'room', {
+        room_id: s.rf, room_name: cur && cur.name, store_name: store,
+        scene: curS, folder: fid, count: src.length, ok: ok, failed: bad.length
+    });
+    lr();
 }
 
 // 【F-08b】 房间调试开关（_roomDebugOn 读 / updateRoomDebugToggle 显示态 / toggleRoomDebug 写入）
