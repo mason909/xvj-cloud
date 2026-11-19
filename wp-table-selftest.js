@@ -1,5 +1,5 @@
 // 一次性自检：把墙板配置表里的纯函数从 public/index.html 抠出来跑断言（不起服务、不连库、不动数据）。
-// 口径（2026-11-13）：没有编号、也不分幕，一张 { '01': {player,panel} } 的码值表（一格最多两路码：点歌机 + 墙板）+ 串口硬件参数。
+// 口径（2026-11-19）：没有编号、也不分幕，一张 { '01': {player,panel,custom} } 的码值表（一格最多三路码：点歌机 + 墙板 + 自定义）+ 串口硬件参数。
 const fs = require('fs');
 const src = fs.readFileSync(require('path').join(__dirname, 'public/index.html'), 'utf8').replace(/\r\n/g, '\n');
 function grab(name) {
@@ -19,7 +19,7 @@ const names = ['_wpFrame', '_wpCell', '_wpSrc', '_wpSrcName', '_wpRule', '_wpRul
   '_dmxPath', '_dmxBaud', '_dmxBaudOptions',
   // 全开/全关：伪格名 ON/OFF 与文件夹格共用一条学习链，码值的唯一性也由写入口维护
   '_wpCodeFields', '_wpCodeValue', '_wpTargetName', '_wpPutCode', '_wpPutAll'];
-// 纯函数引用的模块级常量（串口节点形状/档位、帧闸、绑定上限、码值两列、格子数、DMX 副板档位）
+// 纯函数引用的模块级常量（串口节点形状/档位、帧闸、绑定上限、码值三列、格子数、DMX 副板档位）
 const consts = ['WP_SERIAL_BAUDS', 'WP_SERIAL_DEFAULT_PATH', 'WP_SERIAL_PATH_RE',
   'WP_SERIAL_DATA_BITS', 'WP_SERIAL_PARITIES', 'WP_SERIAL_STOP_BITS',
   'WP_FRAME_HEX_RE', 'WP_BINDINGS_MAX', 'WP_SOURCES', 'WP_FOLDER_COUNT',
@@ -76,14 +76,17 @@ eq('31 越界、非两位、非字符串出局',
   [T._wpCell('31'), T._wpCell('1'), T._wpCell('00'), T._wpCell('A1'), T._wpCell('A31'), T._wpCell(7)],
   ['', '', '', '', '', '']);
 
-console.log('_wpSrc / _wpSrcName（码值来源：点歌机 / 墙板）:');
-eq('只认 player，其余一律归墙板列（存量绑定没这个键）',
-  [T._wpSrc('player'), T._wpSrc('panel'), T._wpSrc(undefined), T._wpSrc('remote')], ['player', 'panel', 'panel', 'panel']);
-eq('界面名就两种', [T._wpSrcName('player'), T._wpSrcName('panel')], ['点歌机码', '墙板码']);
+console.log('_wpSrc / _wpSrcName（码值来源：点歌机 / 墙板 / 自定义）:');
+eq('只认 player 与 custom，其余一律归墙板列（存量绑定没这个键）',
+  [T._wpSrc('player'), T._wpSrc('panel'), T._wpSrc('custom'), T._wpSrc(undefined), T._wpSrc('remote')],
+  ['player', 'panel', 'custom', 'panel', 'panel']);
+eq('界面名三种', [T._wpSrcName('player'), T._wpSrcName('panel'), T._wpSrcName('custom')],
+  ['点歌机码', '墙板码', '自定义码']);
 
 console.log('_wpRule / _wpRulesOf（一条规则的干净形状：帧 + 格 + 来源）:');
 eq('大写帧 + 裸格名，来源缺省归墙板', T._wpRule({ frame: 'f505', folder: 'A12' }), { frame: 'F505', folder: '12', source: 'panel' });
 eq('点歌机码原样收下', T._wpRule({ frame: 'D3', folder: '01', source: 'player' }), { frame: 'D3', folder: '01', source: 'player' });
+eq('自定义码原样收下', T._wpRule({ frame: 'F0A1', folder: '07', source: 'custom' }), { frame: 'F0A1', folder: '07', source: 'custom' });
 eq('存量 type/no 键不再带出去', T._wpRule({ frame: 'F505', folder: '03', type: 'panel_no', no: 7 }),
   { frame: 'F505', folder: '03', source: 'panel' });
 eq('脏帧 / 脏格名 / 非对象 = null 丢掉',
@@ -96,32 +99,36 @@ eq('表内脏的当场丢 + 同帧先到先得',
 eq('同一格同一列两条帧（旧数据）→ 也是先到先得',
   T._wpRulesOf([{ frame: 'F505', folder: '05' }, { frame: 'AA55', folder: '05' }]),
   [{ frame: 'F505', folder: '05', source: 'panel' }]);
-eq('同一格两路各一个码 → 都留着（点歌机 + 墙板）',
-  T._wpRulesOf([{ frame: 'F505', folder: '05' }, { frame: 'D3', folder: '05', source: 'player' }]),
-  [{ frame: 'F505', folder: '05', source: 'panel' }, { frame: 'D3', folder: '05', source: 'player' }]);
+eq('同一格三路各一个码 → 都留着（点歌机 + 墙板 + 自定义）',
+  T._wpRulesOf([{ frame: 'F505', folder: '05' }, { frame: 'D3', folder: '05', source: 'player' },
+    { frame: 'F0A1', folder: '05', source: 'custom' }]),
+  [{ frame: 'F505', folder: '05', source: 'panel' }, { frame: 'D3', folder: '05', source: 'player' },
+   { frame: 'F0A1', folder: '05', source: 'custom' }]);
 eq('同一列重复先到先得', T._wpRulesOf([{ frame: 'AA55', folder: '05', source: 'player' }, { frame: 'BB66', folder: '05', source: 'player' }]),
   [{ frame: 'AA55', folder: '05', source: 'player' }]);
 eq('rules 不是数组 → 空表', [T._wpRulesOf(undefined).length, T._wpRulesOf('x').length, T._wpRulesOf({}).length], [0, 0, 0]);
 
 console.log('_wpCodeOf（落库绑定表 → 界面码值表）:');
-eq('一格两列各归各位，同列先到先得，幕前缀折回裸格名',
+eq('一格三列各归各位，同列先到先得，幕前缀折回裸格名',
   T._wpCodeOf({ wallpanel_bindings: [{ frame: 'F505', folder: '01' }, { frame: 'AA55', folder: '01' },
-    { frame: 'D3', folder: '01', source: 'player' }, { frame: 'BB66', folder: '02', source: 'player' }, { frame: 'CC77', folder: 'A05' }] }),
-  { '01': { panel: 'F505', player: 'D3' }, '02': { player: 'BB66' }, '05': { panel: 'CC77' } });
+    { frame: 'D3', folder: '01', source: 'player' }, { frame: 'F0A1', folder: '01', source: 'custom' },
+    { frame: 'BB66', folder: '02', source: 'player' }, { frame: 'CC77', folder: 'A05' }] }),
+  { '01': { panel: 'F505', player: 'D3', custom: 'F0A1' }, '02': { player: 'BB66' }, '05': { panel: 'CC77' } });
 eq('没配 / 脏值 / 旧的分幕形状都不抛（旧形状不再认）',
   [T._wpCodeOf({}), T._wpCodeOf(null), T._wpCodeOf({ wallpanel_bindings: 'x' }),
    T._wpCodeOf({ wallpanel_bindings: { A: [{ frame: 'F505', folder: '01' }] } })],
   [{}, {}, {}, {}]);
 
 console.log('_wpBindFromCode（界面码值表 → 落库形状）:');
-eq('按帧排序、两列各一条、脏码值丢掉',
-  T._wpBindFromCode({ code: { '07': { panel: 'aa55' }, '01': { player: 'f505', panel: 'd3' }, '02': { panel: '' }, '03': { player: 'zz' } } }),
+eq('按帧排序、三列各一条、脏码值丢掉',
+  T._wpBindFromCode({ code: { '07': { panel: 'aa55' }, '01': { player: 'f505', panel: 'd3', custom: 'f0a1' },
+    '02': { panel: '' }, '03': { player: 'zz' } } }),
   [{ frame: 'AA55', folder: '07', source: 'panel' }, { frame: 'D3', folder: '01', source: 'panel' },
-   { frame: 'F505', folder: '01', source: 'player' }]);
+   { frame: 'F0A1', folder: '01', source: 'custom' }, { frame: 'F505', folder: '01', source: 'player' }]);
 eq('空表 → 空数组', [T._wpBindFromCode({ code: {} }), T._wpBindFromCode({})], [[], []]);
-eq('已录条数按格计数（一格两码算两个）',
-  [T._wpCodeCount({ '01': { player: 'D3', panel: 'B5' }, '02': { panel: 'F505' }, '03': {} }),
-   T._wpCodeCount(null)], [3, 0]);
+eq('已录条数按格计数（一格三码算三个）',
+  [T._wpCodeCount({ '01': { player: 'D3', panel: 'B5', custom: 'C7' }, '02': { panel: 'F505' }, '03': {} }),
+   T._wpCodeCount(null)], [4, 0]);
 
 console.log('_wpCodeSnap / _wpHwSnap / _wpDirty:');
 const draft = (extra) => Object.assign({
@@ -163,13 +170,13 @@ eq('硬件九项都进基线（485 六项 + DMX 三项）', [
   eq('干净/改码值/改硬件/换房间的判定', [clean, codeDirty, hwDirty, otherRoom], [false, true, true, false]);
 })();
 
-console.log('_wpBindErrors（64 条上限，与服务端同一道闸）:');
+console.log('_wpBindErrors（96 条上限，与服务端同一道闸）:');
 (() => {
   const mk = n => { const o = {}; for (let i = 1; i <= n; i++) o[String(i).padStart(2, '0')] = { panel: 'AA' + String(i).padStart(4, '0') }; return o; };
-  const over = T._wpBindErrors({ code: mk(65) });
-  eq('65 条出一条，64 条不吭声', [over.length, over[0], T._wpBindErrors({ code: mk(64) }).length],
-    [1, '录了 65 个码，超过上限 64 个', 0]);
-  eq('一格两码按两条算', T._wpBindErrors({ code: { '01': { player: 'D3', panel: 'B5' } } }).length, 0);
+  const over = T._wpBindErrors({ code: mk(97) });
+  eq('97 条出一条，96 条不吭声', [over.length, over[0], T._wpBindErrors({ code: mk(96) }).length],
+    [1, '录了 97 个码，超过上限 96 个', 0]);
+  eq('一格三码按三条算', T._wpBindErrors({ code: { '01': { player: 'D3', panel: 'B5', custom: 'C7' } } }).length, 0);
   eq('没草稿也不抛', T._wpBindErrors(null).length, 0);
 })();
 
@@ -285,6 +292,7 @@ console.log('_wpCodeCellHtml（一格的某一列码值框，可手输也可点�
   const ready = T._wpCodeCellHtml('02', 'panel', { code: {} });
   has('学习开关已开：提示也可以直接敲，或点一下再按键', ready, '直接敲十六进制录码；或点一下再按墙板对应的那颗键');
   has('点歌机列的学习提示指向点歌机', T._wpCodeCellHtml('02', 'player', { code: {} }), '或点一下再按点歌机对应的那颗键');
+  has('自定义列的学习提示指向自定义', T._wpCodeCellHtml('02', 'custom', { code: {} }), '或点一下再按自定义对应的那颗键');
   s._wpLearnCell = { fid: '02', src: 'player' };
   s._wpLearnUntil = Date.now() + 10000;
   const waiting = T._wpCodeCellHtml('02', 'player', { code: {} });

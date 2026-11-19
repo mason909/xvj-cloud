@@ -242,18 +242,18 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 /* 码值表要一眼看全每格学过没有，所以是一张 30 行的表，不是散在文件夹列表里的控件 */
 .wp-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#252525;border:1px solid #333;border-radius:6px;padding:8px 10px;margin-top:10px}
 .wp-tbl{width:100%;border-collapse:collapse;margin-top:8px;font-size:var(--fs-meta)}
-/* 码值表按内容收窄、靠左排：两个码框相邻，右侧整片留给后续功能，不把余量摊成超长输入框 */
+/* 码值表按内容收窄、靠左排：几个码框相邻，右侧整片留给后续功能，不把余量摊成超长输入框 */
 .wp-tbl.wp-codes{width:auto}
 .wp-tbl th{background:#252525;color:#888;font-weight:normal;font-size:var(--fs-micro);padding:5px 6px;border-bottom:1px solid #333;text-align:left}
 .wp-tbl td{padding:3px 6px;border-bottom:1px solid #2a2a2a;color:#ccc}
 .wp-tbl tr:hover td{background:#262626}
-.wp-fid{color:#e94560;font-weight:bold;width:52px}
+.wp-fid{color:#e94560;font-weight:bold;width:52px;white-space:nowrap}
 .wp-cnt{color:#666;width:58px}
 .wp-cnt.has{color:#4caf50}
 .wp-sel{background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:3px 5px;font-size:var(--fs-meta);width:76px}
 .wp-sel.bound{border-color:#f5a623;color:#f5a623}
 .wp-hint{color:#8a8a8a;font-size:var(--fs-micro);margin-top:6px}
-/* 每格两个码值框（点歌机/墙板）：可直接敲键盘改，也可点一下开始等对应总线的按键；有码时金边，等按键时呼吸高亮 */
+/* 每格三个码值框（点歌机/墙板/自定义）：可直接敲键盘改，也可点一下开始等对应总线的按键；有码时金边，等按键时呼吸高亮 */
 .wp-code-wrap{display:flex;align-items:center;gap:2px;width:120px}
 .wp-code{background:#1a1a1a;color:#8a8a8a;border:1px dashed #3a3a3a;border-radius:4px;padding:3px 6px;font-size:var(--fs-micro);font-family:Consolas,Menlo,monospace;letter-spacing:.5px;flex:1;min-width:0;cursor:text;outline:none}
 .wp-code::placeholder{color:#5a5a5a;letter-spacing:0}
@@ -2002,7 +2002,7 @@ function rmDevice() {
 //   scenes[X].master.brightness：该幕总亮度，与每扇窗自己的 brightness 相乘
 //   scenes[X].play_settings：该幕「文件夹 → 播放顺序」设置表（编辑面见【F-06g】）
 //   config.wallpanel_bindings：房间级「帧码 → 文件夹」学习绑定表 [{frame, folder, source}]，
-//     一格最多两路码（点歌机 / 墙板），不分幕（编辑面见【F-06f】；没有编号体系，墙板上每按下一个键
+//     一格最多三路码（点歌机 / 墙板 / 自定义），不分幕（编辑面见【F-06f】；没有编号体系，墙板上每按下一个键
 //     学到的码直接对一格文件夹）
 //
 // 【与外部信号的关系】
@@ -2231,11 +2231,11 @@ function sfCrop() {
 
 // ============================================================================
 // 【F-06f】墙板配置表（工作台「墙板配置」模式）
-// 表形：行 = 文件夹 01~30（与素材目录同一把键），列 = A幕素材数 / B幕素材数 / 点歌机码 / 墙板码。
+// 表形：行 = 文件夹 01~30（与素材目录同一把键），列 = A幕素材数 / B幕素材数 / 点歌机码 / 墙板码 / 自定义。
 // 录码有两条路：键盘直接敲，或打开「墙板学习」→ 点某一列的码值框 → 按对应那颗键 →
 // 码值自动填进那一列并当场保存。落库形状只有 config.wallpanel_bindings = [{frame, folder, source}]：
 // 编号（panel_no）与默认编号已于 2026-11-13 整条删除；分幕录码同日删掉。
-// 同一格可以录两个码（一路点歌机、一路墙板），谁按到都切到这一格，A/B 两幕通用。
+// 同一格可以录三个码（一路点歌机、一路墙板、一路自定义），谁按到都切到这一格，A/B 两幕通用。
 // 串口参数（节点/波特率/字符格式）与串口总闸同样是改动即保存（500ms 防抖，见 _wpAutoSaveSoon）：
 // 它们决定收不收得到帧，改错要能马上被设备用上，也能随时点「保存」立即落库。
 // 第二条参数条是 DMX512 副板（另一条物理链路）：总闸/节点/波特率三项，通道 N 的值变动 = 按了一次，
@@ -2265,14 +2265,14 @@ var DMX_DEFAULT_BAUD = 115200;
 
 /**
  * 学习绑定表（config.wallpanel_bindings，与服务端 normalizeWallpanelBindings / APK WallPanelBindings 同一份）：
- * 一条规则 = 一个帧指纹（大写 hex）→ 一个文件夹，同一格允许两路码：点歌机一路、墙板一路。
+ * 一条规则 = 一个帧指纹（大写 hex）→ 一个文件夹，同一格允许三路码：点歌机一路、墙板一路、自定义一路。
  * 谁按到都切到这一格（A/B 共用，不分幕）。来源只是分列标签，设备端不知道也不判断帧是谁发的。
- * 帧指纹不认语义，所以别家厂家的帧也能学。上限与形状闸与服务端同尺（64 条、1~64 字节的偶数长度大写十六进制）。
+ * 帧指纹不认语义，所以别家厂家的帧也能学。上限与形状闸与服务端同尺（96 条、1~64 字节的偶数长度大写十六进制）。
  * 最小 1 字节：小麦那族功能码就是单字节（D3、B5 这种），两位 hex 必须能录能学。
  */
 var WP_FRAME_HEX_RE = /^([0-9A-F]{2}){1,64}$/;
-var WP_BINDINGS_MAX = 64;
-var WP_SOURCES = [{ v: 'player', n: '点歌机码' }, { v: 'panel', n: '墙板码' }];   // 一格的左右两列
+var WP_BINDINGS_MAX = 96;
+var WP_SOURCES = [{ v: 'player', n: '点歌机码' }, { v: 'panel', n: '墙板码' }, { v: 'custom', n: '自定义' }];   // 一格的三个码值列
 var WP_FOLDER_COUNT = 30;          // 格子只有 01~30（素材目录那一把尺）
 var WP_LEARN_S_DEFAULT = 20;       // 学习窗长度：够走到墙板前按一下键（上限 60s 由服务端与设备端把关）
 var WP_LEARN_POLL_MS = 1000;       // 等按键时的取帧间隔（设备侧每收到一帧就上报，1s 足够跟手）
@@ -2313,7 +2313,7 @@ function _wpHwSnap(d) {
         d.dmxEnabled, d.dmxPath, d.dmxBaud]);
 }
 
-/** 码值表的快照（键排序后序列化）：整表写入顺序与两列的录入顺序都不该被当成内容差异；
+/** 码值表的快照（键排序后序列化）：整表写入顺序与各列的录入顺序都不该被当成内容差异；
  *  全开/全关码与码值表一起录、一起自动保存，也算在这一份里 */
 function _wpCodeSnap(d) {
     var m = d.code || {};
@@ -2323,7 +2323,7 @@ function _wpCodeSnap(d) {
     }), d.allOn || '', d.allOff || '']);
 }
 
-/** 已录多少条码（一格最多两条：点歌机一路 + 墙板一路） */
+/** 已录多少条码（一格最多三条：点歌机一路 + 墙板一路 + 自定义一路） */
 function _wpCodeCount(m) {
     var n = 0;
     Object.keys(m || {}).forEach(function (k) {
@@ -2396,11 +2396,13 @@ function _wpCell(v) {
     return /^\d{2}$/.test(s) && s >= '01' && s <= String(WP_FOLDER_COUNT).padStart(2, '0') ? s : '';
 }
 
-/** 码值来源：player = 点歌机码、panel = 墙板码；没带（存量绑定）按历史学习路径归墙板列 */
-function _wpSrc(v) { return v === 'player' ? 'player' : 'panel'; }
+/** 码值来源：player = 点歌机码、panel = 墙板码、custom = 自定义；没带（存量绑定）按历史学习路径归墙板列 */
+function _wpSrc(v) { return v === 'player' || v === 'custom' ? v : 'panel'; }
 
 /** 来源的界面名（提示语/自动保存消息共用） */
-function _wpSrcName(v) { return v === 'player' ? '点歌机码' : '墙板码'; }
+function _wpSrcName(v) {
+    return v === 'player' ? '点歌机码' : (v === 'custom' ? '自定义码' : '墙板码');
+}
 
 /**
  * 云端/草稿里的一条规则 → 干净形状，脏的返回 null 丢掉。
@@ -2430,7 +2432,7 @@ function _wpRulesOf(raw) {
     return out;
 }
 
-/** config.wallpanel_bindings → 码值表 { '01': {player, panel} }（同列先到先得，缺键给空表） */
+/** config.wallpanel_bindings → 码值表 { '01': {player, panel, custom} }（同列先到先得，缺键给空表） */
 function _wpCodeOf(cfg) {
     var out = {};
     _wpRulesOf(cfg && cfg.wallpanel_bindings).forEach(function (r) {
@@ -2463,7 +2465,7 @@ function _wpCodeFields(d) {
     };
 }
 
-/** 一只框当前该显示的值（三种框共用：文件夹两列 + 全开/全关）。全开/全关用伪格名 ON/OFF 走同一套学习链 */
+/** 一只框当前该显示的值（三种框共用：文件夹各列 + 全开/全关）。全开/全关用伪格名 ON/OFF 走同一套学习链 */
 function _wpCodeValue(d, fid, src) {
     if (fid === 'ON') return (d && d.allOn) || '';
     if (fid === 'OFF') return (d && d.allOff) || '';
@@ -2540,7 +2542,7 @@ function _wpCodeCellHtml(fid, src, d) {
     var cls = 'wp-code' + (code ? ' bound' : '') + (waiting ? ' learning' : '');
     var tip = waiting ? '正在等按键：敲键盘就是手输（会取消学习），点框可取消'
         : (code ? '已录 ' + code + '（A/B 两幕通用）：直接改，回车或点开别处保存；打开「墙板学习」后点框可重学'
-                : (s._wpLearnMode ? '直接敲十六进制录码；或点一下再按' + (src === 'player' ? '点歌机' : '墙板') + '对应的那颗键'
+                : (s._wpLearnMode ? '直接敲十六进制录码；或点一下再按' + (src === 'player' ? '点歌机' : (src === 'custom' ? '自定义' : '墙板')) + '对应的那颗键'
                                    : '直接敲十六进制录码，如 D3、F50521030000；打开「墙板学习」后点框可按键学'));
     return '<span class="wp-code-wrap">'
         + '<input class="' + cls + '" data-fid="' + fid + '" data-src="' + src + '" value="' + escA(code) + '"'
@@ -2765,7 +2767,7 @@ function _wpTableHtml() {
     if (s._wpErr) h += '<div class="wp-warn" style="color:#e94560">' + esc(s._wpErr) + '</div>';
 
     if (!s._wpLearnMode) {
-        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存（两路串口各管各的）。两列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。最上面一行是全开/全关码：墙板那颗开关键按一下发一个码（两个码各自独立），全关=所有窗口盖黑（播放不停），全开=撤掉黑布回到原画面。DMX512 不需要学码：通道 N 直接就是文件夹 NN。</div>';
+        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存（两路串口各管各的）。各列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。最上面一行是全开/全关码：墙板那颗开关键按一下发一个码（两个码各自独立），全关=所有窗口盖黑（播放不停），全开=撤掉黑布回到原画面。DMX512 不需要学码：通道 N 直接就是文件夹 NN。</div>';
     } else if (_wpLearning()) {
         var left = Math.max(0, Math.ceil((s._wpLearnUntil - Date.now()) / 1000));
         var cell = s._wpLearnCell;
@@ -2778,7 +2780,7 @@ function _wpTableHtml() {
     } else {
         // 学习开着但总闸关着是唯一一个"开了也白开"的组合：这里给的是动作，不是重复下面那句警告
         h += '<div class="wp-hint" style="color:#f5a623">' + (d.enabled
-            ? '墙板学习已开：点一个码值框（点歌机码或墙板码），再按对应的那颗键。'
+            ? '墙板学习已开：点一个码值框（点歌机码、墙板码或自定义），再按对应的那颗键。'
             : '墙板学习已开，但总闸关着：设备不会收帧，先去上面打开总闸。') + '</div>';
     }
     if (s._wpLearnTimeout && !_wpLearning()) {
@@ -2793,24 +2795,25 @@ function _wpTableHtml() {
     // 全开/全关：墙板开关键轮流发两个码，是两个独立动作（不是同一个帧的两种解释）。
     // 列宽与下面的码值表对齐，现场一眼就能看出这两格和格子的码是同一套录入方式
     h += '<table class="wp-tbl wp-codes" style="margin-top:8px"><thead><tr><th>全开全关</th>'
-        + '<th colspan="2" style="font-weight:normal;color:#888">一键黑屏 / 恢复（播放不停）</th>'
+        + '<th colspan="3" style="font-weight:normal;color:#888">一键黑屏 / 恢复（播放不停）</th>'
         + '<th>全开码</th><th>全关码</th></tr></thead><tbody>';
     h += '<tr><td class="wp-fid">全开全关</td>'
-        + '<td colspan="2" class="wp-cnt" title="墙板那颗开关键按一下发一个码（两码轮流）；全关=所有窗口盖黑、播放继续；全开=撤掉黑布回到原画面">按开关键学习</td>'
+        + '<td colspan="3" class="wp-cnt" title="墙板那颗开关键按一下发一个码（两码轮流）；全关=所有窗口盖黑、播放继续；全开=撤掉黑布回到原画面">按开关键学习</td>'
         + '<td>' + _wpAllCodeCellHtml('on', d) + '</td>'
         + '<td>' + _wpAllCodeCellHtml('off', d) + '</td></tr>';
     h += '</tbody></table>';
 
-    // 一格可录两个码（点歌机一路、墙板一路），A/B 两幕通用：按不按得动只看这格在"当前这一幕"里有没有素材
-    h += '<table class="wp-tbl wp-codes"><thead><tr><th>文件夹</th><th>A幕素材</th><th>B幕素材</th><th>点歌机码</th><th>墙板码</th></tr></thead><tbody>';
+    // 一格可录三个码（点歌机一路、墙板一路、自定义一路），A/B 两幕通用：按不按得动只看这格在"当前这一幕"里有没有素材
+    h += '<table class="wp-tbl wp-codes"><thead><tr><th>文件夹</th><th>A幕素材</th><th>B幕素材</th>'
+        + WP_SOURCES.map(function (x) { return '<th>' + x.n + '</th>'; }).join('') + '</tr></thead><tbody>';
     for (var i = 1; i <= WP_FOLDER_COUNT; i++) {
         var f = String(i).padStart(2, '0');
         var ca = (fmA[f] || []).length, cb = (fmB[f] || []).length;
         h += '<tr><td class="wp-fid">' + f + '</td>'
             + '<td class="wp-cnt' + (ca ? ' has' : '') + '" title="A 幕这格里有几个素材（0 个的话按过去是黑屏）">' + (ca || '—') + '</td>'
             + '<td class="wp-cnt' + (cb ? ' has' : '') + '" title="B 幕这格里有几个素材（0 个的话按过去是黑屏）">' + (cb || '—') + '</td>'
-            + '<td>' + _wpCodeCellHtml(f, 'player', d) + '</td>'
-            + '<td>' + _wpCodeCellHtml(f, 'panel', d) + '</td></tr>';
+            + WP_SOURCES.map(function (x) { return '<td>' + _wpCodeCellHtml(f, x.v, d) + '</td>'; }).join('')
+            + '</tr>';
     }
     h += '</tbody></table>';
     return h;
@@ -2959,7 +2962,7 @@ function wpLearnDone(hex) {
     });
 }
 
-/** 写一格码值：一个码只能落一格（含两列之间、含全开/全关），原来占这个码的那个框让位 */
+/** 写一格码值：一个码只能落一格（含各列之间、含全开/全关），原来占这个码的那个框让位 */
 function _wpPutCode(fid, src, hex) {
     var d = _wpDraftOf();
     if (!d) return;
@@ -2967,7 +2970,7 @@ function _wpPutCode(fid, src, hex) {
     Object.keys(m).forEach(function (k) {
         var c = m[k] || {};
         WP_SOURCES.forEach(function (x) { if (c[x.v] === hex) delete c[x.v]; });
-        if (!c.player && !c.panel) delete m[k];
+        if (!WP_SOURCES.some(function (x) { return c[x.v]; })) delete m[k];
     });
     if (d.allOn === hex) d.allOn = '';
     if (d.allOff === hex) d.allOff = '';
@@ -2982,7 +2985,7 @@ function _wpPutAll(which, hex) {
     Object.keys(m).forEach(function (k) {
         var c = m[k] || {};
         WP_SOURCES.forEach(function (x) { if (c[x.v] === hex) delete c[x.v]; });
-        if (!c.player && !c.panel) delete m[k];
+        if (!WP_SOURCES.some(function (x) { return c[x.v]; })) delete m[k];
     });
     if (which === 'on') {
         d.allOn = hex;
@@ -2999,7 +3002,7 @@ function _wpDropCode(d, fid, src) {
     var c = m[fid];
     if (!c) return;
     delete c[_wpSrc(src)];
-    if (!c.player && !c.panel) delete m[fid];
+    if (!WP_SOURCES.some(function (x) { return c[x.v]; })) delete m[fid];
 }
 
 /** 清掉一格某一列的码值（立刻保存；只刷框，不整表重画，焦点留在原处） */

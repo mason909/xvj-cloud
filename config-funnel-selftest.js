@@ -22,7 +22,7 @@ const names = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isS
   'roomSceneDigest', 'isSafeDeviceId', 'parseRoomConfig', 'isSafeFolderName', 'isSafeSerialPath',
   'roomDebugFlag', 'roomWallpanelFields', 'roomWallpanelDigest', 'findWallpanelFieldError', 'resolvePreviewTarget',
   'roomDmxFields', 'roomDmxDigest', 'findDmxFieldError',
-  'wallpanelBitOk', 'wallpanelBitChoice', 'normalizeWallpanelCode', 'findBitChoiceError', 'normalizeWallpanelRule', 'normalizeWallpanelBindings', 'findWallpanelBindingsError',
+  'wallpanelBitOk', 'wallpanelBitChoice', 'normalizeWallpanelCode', 'findBitChoiceError', 'normalizeWallpanelRule', 'normalizeWallpanelBindings', 'findWallpanelBindingsError', 'wallpanelSourceName',
   'outputPx', 'roomOutputField', 'findOutputError', 'rememberDeviceScreen', 'deviceScreen',
   'normalizeDeviceFrames', 'rememberDeviceFrames', 'deviceFrames',
   'roomSyncFields', 'windowCommandPayload'];
@@ -195,6 +195,11 @@ eq('同一格同一列两个码 → 先到先得（每列一个码）', T.normal
 eq('同一格两路各一个码 → 都留着（点歌机 + 墙板）',
   T.normalizeWallpanelBindings([{ frame: 'F505', folder: '01' }, { frame: 'D3', folder: '01', source: 'player' }]),
   [{ frame: 'D3', folder: '01', source: 'player' }, { frame: 'F505', folder: '01', source: 'panel' }]);
+eq('同一格三路各一个码 → 都留着（点歌机 + 墙板 + 自定义）',
+  T.normalizeWallpanelBindings([{ frame: 'F505', folder: '01' }, { frame: 'D3', folder: '01', source: 'player' },
+    { frame: 'F0A1', folder: '01', source: 'custom' }]),
+  [{ frame: 'D3', folder: '01', source: 'player' }, { frame: 'F0A1', folder: '01', source: 'custom' },
+   { frame: 'F505', folder: '01', source: 'panel' }]);
 eq('同一列冗余再多，整形后也只有 30 格各一条', (() => {
   const arr = Array.from({ length: 70 }, (_, i) => ({ frame: 'AA' + String(i).padStart(4, '0'), folder: String(i % 30 + 1).padStart(2, '0') }));
   return T.normalizeWallpanelBindings(arr).length;
@@ -203,7 +208,9 @@ eq('同一列冗余再多，整形后也只有 30 格各一条', (() => {
 console.log('findWallpanelBindingsError（写入侧一条都别静默丢）:');
 eq('没带 / null 不算错', [T.findWallpanelBindingError === undefined, T.findWallpanelBindingsError(undefined), T.findWallpanelBindingsError(null)], [true, null, null]);
 eq('合法形状 → null', [T.findWallpanelBindingsError([{ frame: 'F505', type: 'folder', folder: '01' }]),
-  T.findWallpanelBindingsError([{ frame: 'F505', folder: '01' }, { frame: 'D3', folder: '01', source: 'player' }])], [null, null]);
+  T.findWallpanelBindingsError([{ frame: 'F505', folder: '01' }, { frame: 'D3', folder: '01', source: 'player' }]),
+  T.findWallpanelBindingsError([{ frame: 'F505', folder: '01' }, { frame: 'D3', folder: '01', source: 'player' },
+    { frame: 'F0A1', folder: '01', source: 'custom' }])], [null, null, null]);
 eq('不是数组 → 报形状（旧的分幕对象点明不再支持）',
   [T.findWallpanelBindingsError({ A: [{ frame: 'F505' }] }).indexOf('不再按 A/B 分幕录码') > 0,
    T.findWallpanelBindingsError('x').indexOf('数组') > 0], [true, true]);
@@ -212,13 +219,19 @@ eq('脏规则报第几条（不是丢掉就当没事）', (() => {
   return msg.indexOf('第 2 条规则形状不对') >= 0;
 })(), true);
 eq('同帧绑两条 → 报歧义', T.findWallpanelBindingsError([{ frame: 'F505', folder: '01' }, { frame: 'f505', folder: '02' }]).indexOf('一键只能对一个文件夹') > 0, true);
-eq('同一格同一列两个码 → 报歧义', T.findWallpanelBindingsError([{ frame: 'F505', folder: '01' }, { frame: 'AA55', folder: '01' }]).indexOf('每列只能录一个码') > 0, true);
-eq('来源写错 → 报出来，不静默归墙板', T.findWallpanelBindingsError([{ frame: 'F505', folder: '01', source: 'remote' }]).indexOf('来源只能是点歌机') > 0, true);
+eq('同一格同一列两个码 → 报歧义（自定义列也各只一个）', [
+  T.findWallpanelBindingsError([{ frame: 'F505', folder: '01' }, { frame: 'AA55', folder: '01' }]).indexOf('每列只能录一个码') > 0,
+  T.findWallpanelBindingsError([{ frame: 'F0A1', folder: '01', source: 'custom' }, { frame: 'F0A2', folder: '01', source: 'custom' }]).indexOf('自定义码绑了不止一个') > 0
+], [true, true]);
+eq('来源写错 → 报出来，不静默归墙板（文案列出三种）', (() => {
+  const m = T.findWallpanelBindingsError([{ frame: 'F505', folder: '01', source: 'remote' }]);
+  return [m.indexOf('来源只能是点歌机') > 0, m.indexOf('自定义') > 0];
+})(), [true, true]);
 eq('存量 type/no 脏键不参与整形（只认 frame+folder+source）', T.normalizeWallpanelBindings([{ frame: 'F505', type: 'panel_no', no: 3, folder: '05' }]),
   [{ frame: 'F505', folder: '05', source: 'panel' }]);
 eq('超上限报条数', (() => {
-  const arr = Array.from({ length: 65 }, (_, i) => ({ frame: 'AA' + String(i).padStart(4, '0'), type: 'folder', folder: '01' }));
-  return T.findWallpanelBindingsError(arr).indexOf('超出上限 64') > 0;
+  const arr = Array.from({ length: 97 }, (_, i) => ({ frame: 'AA' + String(i).padStart(4, '0'), type: 'folder', folder: '01' }));
+  return T.findWallpanelBindingsError(arr).indexOf('超出上限 96') > 0;
 })(), true);
 eq('整份 config 走写入闸：脏学习表被拦（prepareRoomConfig）', (() => {
   const r = T.prepareRoomConfig({ wallpanel_bindings: [{ frame: 'F50', type: 'folder', folder: '01' }] }, null);

@@ -89,8 +89,8 @@
  *                                    // 设备端的空闲断帧阈值 = 2 个字符时间，由这三位数算出来，猜错就把别家帧切碎
  *   wallpanel_bindings: [{ frame: 'D3', folder: '01', source: 'panel' }, ...]
  *                                    // 学习式绑定表：帧指纹（大写 hex，1~64 字节）→ 文件夹。
- *                                    // 没有编号那层，也不分幕：一格最多两个码 —— 一路点歌机（player）、
- *                                    // 一路墙板（panel），谁先到都切到这一格，A/B 两幕通用。
+ *                                    // 没有编号那层，也不分幕：一格最多三个码 —— 一路点歌机（player）、
+ *                                    // 一路墙板（panel）、一路自定义（custom），谁先到都切到这一格，A/B 两幕通用。
  *                                    // 同帧只有一条、同格同一列也只有一条（后写覆盖），总条数截
  *                                    // WALLPANEL_BINDINGS_MAX，脏形状写库前 400。
  *   wallpanel_on_frame / wallpanel_off_frame: String | null
@@ -384,14 +384,15 @@ const DMX_DEFAULT_BAUD = 115200;
  *  最小 1 字节：小麦那族功能码就是单字节（D3、B5 这种），两位 hex 必须能落库、能学习。 */
 const WALLPANEL_FRAME_HEX_RE = /^([0-9A-F]{2}){1,64}$/;
 /**
- * 码值来源：同一个文件夹允许两个码 —— 一路点歌机、一路墙板，谁先到都切到这一格。
- * player = 点歌机码（中控合并进来的点歌机帧），panel = 墙板码（墙板那颗键的帧）。
+ * 码值来源：同一个文件夹允许三个码 —— 一路点歌机、一路墙板、一路自定义，谁先到都切到这一格。
+ * player = 点歌机码（中控合并进来的点歌机帧），panel = 墙板码（墙板那颗键的帧），
+ * custom = 自定义码（现场想额外挂一条触发帧时用，语义与另两列完全一致）。
  * 来源只是人记账用的标签：设备端只认 frame→folder，判不出也不该判这一帧是谁发的。
  * 存量绑定没有这个键，按历史学习路径归 panel（墙板列）。
  */
-const WALLPANEL_BINDING_SOURCES = ['player', 'panel'];
-/** 每幕学习规则条数上限：一块墙板几十键，留足余量，同时挡住有人拿这棵树当日志刷 */
-const WALLPANEL_BINDINGS_MAX = 64;
+const WALLPANEL_BINDING_SOURCES = ['player', 'panel', 'custom'];
+/** 学习规则条数上限：30 格 × 3 列 = 90，留一点余量挡住有人拿这棵树当日志刷 */
+const WALLPANEL_BINDINGS_MAX = 96;
 /** 学习窗时长上限（秒），与 APK MainActivity.LEARN_MAX_S 同一把尺；窗内设备只上报候选帧，不改配置 */
 const WALLPANEL_LEARN_MAX_S = 60;
 
@@ -712,7 +713,7 @@ function wallpanelBitChoice(raw, allowed, dflt) {
  * 动作只剩一样：切到某一格。编号/默认编号那套间接动作已于 2026-11-13 删除，
  * 存量规则里残留的 type/no 键在整形时被丢掉（设备端已经不读它们）。
  * 格子号复用预设那把 01~30 的闸（PRESET_FOLDER_RE）：与素材目录同一口径。
- * source 只是给人看的分列标签（点歌机码 / 墙板码），不属于形状闸：没带的存量绑定归 panel。
+ * source 只是给人看的分列标签（点歌机码 / 墙板码 / 自定义），不属于形状闸：没带的存量绑定归 panel。
  */
 function normalizeWallpanelRule(r) {
   if (!isPlainObject(r)) return null;
@@ -722,12 +723,12 @@ function normalizeWallpanelRule(r) {
   var fid = String(r.folder === undefined || r.folder === null ? '' : r.folder).trim()
     .replace(/^[AB](?=\d{2}$)/, '');
   if (!PRESET_FOLDER_RE.test(fid)) return null;
-  return { frame: hex, folder: fid, source: r.source === 'player' ? 'player' : 'panel' };
+  return { frame: hex, folder: fid, source: (r.source === 'player' || r.source === 'custom') ? r.source : 'panel' };
 }
 
 /**
  * 学习绑定表（config.wallpanel_bindings，[{ frame, folder, source }]）规范化 → 下发/指纹用的确定形状。
- * 一格最多两个码、不分幕：点歌机那一路与墙板那一路，谁按到都切到这一格，A/B 两幕通用。
+ * 一格最多三个码、不分幕：点歌机那一路、墙板那一路与自定义那一路，谁按到都切到这一格，A/B 两幕通用。
  * 脏规则与超上限的尾部当场丢掉 —— 这里是整形，报错归 findWallpanelBindingsError（写入侧）。
  * 按帧排序落库：同一组绑定不管什么顺序写进来，
  * roomWallpanelDigest 都不会虚报"墙板配置变了"多发一枪。
@@ -747,6 +748,11 @@ function normalizeWallpanelBindings(raw) {
   });
   kept.sort(function (a, b) { return a.frame < b.frame ? -1 : (a.frame > b.frame ? 1 : 0); });
   return kept.slice(0, WALLPANEL_BINDINGS_MAX);
+}
+
+/** 来源的界面列名（报错文案用）：player = 点歌机码、panel = 墙板码、custom = 自定义码 */
+function wallpanelSourceName(source) {
+  return source === 'player' ? '点歌机码' : (source === 'custom' ? '自定义码' : '墙板码');
 }
 
 /**
@@ -770,12 +776,12 @@ function findWallpanelBindingsError(raw) {
       }
       if (r.source !== undefined && r.source !== null && r.source !== '' &&
           WALLPANEL_BINDING_SOURCES.indexOf(r.source) < 0) {
-        problems.push('第 ' + (i + 1) + ' 条规则的来源只能是点歌机（player）或墙板（panel）');
+        problems.push('第 ' + (i + 1) + ' 条规则的来源只能是点歌机（player）、墙板（panel）或自定义（custom）');
       }
       if (seenFrame[rule.frame]) problems.push('帧 ' + rule.frame + ' 绑了不止一条：一键只能对一个文件夹');
       var slot = rule.folder + '|' + rule.source;
       if (seenSlot[slot]) {
-        problems.push('文件夹 ' + rule.folder + ' 的' + (rule.source === 'player' ? '点歌机码' : '墙板码') +
+        problems.push('文件夹 ' + rule.folder + ' 的' + wallpanelSourceName(rule.source) +
           '绑了不止一个：每列只能录一个码');
       }
       seenFrame[rule.frame] = true;

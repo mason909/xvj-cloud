@@ -2,10 +2,10 @@
 // Run from /var/www/xvj:  node wp-selftest.js
 // Creates throwaway rooms/devices (all ids prefixed zzwp), drives the HTTP routes on localhost,
 // captures what actually lands on MQTT, then deletes every row it created.
-// Contract under test (2026-11-13): no panel numbers, no per-scene codes. config.wallpanel_bindings is
-// a flat [{frame,folder,source}] at the top level — up to two codes per folder (source 'player' = 点歌机,
-// 'panel' = 墙板; missing source defaults to panel), shared by A/B; folder ids are stored bare (01) and only
-// get the scene prefix on the scene-payload path. 'source' is a human-facing column label the device ignores.
+// Contract under test (2026-11-19): no panel numbers, no per-scene codes. config.wallpanel_bindings is
+// a flat [{frame,folder,source}] at the top level — up to three codes per folder (source 'player' = 点歌机,
+// 'panel' = 墙板, 'custom' = 自定义; missing source defaults to panel), shared by A/B; folder ids are stored
+// bare (01) and only get the scene prefix on the scene-payload path. 'source' is a human-facing column label the device ignores.
 // Every wallpanel_* change travels on set_wallpanel and never touches rev.
 const http = require('http');
 const mqtt = require('mqtt');
@@ -100,25 +100,27 @@ async function main() {
   check('sync rev is a 12-char string', typeof revStart === 'string' && revStart.length === 12, String(revStart));
   await sleep(400);   // 手工 sync 的 publish 到订阅回调要几毫秒：不等它落袋就清，会被算到下一段的头上
 
-  // ── 1. 学码：落库裸格名、大写帧、按帧排序；同一格两路码（点歌机 + 墙板）都要收下；只发一条 set_wallpanel ──
+  // ── 1. 学码：落库裸格名、大写帧、按帧排序；同一格三路码（点歌机 + 墙板 + 自定义）都要收下；只发一条 set_wallpanel ──
   //      带上小麦那族的单字节码（d3）：它在协议里就是 1 字节，不能被"帧至少两字节"的闸挡掉。
   //      来源只是人看的列标签（设备端不看），缺省一律算墙板码。
   captured.length = 0;
   let res = await put(R1, cfgOf([
     { frame: 'f50521', folder: 'A01', source: 'player' }, { frame: 'F5a5b5', folder: '02' },
     { frame: 'd3', folder: '03', source: 'panel' },
-    { frame: 'b5', folder: '05', source: 'player' }, { frame: 'aa55', folder: '05', source: 'panel' }
+    { frame: 'b5', folder: '05', source: 'player' }, { frame: 'aa55', folder: '05', source: 'panel' },
+    { frame: 'c7', folder: '05', source: 'custom' }
   ]));
   check('bindings write -> 200', res.code === 200, res.code + ' ' + res.buf);
   let c1 = await readCfg(R1);
   const WANT_BIND = [
     { frame: 'AA55', folder: '05', source: 'panel' },
     { frame: 'B5', folder: '05', source: 'player' },
+    { frame: 'C7', folder: '05', source: 'custom' },
     { frame: 'D3', folder: '03', source: 'panel' },
     { frame: 'F50521', folder: '01', source: 'player' },
     { frame: 'F5A5B5', folder: '02', source: 'panel' }
   ];
-  check('DB stores uppercase frames + bare folders + source (incl. single-byte D3, two codes on folder 05)',
+  check('DB stores uppercase frames + bare folders + source (incl. single-byte D3, three codes on folder 05)',
     same(c1.wallpanel_bindings, WANT_BIND), JSON.stringify(c1.wallpanel_bindings));
   await sleep(700);
   check('bindings change -> exactly one set_wallpanel',
@@ -140,17 +142,18 @@ async function main() {
 
   // ── 3. 写坏的绑定表：一律 400 报出去（不静默丢），DB 与设备都保持原样 ──
   const many = [];
-  for (let i = 0; i < 65; i++) many.push({ frame: 'F5' + (i < 16 ? '0' : '') + i.toString(16).toUpperCase(), folder: '01' });
+  for (let i = 0; i < 97; i++) many.push({ frame: 'F5' + (i < 16 ? '0' : '') + i.toString(16).toUpperCase(), folder: '01' });
   const badWrites = [
     ['duplicate frame', rule('F50521', '01').concat(rule('F50521', '02')), '绑了不止一条'],
     ['same folder, same column, two codes', rule('F50521', '01', 'panel').concat(rule('AA0102', '01', 'panel')), '只能录一个码'],
+    ['same folder, custom column, two codes', rule('F0A1', '01', 'custom').concat(rule('F0A2', '01', 'custom')), '只能录一个码'],
     ['unknown source', rule('AA0102', '01', 'ipad'), '来源只能是'],
     ['odd-length frame', rule('F50', '01'), '形状不对'],
     ['folder 31 out of range', rule('AA01', '31'), '形状不对'],
     ['folder 00 out of range', rule('AA01', '00'), '形状不对'],
     ['bindings not an array', 'abc', '数组'],
     ['per-scene object shape', { A: [], B: [] }, '不再按 A/B 分幕录码'],
-    ['over 64 rules', many, '超出上限 64']
+    ['over 96 rules', many, '超出上限 96']
   ];
   captured.length = 0;
   const bindAfterStep1 = JSON.stringify(c1.wallpanel_bindings);
