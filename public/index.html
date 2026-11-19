@@ -4149,7 +4149,11 @@ function renderWinCanvas(wins) {
     if (df) { df.style.left = _canvasOffsetX + 'px'; df.style.top = _canvasOffsetY + 'px'; df.style.width = (deviceW * _canvasScale) + 'px'; df.style.height = (deviceH * _canvasScale) + 'px'; }
     canvas.innerHTML = '';
     var selWinId = s._selWin ? s._selWin.id : null;
+    // 另一张卡的窗口留在画布上只当位置参照：压暗、不接收指针也进不了 Tab 焦点，
+    // 要编辑就切到它所属的卡（两卡各管各的，避免在素材卡里误拖点歌窗）
+    var curTab = _curWinTab();
     wins.forEach(function(w) {
+        var dim = _winKind(w) !== curTab;
         var rx = _canvasOffsetX + (w.x||0) * _canvasScale;
         var ry = _canvasOffsetY + (w.y||0) * _canvasScale;
         var rw = (w.width||320) * _canvasScale;
@@ -4163,16 +4167,23 @@ function renderWinCanvas(wins) {
             : (sel ? ';background:rgba(233,69,96,0.18)' : ';background:rgba(233,69,96,0.08)');
         var el = document.createElement('div');
         el.className = 'win-rect' + (sel ? ' selected' : '');
-        el.style.cssText = 'position:absolute;left:' + rx + 'px;top:' + ry + 'px;width:' + rw + 'px;height:' + rh + 'px;z-index:' + (w.zIndex||1) + ';box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:20px;min-height:20px;user-select:none' + _bg + (sel ? ';border-color:#e94560' : '');
+        el.style.cssText = 'position:absolute;left:' + rx + 'px;top:' + ry + 'px;width:' + rw + 'px;height:' + rh + 'px;z-index:' + (w.zIndex||1) + ';box-sizing:border-box;border:2px solid rgba(233,69,96,0.7);border-radius:3px;cursor:move;display:flex;align-items:center;justify-content:center;overflow:hidden;min-width:20px;min-height:20px;user-select:none' + _bg + (sel ? ';border-color:#e94560' : '') + (dim ? ';pointer-events:none;cursor:default' : '');
         _applyWinTransform(el, w);
+        // 压暗要放在 _applyWinTransform 之后：它按窗口自身的 opacity/enabled 重写 style.opacity
+        if (dim) el.style.opacity = _dimWinOpacity(w);
         var _wc = _cropOf(w);
         var _cropMark = (_wc.w >= 0.999 && _wc.h >= 0.999) ? '' : '✂ ';
         // 窗口名常驻正中：编辑窗口时一眼对上号；半透明底衬保证在测试卡/亮素材上也读得清，
         // pointer-events:none 不挡拖动与选中
         el.innerHTML = '<span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:92%;padding:2px 8px;border-radius:4px;background:rgba(0,0,0,0.5);color:#fff;font-size:var(--fs-ui);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none">' + esc(w.name||w.id) + '</span>'
             + '<span style="position:absolute;top:3px;left:5px;font-size:var(--fs-micro);color:#ccc">' + _cropMark + '</span><span style="position:absolute;bottom:3px;right:5px;font-size:var(--fs-micro);color:#888">' + esc(typeLabel) + '</span>';
-        el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px;z-index:9" data-dir="br"></div>';
         el.dataset.winId = w.id;
+        if (dim) {
+            el.setAttribute('aria-hidden', 'true');
+            canvas.appendChild(el);
+            return;
+        }
+        el.innerHTML += '<div style="position:absolute;width:8px;height:8px;background:#e94560;border-radius:50%;cursor:se-resize;right:-4px;bottom:-4px;z-index:9" data-dir="br"></div>';
         el.tabIndex = 0;   // 可聚焦：聚焦=方向键当前作用于这个窗口框
         el.setAttribute('aria-label', (w.name || w.id) + ' 窗口框（方向键微调位置）');
         el.onmousedown = function(e) {
@@ -4378,7 +4389,16 @@ function _renderWinRects(wins) {
         el.style.width = ((w.width||320) * _canvasScale) + 'px';
         el.style.height = ((w.height||180) * _canvasScale) + 'px';
         _applyWinTransform(el, w);
+        if (_winKind(w) !== _curWinTab()) el.style.opacity = _dimWinOpacity(w);
     });
+}
+
+/** 当前卡（缺省素材窗），与侧栏列表的归类同一口径 */
+function _curWinTab() { return s._winTab === 'video' ? 'video' : 'material'; }
+
+/** 非当前卡窗口的压暗不透明度：叠在窗口自身 opacity/enabled 之上（_applyWinTransform 会先写 opacity） */
+function _dimWinOpacity(w) {
+    return ((w.opacity == null ? 1 : w.opacity) * (w.enabled === false ? 0.25 : 1) * 0.28).toFixed(3);
 }
 
 // ============================================================================
