@@ -179,12 +179,12 @@
  *   - 【同步触发口径】房间 config 落库后一律只经 notifyRoomConfigChanged 决定是否打扰设备：
  *     映射变了→sync_room_materials，窗口/总亮度/播放设置变了→update_windows，debug 变了→set_debug，
  *     墙板字段变了→set_wallpanel，DMX 字段变了→set_dmx，窗口名浮层变了→set_window_names，
- *     没变→一条不发。六类是**并列判定**（同一次 PUT 既改窗口又开总闸就两条都发，
+ *     测试背景浮层变了→set_window_testcard，没变→一条不发。七类是**并列判定**（同一次 PUT 既改窗口又开总闸就两条都发，
  *     命中全量同步时轻枪省掉——它的载荷已带这些字段）。前端不再自己补 POST /sync（手工点「同步当前房间」按钮除外）。
  *     兜底是 rev 对账：命令里带 rev=roomSceneDigest(config)，设备心跳回传已应用的 rev，
  *     服务端发现落后就补发一次（3 分钟/台节流），所以设备离线期间的变更会在上线后收敛。
- *     ⚠️ set_debug / set_wallpanel / set_dmx / set_window_names 是指纹之外的四个例外：debug、墙板、DMX、
- *     窗口名浮层都故意不进指纹（开个开关不该惊动素材同步，见 roomSceneDigest），所以它们对不上账、不会被对账补发。
+ *     ⚠️ set_debug / set_wallpanel / set_dmx / set_window_names / set_window_testcard 是指纹之外的五个例外：debug、墙板、DMX、
+ *     两个编辑器浮层都故意不进指纹（开个开关不该惊动素材同步，见 roomSceneDigest），所以它们对不上账、不会被对账补发。
  *     命令是 QoS1 非 retain，设备在线但正好掉线那一跳就会丢，靠下次重连时 auth_result
  *     （以及手工同步的 sync 载荷）里的同名字段自愈。现场口径：「云端开了开关但大屏没反应」
  *     先让设备重连一次（或点一次手工同步），别急着怀疑开关本身。
@@ -563,6 +563,8 @@ function prepareRoomConfig(raw, existingCfg) {
   // 窗口名浮层按严格布尔落库（同 debug 口径）：字符串 "true"/1 会让下发侧判成 false，
   // 编辑器开着、屏上却不显示名字，且靠 set_window_names 补不回来（两边都是 false）
   merged.window_names = merged.window_names === true;
+  // 测试背景浮层同理（同一次 PUT 里与窗口名一起写）
+  merged.window_testcard = merged.window_testcard === true;
 
   // 输出基准（编辑器画布与设备换算共用的那把尺）按下发口径落库：字符串宽高归一成整数，
   // 没设/null 就把整个键撤掉（下发 null，设备回落到 1920×1080 轴向换算）。
@@ -707,6 +709,13 @@ function roomDebugFlag(cfg) { return !!(cfg && cfg.debug === true); }
  * 变化时走轻量 set_window_names；丢了那一跳靠重连/手工同步载荷里的同名字段自愈。
  */
 function roomWindowNamesFlag(cfg) { return !!(cfg && cfg.window_names === true); }
+
+/**
+ * 测试背景浮层（config.window_testcard）：管理台打开「窗口配置」时为 true，包厢屏上每扇窗盖一张
+ * 测试图卡（窗框一目了然），关掉编辑器后撤掉、继续播原素材。与 window_names 同批开关、同款轻量下发
+ * （set_window_testcard），同样不进 rev。
+ */
+function roomWindowTestcardFlag(cfg) { return !!(cfg && cfg.window_testcard === true); }
 
 /** 这个档位值合不合法：只认数字与数字字符串，且必须落在白名单里（三端同一把尺） */
 function wallpanelBitOk(raw, allowed) {
@@ -1086,6 +1095,7 @@ function roomSyncFields(cfg) {
     folder_mappings: mergePrefixedMappings(prefixedScenes),     // A+B 全量，与 HTTP 清单接口同形
     debug: roomDebugFlag(cfg),
     window_names: roomWindowNamesFlag(cfg),                     // 窗口名浮层（编辑器开着时各窗正中常亮名字）
+    window_testcard: roomWindowTestcardFlag(cfg),               // 测试背景浮层（编辑器开着时各窗盖测试图卡）
     // null = 房间没设输出基准，设备按 1920×1080 设计稿轴向换算（历史口径）
     output: roomOutputField(cfg)
   }, roomWallpanelFields(cfg), roomDmxFields(cfg), {
@@ -1110,7 +1120,8 @@ function syncCommandPayload(roomId, cfg) {
  * - 墙板字段变了           → set_wallpanel（同上轻量，见 APK applyWallPanelEnabled；含开关/节点/波特率/学习表）
  * - DMX 字段变了           → set_dmx（同上轻量，见 APK applyDmxEnabled；含开关/节点/波特率）
  * - 窗口名浮层变了         → set_window_names（同上轻量，见 APK setWindowNames；编辑器开着时置 true）
- * - 后四类与前两类是并列判定：同一次 PUT 既改窗口又开总闸，就 update_windows + set_wallpanel 两条都发
+ * - 测试背景浮层变了       → set_window_testcard（同上轻量，见 APK setWindowTestcard；与窗口名同开同关）
+ * - 后五类与前两类是并列判定：同一次 PUT 既改窗口又开总闸，就 update_windows + set_wallpanel 两条都发
  * - 都没变                 → 一条都不发：前端补写、脚本幂等写、重复 PUT 都不再产生第二次重建
  * 这条规则替代了原先"每个写接口各自记得通知 / 前端各自补一枪"的分散时机，
  * 因此 rmRoomMat、doPushToRoom 这类"先 PUT 再 DELETE 再 sync"的连写会自然收敛成一次下发。
@@ -1146,6 +1157,9 @@ function notifyRoomConfigChanged(roomId, oldCfgStr, newCfgStr, reason, cb) {
   }
   if (!heavyCarriesFlags && roomWindowNamesFlag(oldCfg) !== roomWindowNamesFlag(newCfg)) {
     commands.push(['窗口名', { action: 'set_window_names', window_names: roomWindowNamesFlag(newCfg), timestamp: Date.now() }]);
+  }
+  if (!heavyCarriesFlags && roomWindowTestcardFlag(oldCfg) !== roomWindowTestcardFlag(newCfg)) {
+    commands.push(['测试背景', { action: 'set_window_testcard', window_testcard: roomWindowTestcardFlag(newCfg), timestamp: Date.now() }]);
   }
   if (commands.length === 0) { if (cb) cb(0); return; }
 
@@ -2102,6 +2116,8 @@ const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
                         'update_windows', 'delete_material', 'update', 'set_debug', 'set_wallpanel', 'set_dmx',
                         // 窗口名浮层：编辑器开着 = true（各窗正中常亮名字），关掉 = false。载荷只有布尔 window_names
                         'set_window_names',
+                        // 测试背景浮层：编辑器开着 = true（各窗盖测试图卡），关掉 = false。载荷只有布尔 window_testcard
+                        'set_window_testcard',
                         'preview_material', 'preview_stop', 'wallpanel_learn',
                         // 退出到桌面/唤回：释放画面并把原厂桌面顶到身前，进程与 MQTT 不动，
                         // 设备侧只吃 action（APK【A-15】）；唤回靠设备上的 root am start，服务端不补载荷

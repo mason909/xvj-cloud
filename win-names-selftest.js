@@ -1,4 +1,5 @@
-// 一次性自检：把前端「窗口名浮层」收敛逻辑从 public/index.html 抠出来跑断言（不起服务、不连库、不动数据）。
+// 一次性自检：把前端「编辑器浮层」（窗口名 window_names + 测试背景 window_testcard）的收敛逻辑
+// 从 public/index.html 抠出来跑断言（不起服务、不连库、不动数据）。
 // 风险全在时序上（连点开关、切房间、写失败），断言只盯：发给谁、带什么、会不会重复/漏发。
 const fs = require('fs');
 const src = fs.readFileSync(require('path').join(__dirname, 'public/index.html'), 'utf8').replace(/\r\n/g, '\n');
@@ -12,7 +13,7 @@ function grab(name) {
   if (j < 0) throw new Error('未找到 ' + name + ' 结尾');
   return src.slice(i, j + 2);
 }
-const names = ['_putWindowNames', '_syncWindowNamesFlag'];
+const names = ['_putWindowOverlays', '_syncWindowOverlays'];
 
 let pass = 0, fail = 0;
 const eq = (label, got, want) => {
@@ -36,10 +37,10 @@ function mkEnv() {
       };
     });
   };
-  const code = 'var _winNamesActual = \'\';\nvar _winNamesBusy = false;\n' + names.map(grab).join('\n');
+  const code = 'var _winOverlayActual = \'\';\nvar _winOverlayBusy = false;\n' + names.map(grab).join('\n');
   const box = {};
-  new Function('s', 'apiCall', 'box', code + '\nObject.assign(box,{s:s,sync:_syncWindowNamesFlag,'
-    + 'actual:function(){return _winNamesActual;},busy:function(){return _winNamesBusy;}});')(s, apiCall, box);
+  new Function('s', 'apiCall', 'box', code + '\nObject.assign(box,{s:s,sync:_syncWindowOverlays,'
+    + 'actual:function(){return _winOverlayActual;},busy:function(){return _winOverlayBusy;}});')(s, apiCall, box);
   box.sent = h.sent;
   box.s = s;
   return box;
@@ -54,8 +55,9 @@ function mkEnv() {
     E.s._windowEditorActive = true;
     E.sync();
     await tick();
-    eq('开编辑器 → 只改 window_names 一个键（部分 config，服务端继承其余）',
-      [E.sent.length, E.sent[0].url, E.sent[0].cfg], [1, '/api/rooms/room_1', { window_names: true }]);
+    eq('开编辑器 → 一次 PUT 同时置 window_names 与 window_testcard（部分 config，服务端继承其余）',
+      [E.sent.length, E.sent[0].url, E.sent[0].cfg],
+      [1, '/api/rooms/room_1', { window_names: true, window_testcard: true }]);
     E.sent[0].resolve(true);
     await tick();
     E.sync(); E.sync();
@@ -63,8 +65,8 @@ function mkEnv() {
     E.s._windowEditorActive = false;
     E.sync();
     await tick();
-    eq('关编辑器 → 把同一间置回 false', [E.sent.length, E.sent[1].url, E.sent[1].cfg],
-      [2, '/api/rooms/room_1', { window_names: false }]);
+    eq('关编辑器 → 同一间两个键一起置回 false', [E.sent.length, E.sent[1].url, E.sent[1].cfg],
+      [2, '/api/rooms/room_1', { window_names: false, window_testcard: false }]);
     E.sent[1].resolve(true);
     await tick();
     eq('收敛后不再多发', E.sent.length, 2);
@@ -82,8 +84,8 @@ function mkEnv() {
     E.sync();
     await tick();
     eq('旧间关、新间开（两条都发，各归各房）',
-      E.sent.slice(1).map(r => [r.url, r.cfg.window_names]),
-      [['/api/rooms/room_1', false], ['/api/rooms/room_2', true]]);
+      E.sent.slice(1).map(r => [r.url, r.cfg.window_names, r.cfg.window_testcard]),
+      [['/api/rooms/room_1', false, false], ['/api/rooms/room_2', true, true]]);
     E.sent[1].resolve(true);
     E.sent[2].resolve(true);
     await tick();
@@ -103,7 +105,7 @@ function mkEnv() {
     E.sent[0].resolve(true);
     await tick(); await tick();
     eq('落地后按最新意图补一条 false', E.sent.length, 2);
-    eq('补的是关指令', E.sent[1].cfg.window_names, false);
+    eq('补的是关指令（两个键都关）', [E.sent[1].cfg.window_names, E.sent[1].cfg.window_testcard], [false, false]);
     E.sent[1].resolve(true);
     await tick();
     eq('最终状态 = 关，不残留"以为开着"', E.actual(), '');
@@ -121,7 +123,7 @@ function mkEnv() {
     E.sync();
     await tick();
     eq('下次重绘自动补发', E.sent.length, 2);
-    eq('补的还是开指令', E.sent[1].cfg.window_names, true);
+    eq('补的还是开指令', [E.sent[1].cfg.window_names, E.sent[1].cfg.window_testcard], [true, true]);
     E.sent[1].resolve(true);
     await tick();
     eq('补成功后才记', E.actual(), 'room_1');

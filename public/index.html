@@ -1769,51 +1769,52 @@ async function dr(e, id) {
     await lr();
 }
 
-// 窗口名浮层（config.window_names）：编辑器开着时让包厢屏每扇窗正中常亮自己的名字，方便老板对屏改窗口。
-// 只改这一个键就整份 PUT 是安全的：服务端 prepareRoomConfig 对没带的 scenes/映射/窗口一律继承库里的值，
+// 编辑器浮层（config.window_names + config.window_testcard）：窗口配置开着时，包厢屏每扇窗正中常亮名字、
+// 并盖上测试图卡（窗框看得清）；关掉编辑器后两个都撤，继续播原素材。
+// 只改这两个键就整份 PUT 是安全的：服务端 prepareRoomConfig 对没带的 scenes/映射/窗口一律继承库里的值，
 // 所以不用"先读后写"，也不会把别人刚改的窗口抹掉。
-function _putWindowNames(roomId, on) {
+function _putWindowOverlays(roomId, on) {
     return apiCall('/api/rooms/' + encodeURIComponent(roomId), {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ config: JSON.stringify({ window_names: on }) })
+        body: JSON.stringify({ config: JSON.stringify({ window_names: on, window_testcard: on }) })
     });
 }
 // 设备端/云端当前以为开着浮层的房间（只在写成功后更新）与串行闸：连点开关、切房间都从 rmDevice 进来，
 // 并发两发 PUT 会让先后顺序不可控，所以排队——写完再按最新意图对一次。
-var _winNamesActual = '';
-var _winNamesBusy = false;
+var _winOverlayActual = '';
+var _winOverlayBusy = false;
 /**
- * 收敛窗口名浮层：意图 = 窗口配置开着且选了房间。rmDevice 每次重绘都过一遍，只在意图变化时发 PUT。
+ * 收敛编辑器浮层：意图 = 窗口配置开着且选了房间。rmDevice 每次重绘都过一遍，只在意图变化时发 PUT。
  * 失败只记 console（浮层丢了不影响播放），下次任何一次重绘都会自动补。
  */
-function _syncWindowNamesFlag() {
-    if (_winNamesBusy) return;
+function _syncWindowOverlays() {
+    if (_winOverlayBusy) return;
     var want = (s._windowEditorActive && s.rf) ? s.rf : '';
-    if (want === _winNamesActual) return;
-    _winNamesBusy = true;
-    var from = _winNamesActual;
+    if (want === _winOverlayActual) return;
+    _winOverlayBusy = true;
+    var from = _winOverlayActual;
     var jobs = [];
-    if (from && from !== want) jobs.push(_putWindowNames(from, false));
-    if (want) jobs.push(_putWindowNames(want, true));
+    if (from && from !== want) jobs.push(_putWindowOverlays(from, false));
+    if (want) jobs.push(_putWindowOverlays(want, true));
     Promise.all(jobs).then(function() {
-        _winNamesActual = want;
+        _winOverlayActual = want;
     }, function(e) {
-        console.warn('窗口名浮层同步失败（下次重绘补）:', e.message);
+        console.warn('编辑器浮层同步失败（下次重绘补）:', e.message);
     }).then(function() {
-        _winNamesBusy = false;
-        _syncWindowNamesFlag();   // 在飞期间意图又变了（连点/切房间），按最新的再对一次
+        _winOverlayBusy = false;
+        _syncWindowOverlays();   // 在飞期间意图又变了（连点/切房间），按最新的再对一次
     });
 }
-// 关页/刷新的兜底：尽量把浮层关掉，别让名字留在包厢屏上。keepalive 让它能在卸载途中发出；
+// 关页/刷新的兜底：尽量把浮层关掉，别让名字/图卡留在包厢屏上。keepalive 让它能在卸载途中发出；
 // 发不出去也无妨——下次打开编辑器再关掉会覆盖回 false。
 window.addEventListener('pagehide', function() {
-    if (!_winNamesActual) return;
+    if (!_winOverlayActual) return;
     try {
-        fetch('/api/rooms/' + encodeURIComponent(_winNamesActual), {
+        fetch('/api/rooms/' + encodeURIComponent(_winOverlayActual), {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ config: JSON.stringify({ window_names: false }) }),
+            body: JSON.stringify({ config: JSON.stringify({ window_names: false, window_testcard: false }) }),
             keepalive: true
         });
     } catch (e) {}
@@ -1837,7 +1838,7 @@ function _wbSw(label, ids, on, color, onchange) {
         + '<span id="' + ids[2] + '" class="kb"' + (on ? ' style="left:23px"' : '') + '></span></span></label>';
 }
 function rmDevice() {
-    _syncWindowNamesFlag();   // 每次重绘都过一遍：窗口配置开/关、切房间都在这里收口，设备端浮层跟着走
+    _syncWindowOverlays();   // 每次重绘都过一遍：窗口配置开/关、切房间都在这里收口，设备端浮层跟着走
     var g = document.getElementById('dg');
     if (!s.rf) {
         g.innerHTML = '<div class="empty">请选择或创建房间</div><button class="btn btn-primary" style="margin-top:10px" onclick="createRoom()">+ 新建房间</button>';
@@ -2091,7 +2092,9 @@ function rmDevice() {
 //                                  // 该区域拉伸填满窗口框（允许变形）；缺省即全画面 {0,0,1,1}
 //     content: { type: 'SCENE_A'|'SCENE_B'|'HDMI'|'color', ... }   // 没有 IMAGE；颜色是小写 'color'
 //       SCENE_*：folderId（裸文件夹号 "01"，没按过墙板时播的那格）+ follow（true = 播哪格由墙板学到的码决定）
-//       HDMI：inputIndex；color：设备端固定铺满 testcard.jpg（测试图卡），color 字段仅图卡缺失时兜底。字段全表以 server.js 头部 WinConfig 为准（服务端整体透传、不解析）
+//       HDMI：inputIndex；color：设备端固定铺满 testcard.jpg（测试图卡），color 字段仅图卡缺失时兜底。
+//              'color' 只剩存量窗口，编辑器不再提供切入口 —— 对屏用的测试图卡改由顶层 config.window_testcard
+//              浮层承担（打开窗口配置时自动覆盖每扇窗，关闭即撤）。字段全表以 server.js 头部 WinConfig 为准（服务端整体透传、不解析）
 //   }
 //
 // 设备开机行为（APK applySceneConfigs）：
@@ -4046,7 +4049,8 @@ function renderWinEditorFull() {
         h += '<button class="win-content-type-btn' + ('SCENE_A'===ctType?' active':'') + '" onclick="setWinContentType(\'SCENE_A\')">第一幕</button>';
         h += '<button class="win-content-type-btn' + (ctType==='SCENE_B'?' active':'') + '" onclick="setWinContentType(\'SCENE_B\')">第二幕</button>';
         h += '<button class="win-content-type-btn' + (ctType==='HDMI'?' active':'') + '" onclick="setWinContentType(\'HDMI\')">点歌屏</button>';
-        h += '<button class="win-content-type-btn' + (ctType==='color'?' active':'') + '" onclick="setWinContentType(\'color\')">测试背景</button>';
+        // 测试背景不再是窗口内容类型：打开窗口配置时设备端自动给每扇窗盖测试图卡（config.window_testcard），
+        // 关掉就撤、继续播原素材。存量 content.type='color' 的窗口仍按图卡渲染，但没有切回来的入口。
         h += '</div>';
         // 内容为场景（第一幕/第二幕）时：可选择具体播放文件夹；留空 = 自动播该场景首个有素材的文件夹
         if (ctType === 'SCENE_A' || ctType === 'SCENE_B') {
@@ -5052,7 +5056,7 @@ function setWinContentType(type) {
     var prev = s._selWin.content || {}, prevType = String(prev.type || '').toUpperCase();
     // 换类型 = content 整体重建（folderId/color/inputIndex 一并作废，这是既有口径）；
     // 唯一保住的是 follow —— 第一幕↔第二幕之间"跟不跟墙板"是同一个意图，不该被点一下幕按钮抹掉。
-    // 切到 HDMI/测试背景时不保：那两种内容不是文件夹，编号没有东西可切。
+    // 切到 HDMI 时不保：它不是文件夹内容，编号没有东西可切。
     var isScene = function (t) { t = String(t || '').toUpperCase(); return t === 'SCENE_A' || t === 'SCENE_B'; };
     s._selWin.content = (prev.follow === true && isScene(type) && isScene(prevType))
         ? { type: type, follow: true }
