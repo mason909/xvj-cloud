@@ -82,6 +82,8 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .tab.active .tab-d{color:#ffd7de}
 .folder-del{position:absolute;right:-8px;top:-8px;background:#dc3545;color:#fff;border:none;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:var(--fs-meta);line-height:1;display:none}
 .tab:hover .folder-del{display:flex;align-items:center;justify-content:center}
+.room-dot{position:absolute;top:-4px;right:-4px;width:9px;height:9px;border-radius:50%;background:#3ddc4f;box-shadow:0 0 0 2px #1a1a1a;pointer-events:none}
+.tab:hover .room-dot{display:none}
 .folder-btn{padding:10px 20px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:8px;cursor:pointer}
 .folder-btn.active{background:#e94560;color:#fff}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:16px}
@@ -5433,12 +5435,42 @@ function rd() {
     h += '<div class="tabs" style="margin-top:10px">';
     s.rooms.forEach(function(rn) {
         var act = s.rf === rn.id ? 'active' : '';
-        h += '<div class="tab ' + act + '" onclick="sr(\'' + escJsA(rn.id) + '\')" oncontextmenu="rr(event,\'' + escJsA(rn.id) + '\',\'' + escJsA(rn.name) + '\');return false;"><span class="tab-n">' + esc(rn.name) + '</span><span class="folder-del" title="删除这个房间" onclick="dr(event,\'' + escJsA(rn.id) + '\')">×</span></div>';
+        h += '<div class="tab ' + act + '" data-room="' + escA(rn.id) + '" onclick="sr(\'' + escJsA(rn.id) + '\')" oncontextmenu="rr(event,\'' + escJsA(rn.id) + '\',\'' + escJsA(rn.name) + '\');return false;"><span class="tab-n">' + esc(rn.name) + '</span><span class="folder-del" title="删除这个房间" onclick="dr(event,\'' + escJsA(rn.id) + '\')">×</span></div>';
     });
     h += '<div class="tab" title="新建房间" onclick="createRoom()" style="border-style:dashed">+</div></div>';
     document.getElementById('df').innerHTML = h;
+    applyRoomDots();
+    if (!s._roomDotTimer) { s._roomDotTimer = setInterval(refreshRoomDots, 30000); refreshRoomDots(); }
     if (s.rf) { rmDevice(); return; }
     g.innerHTML = '<div class="empty">请选择或创建房间</div><button class="btn btn-primary" style="margin-top:10px" onclick="createRoom()">+ 新建房间</button>';
+}
+
+// 房间 tab 右上角在线小绿点：该房任一设备在线即亮。
+// 设备状态只在 /api/devices 里（心跳刷 status），30s 一轮；只增删点、不重画 tab，避免打断点击与悬停。
+async function refreshRoomDots() {
+    var list;
+    try { list = asList(await apiGet('/api/devices')); }
+    catch (e) { console.error('房间在线状态读取失败:', e.message); return; }
+    var map = {};
+    list.forEach(function(d) { if (d.status === 'online' && d.room_id) map[d.room_id] = true; });
+    s._roomOnline = map;
+    applyRoomDots();
+}
+
+function applyRoomDots() {
+    var tabs = document.querySelectorAll('#df .tab[data-room]');
+    for (var i = 0; i < tabs.length; i++) {
+        var el = tabs[i];
+        var on = !!(s._roomOnline && s._roomOnline[el.getAttribute('data-room')]);
+        var dot = el.querySelector('.room-dot');
+        if (on && !dot) {
+            dot = document.createElement('span');
+            dot.className = 'room-dot';
+            el.appendChild(dot);
+        } else if (!on && dot) {
+            dot.parentNode.removeChild(dot);
+        }
+    }
 }
 
 function sd(store) {
