@@ -196,6 +196,10 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .win-item .win-item-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .win-item .win-item-del{background:none;border:none;color:#888;cursor:pointer;font-size:var(--fs-dense);padding:0 2px;flex-shrink:0}
 .win-item .win-item-del:hover{color:#e94560}
+.win-tabs{display:flex;gap:4px;align-items:center}
+.win-tab{background:#1f1f1f;border:1px solid #3a3a3a;color:#888;padding:3px 10px;border-radius:5px;font-size:var(--fs-meta);cursor:pointer;line-height:1.5}
+.win-tab:hover{color:#ccc;border-color:#555}
+.win-tab.active{background:rgba(233,69,96,0.16);border-color:#e94560;color:#e94560;font-weight:600}
 .win-prop-panel{background:#242424;border-radius:8px;padding:12px}
 .win-prop-title{font-size:var(--fs-micro);color:#888;margin-bottom:10px;font-weight:bold;text-transform:uppercase;letter-spacing:0.05em}
 .win-prop-row{display:flex;align-items:center;margin-bottom:8px;font-size:var(--fs-meta);gap:6px}
@@ -2210,6 +2214,7 @@ async function switchScene(id) {
         }
     }
     rmDevice();
+    if (s._selWin) s._winTab = _winKind(s._selWin);   // 唤起恢复的选中窗口后，列表落到它所属的那张卡
     renderWinEditorFull(); // 【Bug Fix】切换场景后重渲染编辑器Body，确保窗口列表和画布同步更新
 }
 
@@ -4035,9 +4040,16 @@ function renderWinEditorFull() {
     h += _designToolsHtml();
     h += '</div>';
     h += '<div class="win-sidebar">';
-    h += '<div class="win-list"><div class="win-list-header"><span>窗口</span><button class="btn btn-primary btn-sm" title="新建一个窗口，名称自动接着编号" onclick="addWin()">+ 添加</button></div><div class="win-list-body" id="winListBody">';
-    if (wins.length === 0) { h += '<div style="color:#555;font-size:var(--fs-micro);text-align:center;padding:20px 0">暂无窗口</div>'; }
-    else { wins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="event.stopPropagation();selWin(\'' + escJsA(w.id) + '\')"><span class="win-item-name">' + esc(w.name||w.id) + '</span><button class="win-item-del" title="删除这个窗口" onclick="delWin(event,\'' + escJsA(w.id) + '\')">×</button></div>'; }); }
+    // 双卡：素材窗（第一幕/第二幕/存量测试背景）与点歌窗（HDMI）分开管理。
+    // 只是列表的归类与「+ 添加」的默认类型，窗口仍同住本幕的 windows 数组、共用一块画布。
+    var winTab = s._winTab === 'video' ? 'video' : 'material';
+    var listWins = wins.filter(function(w) { return _winKind(w) === winTab; });
+    h += '<div class="win-list"><div class="win-list-header"><div class="win-tabs">'
+        + '<button class="win-tab' + (winTab === 'material' ? ' active' : '') + '" onclick="setWinTab(\'material\')">素材窗</button>'
+        + '<button class="win-tab' + (winTab === 'video' ? ' active' : '') + '" onclick="setWinTab(\'video\')">点歌窗</button>'
+        + '</div><button class="btn btn-primary btn-sm" title="' + (winTab === 'video' ? '新建一个点歌窗，名称自动接着编号' : '新建一个素材窗，名称自动接着编号') + '" onclick="addWin()">+ 添加</button></div><div class="win-list-body" id="winListBody">';
+    if (listWins.length === 0) { h += '<div style="color:#555;font-size:var(--fs-micro);text-align:center;padding:20px 0">' + (winTab === 'video' ? '暂无点歌窗' : '暂无素材窗') + '</div>'; }
+    else { listWins.forEach(function(w) { var cls = w.id === selWinId ? 'active' : ''; h += '<div class="win-item ' + cls + '" onclick="event.stopPropagation();selWin(\'' + escJsA(w.id) + '\')"><span class="win-item-name">' + esc(w.name||w.id) + '</span><button class="win-item-del" title="删除这个窗口" onclick="delWin(event,\'' + escJsA(w.id) + '\')">×</button></div>'; }); }
     h += '</div></div>';
     h += '<div class="win-prop-panel" id="winPropPanel"><div class="win-prop-title">属性</div>';
     if (s._selWin) {
@@ -4046,9 +4058,11 @@ function renderWinEditorFull() {
         h += '<div class="win-prop-row"><label>ID</label><input value="' + escA(w.id) + '" readonly style="color:#555;background:#1a1a1a"></div>';
         h += '<div class="win-prop-row"><label>名称</label><input id="wpName" value="' + escA(w.name||'') + '" oninput="updWinField(\'name\',this.value)"></div>';
         h += '<div class="win-content-type-row">';
+        // 点歌屏不再是可点类型：点歌窗只在「点歌窗」卡用「+ 添加」新建（素材窗同理），
+        // 这里留着第一幕/第二幕，点歌窗想改回素材窗仍可点；反向（素材窗→点歌窗）没有入口。
+        if (ctType === 'HDMI') h += '<span style="color:#888;font-size:var(--fs-micro);align-self:center;margin-right:4px">点歌屏 · 在「点歌窗」卡添加</span>';
         h += '<button class="win-content-type-btn' + ('SCENE_A'===ctType?' active':'') + '" onclick="setWinContentType(\'SCENE_A\')">第一幕</button>';
         h += '<button class="win-content-type-btn' + (ctType==='SCENE_B'?' active':'') + '" onclick="setWinContentType(\'SCENE_B\')">第二幕</button>';
-        h += '<button class="win-content-type-btn' + (ctType==='HDMI'?' active':'') + '" onclick="setWinContentType(\'HDMI\')">点歌屏</button>';
         // 测试背景不再是窗口内容类型：打开窗口配置时设备端自动给每扇窗盖测试图卡（config.window_testcard），
         // 关掉就撤、继续播原素材。存量 content.type='color' 的窗口仍按图卡渲染，但没有切回来的入口。
         h += '</div>';
@@ -4804,6 +4818,19 @@ document.addEventListener('keydown', function(e) {
  * 选中指定窗口（高亮显示，打开属性编辑面板）
  * @param {string} id - 窗口 ID
  */
+// 窗口分两类：内容类型 HDMI = 点歌窗，其余（第一幕/第二幕/存量测试背景）= 素材窗。
+// 归类只用于侧栏双卡与「+ 添加」的默认类型；两类窗口仍同住本幕的 windows 数组。
+function _winKind(w) {
+    return (w && w.content && String(w.content.type || '').toUpperCase() === 'HDMI') ? 'video' : 'material';
+}
+
+function setWinTab(kind) {
+    s._winTab = kind === 'video' ? 'video' : 'material';
+    // 选中的是另一类窗口时取消选中：否则属性栏在编辑一个当前列表里看不见的窗口
+    if (s._selWin && _winKind(s._selWin) !== s._winTab) s._selWin = null;
+    renderWinEditorFull();
+}
+
 function selWin(id) {
     var r = s.rooms.find(function(x) { return x.id === s.rf; });
     if (!r) return;
@@ -4829,6 +4856,8 @@ function selWin(id) {
     }
     _setWinCache(wins);
     s._selWin = Object.assign({}, wins.find(function(w) { return w.id === id; }) || null);
+    // 列表跟着选中的那扇走：从画布上点一扇点歌窗，侧栏自动跳到「点歌窗」卡
+    if (s._selWin) s._winTab = _winKind(s._selWin);
     s._selWinMap = s._selWinMap || { A: null, B: null };
     s._selWinMap[curS] = id;
     renderWinEditorFull();
@@ -4837,7 +4866,8 @@ function selWin(id) {
 /**
  * 添加新窗口
  * 自动生成唯一 ID，插入 windows 数组，触发 renderWinEditorFull()
- * 窗口默认：名字「新窗口N」、16:9 的 640x360、落在左上角、zIndex 排到最后、类型跟随当前幕、
+ * 窗口默认：名字与类型跟随当前卡——素材窗=本幕场景窗「新窗口N」、跟随墙板；点歌窗=HDMI「点歌屏N」、
+ * 不跟随墙板。尺寸取画布 1/3 的 16:9、落在左上角、zIndex 排到最后。
  * 跟随墙板（2026-11-17 用户定调：新建窗口一律默认跟随墙板，不需要的再去属性栏取消）
  */
 function addWin() {
@@ -4853,15 +4883,20 @@ function addWin() {
     // Date.now() 在同一毫秒的连续调用里会重复（连点 + 添加），id 撞车会让两片切片共用编辑态
     window._winIdTs = Math.max(window._winIdTs || 0, Date.now());
     var newId = 'win_' + (++window._winIdTs);
-    var winType = curS === 'B' ? 'SCENE_B' : 'SCENE_A';
-    // 名字取本幕现有「新窗口N」的最大 N 再 +1（一个编号都没有就从 1 起）。
+    // 「+ 添加」跟随当前卡：点歌窗卡建 HDMI 窗，素材窗卡建本幕场景窗
+    var tab = s._winTab === 'video' ? 'video' : 'material';
+    var winType = tab === 'video' ? 'HDMI' : (curS === 'B' ? 'SCENE_B' : 'SCENE_A');
+    // 名字取同一类窗口里「前缀N」的最大 N 再 +1（素材窗数新窗口N，点歌窗数点歌屏N）。
     // 以前固定写死 '新窗口'：连点五次得到五个同名窗口，右侧列表和属性栏完全认不出谁是谁。
+    var nameRe = tab === 'video' ? /^点歌屏\s*(\d+)$/ : /^新窗口\s*(\d+)$/;
+    var namePrefix = tab === 'video' ? '点歌屏' : '新窗口';
     var maxNo = 0;
     wins.forEach(function(w) {
-        var m = /^新窗口\s*(\d+)$/.exec(String(w.name == null ? '' : w.name).trim());
+        if (_winKind(w) !== tab) return;
+        var m = nameRe.exec(String(w.name == null ? '' : w.name).trim());
         if (m) maxNo = Math.max(maxNo, parseInt(m[1], 10));
     });
-    wins.push({ id: newId, name: '新窗口' + (maxNo + 1), x: 0, y: 0, width: Math.round(_designW / 3), height: Math.round(_designH / 3), aspectRatio: '16:9', content: { type: winType, follow: true }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
+    wins.push({ id: newId, name: namePrefix + (maxNo + 1), x: 0, y: 0, width: Math.round(_designW / 3), height: Math.round(_designH / 3), aspectRatio: '16:9', content: tab === 'video' ? { type: 'HDMI' } : { type: winType, follow: true }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
 
     // 双向隔离：A 的操作不动 B，反之亦然
     cfg.scenes[curS].windows = wins; // 当前场景：用含新窗口的拷贝覆盖回去
@@ -5064,6 +5099,7 @@ function setWinContentType(type) {
     var id = s._selWin.id, wins = s._winCache || [];
     var w = wins.find(function(x) { return x.id === id; });
     if (w) w.content = Object.assign({}, s._selWin.content);
+    s._winTab = _winKind(s._selWin);   // 换类型后列表跟着跳：改成点歌屏就落到「点歌窗」卡
     renderWinEditorFull();
 }
 
