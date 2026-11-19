@@ -20,7 +20,7 @@ const names = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isS
   'mergeSceneConfig', 'prepareRoomConfig',
   'buildPrefixedScenes', 'mergePrefixedMappings',
   'roomSceneDigest', 'isSafeDeviceId', 'parseRoomConfig', 'isSafeFolderName', 'isSafeSerialPath',
-  'roomDebugFlag', 'roomWallpanelFields', 'roomWallpanelDigest', 'findWallpanelFieldError', 'resolvePreviewTarget',
+  'roomDebugFlag', 'roomWindowNamesFlag', 'roomWallpanelFields', 'roomWallpanelDigest', 'findWallpanelFieldError', 'resolvePreviewTarget',
   'roomDmxFields', 'roomDmxDigest', 'findDmxFieldError',
   'wallpanelBitOk', 'wallpanelBitChoice', 'normalizeWallpanelCode', 'findBitChoiceError', 'normalizeWallpanelRule', 'normalizeWallpanelBindings', 'findWallpanelBindingsError', 'wallpanelSourceName',
   'outputPx', 'roomOutputField', 'findOutputError', 'rememberDeviceScreen', 'deviceScreen',
@@ -106,6 +106,18 @@ eq('字符格式变了同样只走轻枪（学习不能因为改 7E1 就整间�
   T.roomWallpanelDigest({ wallpanel_parity: 'even' }) !== T.roomWallpanelDigest({}), true);
 eq('回落值不产生假变更（新旧两侧同一函数）',
   T.roomWallpanelDigest({ wallpanel_serial_path: '../x' }) === T.roomWallpanelDigest({}), true);
+console.log('窗口名浮层（window_names）:');
+eq('严格 true 才算开（"true"/1 不算）',
+  [T.roomWindowNamesFlag({ window_names: true }), T.roomWindowNamesFlag({ window_names: 'true' }), T.roomWindowNamesFlag({})],
+  [true, false, false]);
+eq('不进 rev（开关浮层不该惊动素材同步）',
+  T.roomSceneDigest({ window_names: true }) === T.roomSceneDigest({}), true);
+eq('同步载荷自愈通道带 window_names', T.roomSyncFields({ window_names: true }).window_names, true);
+eq('写库按严格布尔归一（字符串真值会让下发判成 false）',
+  [T.prepareRoomConfig({ window_names: 'true' }, { scenes: {} }).cfg.window_names,
+   T.prepareRoomConfig({ window_names: 1 }, { scenes: {} }).cfg.window_names],
+  [false, false]);
+eq('少带 window_names 时继承库里的值', T.prepareRoomConfig({}, { window_names: true, scenes: {} }).cfg.window_names, true);
 eq('学习表落库顺序不影响指纹（同组绑定不虚报"墙板配置变了"）',
   T.roomWallpanelDigest({ wallpanel_bindings: [{ frame: 'F505', folder: '07' }, { frame: 'AA55', folder: '01' }] })
     === T.roomWallpanelDigest({ wallpanel_bindings: [{ frame: 'AA55', folder: '01' }, { frame: 'F505', folder: '07' }] }), true);

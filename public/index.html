@@ -1769,6 +1769,56 @@ async function dr(e, id) {
     await lr();
 }
 
+// 窗口名浮层（config.window_names）：编辑器开着时让包厢屏每扇窗正中常亮自己的名字，方便老板对屏改窗口。
+// 只改这一个键就整份 PUT 是安全的：服务端 prepareRoomConfig 对没带的 scenes/映射/窗口一律继承库里的值，
+// 所以不用"先读后写"，也不会把别人刚改的窗口抹掉。
+function _putWindowNames(roomId, on) {
+    return apiCall('/api/rooms/' + encodeURIComponent(roomId), {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ config: JSON.stringify({ window_names: on }) })
+    });
+}
+// 设备端/云端当前以为开着浮层的房间（只在写成功后更新）与串行闸：连点开关、切房间都从 rmDevice 进来，
+// 并发两发 PUT 会让先后顺序不可控，所以排队——写完再按最新意图对一次。
+var _winNamesActual = '';
+var _winNamesBusy = false;
+/**
+ * 收敛窗口名浮层：意图 = 窗口配置开着且选了房间。rmDevice 每次重绘都过一遍，只在意图变化时发 PUT。
+ * 失败只记 console（浮层丢了不影响播放），下次任何一次重绘都会自动补。
+ */
+function _syncWindowNamesFlag() {
+    if (_winNamesBusy) return;
+    var want = (s._windowEditorActive && s.rf) ? s.rf : '';
+    if (want === _winNamesActual) return;
+    _winNamesBusy = true;
+    var from = _winNamesActual;
+    var jobs = [];
+    if (from && from !== want) jobs.push(_putWindowNames(from, false));
+    if (want) jobs.push(_putWindowNames(want, true));
+    Promise.all(jobs).then(function() {
+        _winNamesActual = want;
+    }, function(e) {
+        console.warn('窗口名浮层同步失败（下次重绘补）:', e.message);
+    }).then(function() {
+        _winNamesBusy = false;
+        _syncWindowNamesFlag();   // 在飞期间意图又变了（连点/切房间），按最新的再对一次
+    });
+}
+// 关页/刷新的兜底：尽量把浮层关掉，别让名字留在包厢屏上。keepalive 让它能在卸载途中发出；
+// 发不出去也无妨——下次打开编辑器再关掉会覆盖回 false。
+window.addEventListener('pagehide', function() {
+    if (!_winNamesActual) return;
+    try {
+        fetch('/api/rooms/' + encodeURIComponent(_winNamesActual), {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ config: JSON.stringify({ window_names: false }) }),
+            keepalive: true
+        });
+    } catch (e) {}
+});
+
 // 【F-06d】 房间工作台 // function rmDevice()
 // 名字里的 Device 只是其中一段。拼出来的顺序：工作台开关（调试模式/窗口配置/输入截取/墙板配置）
 // → 本房间已授权设备列表 → 场景选择器（第一幕/第二幕）→ 窗口模式下交给 renderWinEditorFull 并 return，
@@ -1787,6 +1837,7 @@ function _wbSw(label, ids, on, color, onchange) {
         + '<span id="' + ids[2] + '" class="kb"' + (on ? ' style="left:23px"' : '') + '></span></span></label>';
 }
 function rmDevice() {
+    _syncWindowNamesFlag();   // 每次重绘都过一遍：窗口配置开/关、切房间都在这里收口，设备端浮层跟着走
     var g = document.getElementById('dg');
     if (!s.rf) {
         g.innerHTML = '<div class="empty">请选择或创建房间</div><button class="btn btn-primary" style="margin-top:10px" onclick="createRoom()">+ 新建房间</button>';
