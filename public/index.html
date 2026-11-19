@@ -53,7 +53,7 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .menu li{padding:12px 20px;cursor:pointer;color:#999;transition:all 0.2s}
 .menu li:hover{background:#2a2a2a;color:#fff}
 .menu li.active{background:#e94560;color:#fff}
-.main{margin-left:220px;flex:1;min-width:0}
+.main{margin-left:220px;flex:1}
 /* 顶栏吸顶：工作台往下滚就看不到当前是哪个房间，改一次配置要滚回顶部确认一遍 */
 .header{position:sticky;top:0;z-index:40;background:#242424;padding:12px 24px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .header h1{font-size:var(--fs-title)}
@@ -73,11 +73,6 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .content{padding:24px}
 .folder-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
 .tabs{display:flex;flex-wrap:wrap;gap:8px;padding:10px}
-/* 01-30 文件夹条必须一行：换行会把 --editor-inset 的高度账算错，窄了就横向滚动 */
-.tabs-oneline{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;min-width:0}
-.tabs-oneline .tab{flex:0 0 auto}
-.tabs-oneline::-webkit-scrollbar{height:6px}
-.tabs-oneline::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:3px}
 /* .tab 原先被拆在 76/79/83 三处声明，后一处盖前一处，读到第二处就以为知道长什么样。合成一条。 */
 .tab{position:relative;display:inline-flex;flex-direction:column;align-items:center;gap:2px;padding:8px 12px;min-width:50px;background:#2a2a2a;color:#aaa;border:1px solid #3a3a3a;border-radius:6px;cursor:pointer}
 .tab-n{font-size:var(--fs-ui);font-weight:bold}
@@ -1107,7 +1102,7 @@ async function lm() {
 
 function rf() {
     var b = document.getElementById('fb');
-    var h = '<div class="tabs tabs-oneline">';
+    var h = '<div class="tabs">';
     s.fs.forEach(function(x) {
         var note = s.folders && s.folders[x] || '';
         // 备注是自由文本（服务端只卡长度不卡内容），这里不过 esc() 就等于一个存活的存储型 XSS：
@@ -1448,7 +1443,7 @@ async function lp() {
 
 function prf() {
     var b = document.getElementById('pfb');
-    var h = '<div class="tabs tabs-oneline">';
+    var h = '<div class="tabs">';
     for (var i = 1; i <= 30; i++) {
         var f = i.toString().padStart(2, '0');
         var act = s.pf === f ? 'active' : '';
@@ -1891,7 +1886,7 @@ function rmDevice() {
         sceneFM = (_rc2.scenes && _rc2.scenes[curS] && _rc2.scenes[curS].folder_mappings) || {};
     } catch(e) {}
     
-    h += '<div class="tabs tabs-oneline" style="margin-top:10px;' + hideTabs + '">';
+    h += '<div class="tabs" style="margin-top:10px;' + hideTabs + '">';
     for (var i = 1; i <= 30; i++) {
         var f = i.toString().padStart(2, '0');
         var act = s.f === f ? 'active' : '';
@@ -1901,10 +1896,7 @@ function rmDevice() {
     h += '</div>';
     // Phase2: 窗口编辑器区域（文件夹tab下方或替代）
     h += '<div id="winEditorArea" style="display:' + (s._windowEditorActive ? 'block' : 'none') + '"></div>';
-    // 同步按钮
-    var hideSync = (s._windowEditorActive || s._wpMode || s._psMode) ? 'display:none' : '';
-    // 原先是 width:100% 的绿条，比它下面真正要看的素材区还抢戏；收成右下角一颗按钮，位置不变。
-    h += '<div class="mm-foot" style="' + hideSync + '"><button class="btn btn-sync" onclick="syncCurrentRoom()" title="让设备照着当前清单重新下一遍。配置改动一般会自己下发，这颗是手工补一次。">🔄 同步当前房间</button></div>';
+    // 同步按钮已并入下方「已映射素材」工具条，与映射按钮同一行
     
     // 墙板模式：整块工作台换成配置表。和窗口/截取互斥（见 sfWP），素材目录的 DOM 不并存 ——
     // 两套「读整份 config → 改自己的键 → PUT 回去」的入口同屏，后保存的那个会把先保存的抹掉
@@ -1957,6 +1949,7 @@ function rmDevice() {
         + '<span style="font-weight:bold;white-space:nowrap;flex:0 0 auto">已映射素材</span>'
         + '<span style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap">'
         + '<span id="pvBar" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _pvBarHtml() + '</span>'
+        + '<button class="btn btn-sync" style="padding:5px 12px;font-size:var(--fs-meta);flex:0 0 auto" onclick="syncCurrentRoom()" title="让设备照着当前清单重新下一遍。配置改动一般会自己下发，这颗是手工补一次。">🔄 同步当前房间</button>'
         + '<button class="btn btn-primary" style="padding:5px 15px;font-size:var(--fs-meta);flex:0 0 auto" title="只映射上方当前选中的 ' + esc(s.f || '') + ' 文件夹" onclick="mapPreset()">映射本文件夹预设</button>'
         + '<button class="btn btn-sync" id="folderCopyBtn" style="padding:5px 10px;font-size:var(--fs-meta);flex:0 0 auto" title="把当前场景、当前文件夹 ' + esc(s.f || '') + ' 的素材清单覆盖到本店所有房间的同名文件夹（完全同步：多删少补、顺序一致；目标多出的素材会被移除）" onclick="copyFolderAll()">全局复制</button>'
         + '<button class="btn" style="padding:5px 10px;font-size:var(--fs-meta);background:#6c757d;color:#fff;flex:0 0 auto" title="把预设库 01-30 全部映射进当前场景，设备会照着清单整个下一遍（量大，会重建播放器）" onclick="mapPreset(\'ALL\')">映射整库</button>'
