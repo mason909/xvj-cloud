@@ -4057,15 +4057,20 @@ function renderWinEditorFull() {
         var ctType = ct.type || 'SCENE_A';
         h += '<div class="win-prop-row"><label>ID</label><input value="' + escA(w.id) + '" readonly style="color:#555;background:#1a1a1a"></div>';
         h += '<div class="win-prop-row"><label>名称</label><input id="wpName" value="' + escA(w.name||'') + '" oninput="updWinField(\'name\',this.value)"></div>';
-        h += '<div class="win-content-type-row">';
-        // 点歌屏不再是可点类型：点歌窗只在「点歌窗」卡用「+ 添加」新建（素材窗同理），
-        // 这里留着第一幕/第二幕，点歌窗想改回素材窗仍可点；反向（素材窗→点歌窗）没有入口。
-        if (ctType === 'HDMI') h += '<span style="color:#888;font-size:var(--fs-micro);align-self:center;margin-right:4px">点歌屏 · 在「点歌窗」卡添加</span>';
-        h += '<button class="win-content-type-btn' + ('SCENE_A'===ctType?' active':'') + '" onclick="setWinContentType(\'SCENE_A\')">第一幕</button>';
-        h += '<button class="win-content-type-btn' + (ctType==='SCENE_B'?' active':'') + '" onclick="setWinContentType(\'SCENE_B\')">第二幕</button>';
-        // 测试背景不再是窗口内容类型：打开窗口配置时设备端自动给每扇窗盖测试图卡（config.window_testcard），
-        // 关掉就撤、继续播原素材。存量 content.type='color' 的窗口仍按图卡渲染，但没有切回来的入口。
-        h += '</div>';
+        if (ctType === 'HDMI') {
+            // 点歌窗来源固定是点歌屏（点歌机 HDMI 采集），不存在第一幕/第二幕之选；
+            // 要换回素材窗就删掉重建（「素材窗」卡 + 添加）
+            h += '<div class="win-prop-row"><label>来源</label><span style="color:#aaa">📷 点歌屏（点歌机 HDMI 采集，固定）</span></div>';
+        } else {
+            h += '<div class="win-content-type-row">';
+            // 点歌屏不是可点类型：点歌窗只在「点歌窗」卡用「+ 添加」新建（素材窗同理）；
+            // 反向（素材窗→点歌窗）没有入口。
+            h += '<button class="win-content-type-btn' + ('SCENE_A'===ctType?' active':'') + '" onclick="setWinContentType(\'SCENE_A\')">第一幕</button>';
+            h += '<button class="win-content-type-btn' + (ctType==='SCENE_B'?' active':'') + '" onclick="setWinContentType(\'SCENE_B\')">第二幕</button>';
+            // 测试背景不再是窗口内容类型：打开窗口配置时设备端自动给每扇窗盖测试图卡（config.window_testcard），
+            // 关掉就撤、继续播原素材。存量 content.type='color' 的窗口仍按图卡渲染，但没有切回来的入口。
+            h += '</div>';
+        }
         // 内容为场景（第一幕/第二幕）时：可选择具体播放文件夹；留空 = 自动播该场景首个有素材的文件夹
         if (ctType === 'SCENE_A' || ctType === 'SCENE_B') {
             var folderScene = ctType === 'SCENE_A' ? 'A' : 'B';
