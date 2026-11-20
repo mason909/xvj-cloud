@@ -110,8 +110,8 @@
  *   dmx_enabled: Boolean           // 副板串口监听总闸，严格 true 才算开；与墙板的门是两扇（两条物理链路）
  *   dmx_serial_path: String        // 副板在主板上挂的 UART 节点（默认 /dev/ttyS4，同小麦 x9/x10 机型）
  *   dmx_baud: 档位                // 默认 115200（厂商该机型档位）；见 DMX_BAUDS
- *   通道表现由设备端定义，不入库：帧里第 N 个通道（1~20，副板一帧只带 20 路）就是文件夹 NN，
- *   值变动即触发（同 485 的"按了一次码"），只对 play_settings[NN].dmx=true 的格子生效。
+ *   通道表现由设备端定义，不入库：设备只认第 1 个通道（副板一帧 20 路，其余 19 路不用），值 1:1 调格
+ *   （值 N = 文件夹 NN，1~30 有效，0=松手，31~255 忽略），值变动即触发，只对 play_settings[NN].dmx=true 的格子生效。
  *   同样不进 rev，单独变更走轻量 set_dmx；载荷在 roomDmxFields 一处收口。
  *
  * 输出基准（与 debug 同级的 config 顶层键，任务 #177）：
@@ -872,7 +872,7 @@ function roomWallpanelDigest(cfg) { return JSON.stringify(roomWallpanelFields(cf
 
 /**
  * DMX512 副板串口字段：与墙板同构的确定形状（没配 = false / 默认节点 / 默认速率）。
- * 通道表不在这里：设备端固定"第 N 个通道 → 文件夹 NN"（副板一帧只带 20 路），
+ * 通道表不在这里：设备端固定"只认第 1 个通道，值 N = 文件夹 NN"（副板一帧 20 路，其余不用），
  * 要不要接这一路只由每格 play_settings.dmx 决定，服务端不存第二份映射。
  */
 function roomDmxFields(cfg) {

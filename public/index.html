@@ -2312,8 +2312,8 @@ function sfCrop() {
 // 同一格可以录三个码（一路点歌机、一路墙板、一路自定义），谁按到都切到这一格，A/B 两幕通用。
 // 串口参数（节点/波特率/字符格式）与串口总闸同样是改动即保存（500ms 防抖，见 _wpAutoSaveSoon）：
 // 它们决定收不收得到帧，改错要能马上被设备用上，也能随时点「保存」立即落库。
-// 第二条参数条是 DMX512 副板（另一条物理链路）：总闸/节点/波特率三项，通道 N 的值变动 = 按了一次，
-// 落到文件夹 NN，哪些格接这一路由「播放设置」的 dmx 列决定（见服务端 roomDmxFields / APK DmxLink）。
+// 第二条参数条是 DMX512 副板（另一条物理链路）：总闸/节点/波特率三项，设备只认通道 1，值 1:1 调格（值 N = 文件夹 NN），
+// 哪些格接这一路由「播放设置」的 dmx 列决定（见服务端 roomDmxFields / APK DmxLink）。
 // ============================================================================
 
 // 串口硬件参数（与服务端 WALLPANEL_BAUDS / WALLPANEL_DEFAULT_PATH 同一份口径，改一边要改另一边）：
@@ -2332,7 +2332,7 @@ var WP_SERIAL_STOP_BITS = [1, 2];
 
 // DMX512 副板（XM-Dmx1 那族）是另一条物理链路：速率档位更少、字符格式由副板固件定死 8N1，
 // 所以这里只有总闸/节点/波特率三项（与服务端 DMX_BAUDS / DMX_DEFAULT_PATH / DMX_DEFAULT_BAUD、
-// APK DmxLink 同一份口径）。副板一帧 20 路，通道 N ↔ 文件夹 NN；哪些格接这一路在「播放设置」里开。
+// APK DmxLink 同一份口径）。副板一帧 20 路，设备只认通道 1，值 1:1 调格（值 N = 文件夹 NN）；哪些格接这一路在「播放设置」里开。
 var DMX_BAUDS = [9600, 19200, 38400, 57600, 115200];
 var DMX_DEFAULT_PATH = '/dev/ttyS4';
 var DMX_DEFAULT_BAUD = 115200;
@@ -2820,8 +2820,8 @@ function _wpTableHtml() {
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="wpReload()">重读</button>';
     h += '</div>';
 
-    // DMX512 副板是另一条物理链路（与 485 各开各的门）：一帧 20 路，通道 N 的值变动 = 按了一次，
-    // 落到文件夹 NN；哪些格接这一路在「播放设置」的 DMX512控制 列里开。字符格式由副板固件定死 8N1，
+    // DMX512 副板是另一条物理链路（与 485 各开各的门）：一帧 20 路，设备只认通道 1，值 1:1 调格，
+    // 落到文件夹 NN（值 N = 格子 NN）；哪些格接这一路在「播放设置」的 DMX512控制 列里开。字符格式由副板固件定死 8N1，
     // 所以这里比 485 那行少三格格式选择，只留总闸/节点/波特率。
     h += '<div class="wp-bar" style="margin-top:6px">';
     h += '<span title="' + escA('设备是否监听 DMX512 副板串口；关着时副板链路根本不开，通道变动不会有任何反应') + '">'
@@ -2836,12 +2836,12 @@ function _wpTableHtml() {
         + ' title="' + escA('DMX 副板上行帧的速率；该机型出厂档是 115200') + '"'
         + ' onchange="wpSetDmxBaud(this.value)">' + _dmxBaudOptions(d.dmxBaud) + '</select></label>';
     if (!WP_SERIAL_PATH_RE.test(d.dmxPath)) h += '<span class="wp-warn">DMX 串口节点形状不对（要 /dev/ 下的设备名）</span>';
-    h += '<span style="font-size:var(--fs-micro);color:#666">通道 1~20 ↔ 文件夹 01~20；哪些文件夹接 DMX 在「播放设置」里开</span>';
+    h += '<span style="font-size:var(--fs-micro);color:#666">通道 1 的值 = 文件夹号（1~30 对应 01~30，0 不动）；哪些文件夹接 DMX 在「播放设置」里开</span>';
     h += '</div>';
     if (s._wpErr) h += '<div class="wp-warn" style="color:#e94560">' + esc(s._wpErr) + '</div>';
 
     if (!s._wpLearnMode) {
-        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存（两路串口各管各的）。各列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。最上面一行是全开/全关码：墙板那颗开关键按一下发一个码（两个码各自独立），全关=所有窗口盖黑（播放不停），全开=撤掉黑布回到原画面。DMX512 不需要学码：通道 N 直接就是文件夹 NN。</div>';
+        h += '<div class="wp-hint">串口参数、总闸与码值改动都会自动保存（两路串口各管各的）。各列码值都能直接敲十六进制；打开「墙板学习」后点某一列、再按对应的那颗键，码值会自己填进那一列并立刻保存。最上面一行是全开/全关码：墙板那颗开关键按一下发一个码（两个码各自独立），全关=所有窗口盖黑（播放不停），全开=撤掉黑布回到原画面。DMX512 不需要学码：设备只认 DMX512 副板的通道 1，值 1~30 就是文件夹 01~30（0 不动，31~255 忽略）。</div>';
     } else if (_wpLearning()) {
         var left = Math.max(0, Math.ceil((s._wpLearnUntil - Date.now()) / 1000));
         var cell = s._wpLearnCell;
@@ -3631,7 +3631,7 @@ function _psTableHtml() {
     h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="改动会自动保存；这里可立即落库，或重试上一次失败" onclick="psSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关（不显示点歌窗）、DMX512 控制关。点歌屏模式：点歌窗在「窗口配置」里按属性栏分成模式1/2/3 三套，这里选哪套，这一格在播时就只出哪套点歌窗。开了 DMX512 控制的格子：通道 N 的值一变就切到文件夹 NN，再变一次播下一支（同 485 按键）；DMX 串口在「墙板配置」里设。</div>';
+    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关（不显示点歌窗）、DMX512 控制关。点歌屏模式：点歌窗在「窗口配置」里按属性栏分成模式1/2/3 三套，这里选哪套，这一格在播时就只出哪套点歌窗。开了 DMX512 控制的格子：DMX512 副板通道 1 的值一变就切到文件夹 NN（值 N = 格子 NN，1~30 有效，0 不动，31~255 忽略）；DMX 串口在「墙板配置」里设。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
         + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th>'
