@@ -550,7 +550,7 @@ content.folderId 非空 → 只播指定那格；不在映射或那格空 → nu
 直接喂 `createHdmiView` 的 TextureView，**整帧拉伸铺满窗口**——不保比例、不做自动裁边，源画面是什么就拉成什么，
 与素材窗同一套取景/旋转/镜像矩阵；占位文字只在「待授权 / 无信号 / 接入中」时显示。
 `color`（测试背景）自 2026-11-17 起固定渲染测试图卡 `assets/testcard.jpg`（`createColorView`，
-1920 宽共享位图、居中裁切；图卡缺失才退回 `color` 纯色）。
+1920 宽共享位图、拉伸铺满随窗口矩形变形；图卡缺失才退回 `color` 纯色）。
 
 ### 5.5 素材同步
 
@@ -810,7 +810,7 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
 |---|---|---|---|
 | `SCENE_A` / `SCENE_B` | 播该幕对应文件夹的素材 | `folderId`（裸编号 `"01"`）、`follow`（Boolean，墙板跟随） | 独立 ExoPlayer + TextureView |
 | `HDMI` | HDMI 输入 | `inputIndex`（0-based） | `HdmiCapture` 相机 HAL 采集 1080p → TextureView 整帧拉伸铺满（不保比例、无自动裁边） |
-| `color` | 测试背景（**小写**） | `color`（兜底纯色，如 `"#000000"`） | 固定显示 `assets/testcard.jpg`（KZOO 测试图卡，居中裁切铺满；图卡缺失才用颜色） |
+| `color` | 测试背景（**小写**） | `color`（兜底纯色，如 `"#000000"`） | 固定显示 `assets/testcard.jpg`（KZOO 测试图卡，拉伸铺满随窗口矩形变形；图卡缺失才用颜色） |
 
 > 测试背景与实际产物同一张图：云端/前端预览是 `public/testcard.jpg`，设备端打包的是同一张
 > 3840×2160 JPEG（原始 8000×4500，直接解码要 144MB；设备按 1/2 采样解成 1920 宽共享位图）。
