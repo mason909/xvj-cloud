@@ -146,13 +146,15 @@
  *     content: {                    // 窗口内容。取值以前端 saveWindows() 实际写入的为准
  *       type: 'SCENE_A' | 'SCENE_B' | 'HDMI' | 'color',
  *                         // SCENE_A/SCENE_B = 播该幕对应文件夹的素材；color 是小写（测试背景）
- *                         // 测试背景在设备端固定显示 assets/testcard.jpg（拉伸铺满窗口，随窗口形状变形），
+ *                         // 测试背景在设备端固定显示 assets/testcard.jpg（彩条卡，拉伸铺满窗口，随窗口形状变形），
  *                         // 与云端 public/testcard.jpg 是同一张图；color 字段只在图卡读不到时兜底
  *                         // 没有 IMAGE 分支，旧文档里的 'COLOR'/'VIDEO'/'IMAGE' 大写取值都不存在
  *       // type=HDMI 时：
  *       inputIndex?: Number,        // HDMI 输入索引（0-based）
  *       mode?: Number,              // 归属模式 1~3（缺省 1）：点歌窗有三套配置，
  *                         // 播放设置 play_settings 的 hdmi_mode 选哪套，屏上就只显示哪套点歌窗
+ *                         // 测试画面（window_testcard 浮层）固定网格卡 assets/testcard_hdmi.png（仅设备端打包，
+ *                         // 管理台不预览）；其余窗的浮层用彩条卡 testcard.jpg
  *       // type=color 时：
  *       color?: String,             // 兜底纯色，如 "#000000"（图卡缺失时用）
  *       // type=SCENE_A|SCENE_B 时：
@@ -731,7 +733,7 @@ function roomWindowNamesFlag(cfg) { return !!(cfg && cfg.window_names === true);
 
 /**
  * 测试背景浮层（config.window_testcard）：管理台打开「窗口配置」时为 true，包厢屏上每扇窗盖一张
- * 测试图卡（窗框一目了然），关掉编辑器后撤掉、继续播原素材。与 window_names 同批开关、同款轻量下发
+ * 测试卡（点歌窗=网格卡 testcard_hdmi.png，其余=彩条卡 testcard.jpg，窗框一目了然），关掉编辑器后撤掉、继续播原素材。与 window_names 同批开关、同款轻量下发
  * （set_window_testcard），同样不进 rev。
  */
 function roomWindowTestcardFlag(cfg) { return !!(cfg && cfg.window_testcard === true); }
