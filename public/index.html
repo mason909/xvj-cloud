@@ -326,6 +326,10 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .lg-win .wb-sw .kb{width:14px;height:14px}
 .lg-win .wb-sw input:checked+.sl{background:#4caf50}
 .lg-win .wb-sw input:checked+.sl+.kb{left:19px}
+.lg-win .lg-name{cursor:pointer;border-radius:4px;padding:2px 4px;margin-left:-4px;flex:1}
+.lg-win .lg-name:hover{background:rgba(155,89,182,.12)}
+.lg-win.sel{background:rgba(155,89,182,.10);border-radius:6px;padding:6px 6px 6px 8px}
+.lg-win.sel .lg-win-id{color:#c99ee0}
 .lg-scene{color:#9b59b6;font-size:var(--fs-micro);margin:8px 0 2px;font-weight:bold;letter-spacing:.05em}
 .lg-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}
 .lg-stat{flex:1;color:#777;font-size:var(--fs-micro);min-width:0}
@@ -3965,6 +3969,24 @@ function _logoClamp(v, dflt, min, max) {
 }
 function _logoPct(v, dflt) { return _logoClamp(v, dflt, 1, 100); }
 function _logoOff(v, dflt) { return _logoClamp(v, dflt, -200, 200); }
+/** 逐窗几何表：id 白名单、值域与服务端同尺、缺字段跟随房间默认 base、上限 128（与服务端 LOGO_PER_MAX 同） */
+function _logoPer(v, base) {
+    var out = {};
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+    Object.keys(v).sort().forEach(function (id) {
+        if (Object.keys(out).length >= 128) return;
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return;
+        var g = v[id];
+        if (!g || typeof g !== 'object' || Array.isArray(g)) return;
+        out[id] = {
+            x: _logoOff(g.x, base.x),
+            y: _logoOff(g.y, base.y),
+            w: _logoPct(g.w, base.w),
+            h: _logoPct(g.h, base.h)
+        };
+    });
+    return out;
+}
 function _logoWinArr(v) {
     var out = [];
     if (!Array.isArray(v)) return out;
@@ -3979,7 +4001,7 @@ function _logoNorm(v) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
     if (typeof v.url !== 'string' || !/^\/uploads\/logos\/[A-Za-z0-9_-]{1,64}\/logo-[a-f0-9]{6,32}\.(?:mp4|webm|mov|avi|mkv)$/.test(v.url)) return null;
     var wins = (v.windows && typeof v.windows === 'object' && !Array.isArray(v.windows)) ? v.windows : {};
-    return {
+    var lg = {
         url: v.url,
         thumbnail: typeof v.thumbnail === 'string' ? v.thumbnail : '',
         filename: typeof v.filename === 'string' ? v.filename : '',
@@ -3993,13 +4015,22 @@ function _logoNorm(v) {
         h: _logoPct(v.h, LOGO_DEF_H),
         windows: { A: _logoWinArr(wins.A), B: _logoWinArr(wins.B) }
     };
+    var per = _logoPer(v.per_win, lg);
+    if (Object.keys(per).length) lg.per_win = per;   // 空表不落键（rev 不漂）
+    return lg;
 }
 
-/** 快照：只比文件地址 + 几何 + 窗口名单（元数据/编辑顺序不算内容差异） */
+/** 快照：只比文件地址 + 默认几何 + 窗口名单 + 逐窗几何（元数据/编辑顺序不算内容差异） */
 function _logoSnap(lg) {
     if (!lg || !lg.url) return '';
+    var per = [];
+    var mp = lg.per_win || {};
+    Object.keys(mp).sort().forEach(function (id) {
+        var g = mp[id];
+        per.push([id, g.x, g.y, g.w, g.h]);
+    });
     return JSON.stringify([lg.url, lg.x, lg.y, lg.w, lg.h,
-        (lg.windows.A || []).slice().sort(), (lg.windows.B || []).slice().sort()]);
+        (lg.windows.A || []).slice().sort(), (lg.windows.B || []).slice().sort(), per]);
 }
 
 function _exitLogoMode() {
@@ -4039,10 +4070,63 @@ function _logoDraftOf() {
     var r = s.rooms.find(function (x) { return x.id === s.rf; });
     if (!r) return null;
     var cfg = _loadRoomCfg(r);
-    var d = { roomId: s.rf, logo: _logoNorm(cfg.logo) };
+    var d = { roomId: s.rf, logo: _logoNorm(cfg.logo), sel: '' };
     d.base = _logoSnap(d.logo);
     s._logoDraft = d;
     return d;
+}
+
+/** 按窗口 id 找场景里的素材窗（点歌窗/HDMI/纯色窗不参与 LOGO，返回 null） */
+function _logoFindWin(id) {
+    if (!id) return null;
+    var r = s.rooms.find(function (x) { return x.id === s.rf; });
+    if (!r) return null;
+    var cfg = _loadRoomCfg(r);
+    var scs = ['A', 'B'];
+    for (var i = 0; i < scs.length; i++) {
+        var wins = ((cfg.scenes || {})[scs[i]] || {}).windows || [];
+        for (var j = 0; j < wins.length; j++) {
+            var w = wins[j];
+            var t = w && w.content && w.content.type;
+            if (w && w.id === id && (t === 'SCENE_A' || t === 'SCENE_B')) return { sc: scs[i], w: w };
+        }
+    }
+    return null;
+}
+
+/** 宽高比文字（如 16:9（1920×1080））；非正整数返回空串 */
+function _logoRatio(w, h) {
+    w = Math.round(Number(w) || 0);
+    h = Math.round(Number(h) || 0);
+    if (w <= 0 || h <= 0) return '';
+    function gd(a, b) { return b ? gd(b, a % b) : a; }
+    var d = gd(w, h);
+    return (w / d) + ':' + (h / d) + '（' + w + '×' + h + '）';
+}
+
+/**
+ * 当前编辑对象：d.sel 指向一扇窗 → 返回该窗的 per_win 条目（没有就地创建，字段从房间默认继承）；
+ * 没选窗 → 返回房间默认几何的临时副本（own=false，由 logoSet/logoCenter 写回 d.logo 顶层）。
+ * 这样"点窗口行调一扇窗"和"不选窗口调默认"共用一套输入框。
+ */
+function _logoGeoTarget(d) {
+    var lg = d.logo;
+    var win = _logoFindWin(d.sel);
+    if (win) {
+        var per = lg.per_win || (lg.per_win = {});
+        var geo = per[win.w.id];
+        if (!geo) geo = per[win.w.id] = { x: lg.x, y: lg.y, w: lg.w, h: lg.h };
+        return { win: win, geo: geo, own: true };
+    }
+    return { win: null, geo: { x: lg.x, y: lg.y, w: lg.w, h: lg.h }, own: false };
+}
+
+/** 点窗口行切换编辑对象（再点同一行回到默认）；只重画页面，草稿与自动保存状态不受影响 */
+function logoSelectWin(sc, id) {
+    var d = _logoDraftOf();
+    if (!d) return;
+    d.sel = (d.sel === id) ? '' : id;
+    renderLogoEditor();
 }
 
 function _logoStatus(text, cls) {
@@ -4073,26 +4157,45 @@ function _logoPaintBox(lg) {
 function logoSet(field, v) {
     var d = _logoDraftOf();
     if (!d || !d.logo) return;
-    if (field === 'w') { d.logo.w = _logoPct(v, LOGO_DEF_W); _logoSetInput('lgW', d.logo.w); }
-    else if (field === 'h') { d.logo.h = _logoPct(v, LOGO_DEF_H); _logoSetInput('lgH', d.logo.h); }
-    else if (field === 'x') { d.logo.x = _logoOff(v, 0); _logoSetInput('lgX', d.logo.x); }
-    else if (field === 'y') { d.logo.y = _logoOff(v, 0); _logoSetInput('lgY', d.logo.y); }
+    var t = _logoGeoTarget(d);
+    if (field === 'w') { t.geo.w = _logoPct(v, LOGO_DEF_W); _logoSetInput('lgW', t.geo.w); }
+    else if (field === 'h') { t.geo.h = _logoPct(v, LOGO_DEF_H); _logoSetInput('lgH', t.geo.h); }
+    else if (field === 'x') { t.geo.x = _logoOff(v, 0); _logoSetInput('lgX', t.geo.x); }
+    else if (field === 'y') { t.geo.y = _logoOff(v, 0); _logoSetInput('lgY', t.geo.y); }
     else return;
-    _logoPaintBox(d.logo);
+    if (!t.own) {
+        d.logo.x = t.geo.x; d.logo.y = t.geo.y; d.logo.w = t.geo.w; d.logo.h = t.geo.h;
+    }
+    _logoPaintBox(t.geo);
     _logoStatus('保存中…', '');
     _logoAutoSaveSoon();
 }
 
-/** 一键居中：坐标归零（宽高不动） */
+/** 一键居中：把当前编辑对象的坐标归零（宽高不动） */
 function logoCenter() {
     var d = _logoDraftOf();
     if (!d || !d.logo) return;
-    d.logo.x = 0;
-    d.logo.y = 0;
+    var t = _logoGeoTarget(d);
+    t.geo.x = 0;
+    t.geo.y = 0;
+    if (!t.own) { d.logo.x = 0; d.logo.y = 0; }
     _logoSetInput('lgX', 0);
     _logoSetInput('lgY', 0);
-    _logoPaintBox(d.logo);
+    _logoPaintBox(t.geo);
     _logoStatus('已居中，保存中…', '');
+    _logoAutoSaveSoon();
+}
+
+/** 撤掉选中窗口的独立几何，回落到房间默认 */
+function logoResetWin() {
+    var d = _logoDraftOf();
+    if (!d || !d.logo) return;
+    var win = _logoFindWin(d.sel);
+    if (!win || !d.logo.per_win) return;
+    delete d.logo.per_win[win.w.id];
+    if (!Object.keys(d.logo.per_win).length) delete d.logo.per_win;   // 空表不落键
+    renderLogoEditor();
+    _logoStatus('已恢复默认，保存中…', '');
     _logoAutoSaveSoon();
 }
 
@@ -4200,6 +4303,9 @@ function logoUpload(file) {
                 B: (keep.windows && Array.isArray(keep.windows.B) ? keep.windows.B : []).slice()
             }
         };
+        if (keep.per_win && Object.keys(keep.per_win).length) {
+            d.logo.per_win = JSON.parse(JSON.stringify(keep.per_win));
+        }
         s._logoNote = '已上传';
         s._logoErr = '';
         if (s._logoMode) renderLogoEditor();
@@ -4303,14 +4409,22 @@ function _logoWinListHtml(sc, lg) {
     if (!mats.length) return head + '<div class="lg-hint">这一幕还没有素材窗口（先到「窗口配置」里添加）。</div>';
     var on = (lg && lg.windows && Array.isArray(lg.windows[sc])) ? lg.windows[sc] : [];
     var dis = (lg && lg.url) ? '' : ' disabled';
+    var selId = (s._logoDraft && s._logoDraft.roomId === s.rf && s._logoDraft.sel) || '';
     var h = head;
     mats.forEach(function (w) {
         var checked = on.indexOf(w.id) >= 0;
+        var own = !!(lg && lg.per_win && lg.per_win[w.id]);
         var meta = esc(w.id) + ' · ' + Math.round(Number(w.x) || 0) + ',' + Math.round(Number(w.y) || 0)
-            + ' ' + Math.round(Number(w.width) || 0) + '×' + Math.round(Number(w.height) || 0)
-            + (w.enabled === false ? ' · 已隐藏' : '');
-        h += '<div class="lg-win"><div style="min-width:0"><span class="lg-win-id">' + esc(w.name || w.id) + '</span>'
-            + '<span class="lg-win-meta">' + meta + '</span></div>'
+            + ' ' + Math.round(Number(w.width) || 0) + '×' + Math.round(Number(w.height) || 0);
+        var ratio = _logoRatio(w.width, w.height);
+        if (ratio) meta += ' · ' + esc(ratio);
+        if (lg && lg.url) meta += ' · ' + (own ? '<span style="color:#c99ee0">独立定位</span>' : '跟随默认');
+        if (w.enabled === false) meta += ' · 已隐藏';
+        h += '<div class="lg-win' + (selId === w.id ? ' sel' : '') + '">'
+            + '<div class="lg-name" style="min-width:0" title="' + escA('点击单独调整这扇窗的 LOGO 位置/大小；再点一次回到默认') + '"'
+            + ' onclick="logoSelectWin(\'' + sc + '\',\'' + escJsA(w.id) + '\')">'
+            + '<span class="lg-win-id">' + esc(w.name || w.id) + '</span>'
+            + '<span class="lg-win-meta">' + meta + (selId === w.id ? ' · <span style="color:#9b59b6">正在编辑</span>' : '') + '</span></div>'
             + '<label class="wb-sw" title="' + escA('开 = 这扇窗口允许叠加 LOGO（还要该文件夹的 LOGO 开关也开着）') + '">'
             + '<span class="tk"><input type="checkbox"' + (checked ? ' checked' : '') + dis
             + ' aria-label="' + escA((sc === 'A' ? '第一幕' : '第二幕') + ' 窗口 ' + (w.name || w.id) + ' 显示 LOGO') + '"'
@@ -4323,11 +4437,23 @@ function _logoWinListHtml(sc, lg) {
 function _logoHtml() {
     var d = _logoDraftOf();
     if (!d) return '<div class="empty" style="margin-top:10px">房间数据还没加载完，关掉「LOGO设置」再开一次</div>';
-    var lg = d.logo, has = !!(lg && lg.url);
+    var lg = d.logo || { x: 0, y: 0, w: LOGO_DEF_W, h: LOGO_DEF_H, windows: { A: [], B: [] } };
+    var has = !!(d.logo && d.logo.url);
     var dis = has ? '' : ' disabled';
+    // 当前编辑对象：选中某扇窗 → 用该窗几何（没单独设过则显示默认值）；否则用房间默认几何
+    var selWin = _logoFindWin(d.sel || '');
+    var ownSel = false;
+    var geo = { x: lg.x, y: lg.y, w: lg.w, h: lg.h };
+    if (selWin) {
+        var pg = lg.per_win && lg.per_win[selWin.w.id];
+        if (pg) { geo = pg; ownSel = true; }
+    }
+    var cw = selWin ? (Math.round(Number(selWin.w.width) || 0)) : 0;
+    var ch = selWin ? (Math.round(Number(selWin.w.height) || 0)) : 0;
+    var ar = (cw > 0 && ch > 0) ? (cw + '/' + ch) : '16/9';
     var h = '<div class="lg-wrap"><div class="lg-left">';
 
-    h += '<div class="lg-canvas" id="lgCanvas" role="button" tabindex="0"'
+    h += '<div class="lg-canvas" id="lgCanvas" style="aspect-ratio:' + ar + '" role="button" tabindex="0"'
         + ' title="' + escA(has ? '点击或拖入新文件可替换当前 LOGO' : '点击选择文件，或把视频拖到这里') + '"'
         + ' onclick="logoPick()"'
         + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();logoPick();}"'
@@ -4336,9 +4462,9 @@ function _logoHtml() {
         h += '<img src="' + escA(lg.thumbnail) + '" alt="LOGO 首帧预览">';
     }
     if (has) {
-        var left = 50 + lg.x / 2 - lg.w / 2, top = 50 + lg.y / 2 - lg.h / 2;
-        h += '<div class="lg-box" id="lgBox" style="left:' + left + '%;top:' + top + '%;width:' + lg.w + '%;height:' + lg.h + '%">'
-            + '<span>LOGO 画面 ' + lg.w + '%×' + lg.h + '%</span></div>';
+        var left = 50 + geo.x / 2 - geo.w / 2, top = 50 + geo.y / 2 - geo.h / 2;
+        h += '<div class="lg-box" id="lgBox" style="left:' + left + '%;top:' + top + '%;width:' + geo.w + '%;height:' + geo.h + '%">'
+            + '<span>LOGO 画面 ' + geo.w + '%×' + geo.h + '%</span></div>';
         if (!lg.thumbnail) h += '<div class="lg-empty"><span class="big">✓</span>LOGO 已上传<br>首帧预览暂不可用</div>';
     } else {
         h += '<div class="lg-empty"><span class="big">＋</span>请拖拽 LOGO 文件至此上传<br>'
@@ -4346,22 +4472,29 @@ function _logoHtml() {
     }
     h += '</div>';
     h += '<div class="lg-hint" id="lgHint">' + esc(has
-        ? '点击画面或右侧「重新上传」可替换；拖入视频也可直接替换。虚框 = LOGO 画面在素材窗里的落点。'
+        ? ('点击画面或右侧「重新上传」可替换；拖入视频也可直接替换。虚框 = LOGO 画面在'
+            + (selWin ? (selWin.w.name || selWin.w.id) + (_logoRatio(cw, ch) ? ' · ' + _logoRatio(cw, ch) : '') : '素材窗')
+            + '里的落点。')
         : '支持 mp4 / webm / mov / avi / mkv，建议 16:9、纯黑底、LOGO 居中。') + '</div>';
     h += '</div><div class="lg-right">';
 
-    // 尺寸与位置
-    h += '<div class="lg-card"><div class="lg-card-t">尺寸与位置 <span class="lg-sub">（相对每扇素材窗口）</span></div>'
+    // 尺寸与位置（按当前编辑对象）
+    var tgtName = selWin ? (selWin.w.name || selWin.w.id) : '全部素材窗口';
+    var tgtTag = selWin ? (ownSel ? '独立设置' : '跟随默认') : '默认';
+    h += '<div class="lg-card"><div class="lg-card-t">尺寸与位置 <span class="lg-sub">（' + esc(tgtName + ' · ' + tgtTag) + '）</span></div>'
         + '<div class="lg-row">'
-        + '<label class="lg-field">宽 <input class="lg-num" id="lgW" type="number" min="1" max="100" step="1" value="' + (has ? lg.w : LOGO_DEF_W) + '"' + dis + ' onchange="logoSet(\'w\',this.value)"> %</label>'
-        + '<label class="lg-field">高 <input class="lg-num" id="lgH" type="number" min="1" max="100" step="1" value="' + (has ? lg.h : LOGO_DEF_H) + '"' + dis + ' onchange="logoSet(\'h\',this.value)"> %</label>'
+        + '<label class="lg-field">宽 <input class="lg-num" id="lgW" type="number" min="1" max="100" step="1" value="' + (has ? geo.w : LOGO_DEF_W) + '"' + dis + ' onchange="logoSet(\'w\',this.value)"> %</label>'
+        + '<label class="lg-field">高 <input class="lg-num" id="lgH" type="number" min="1" max="100" step="1" value="' + (has ? geo.h : LOGO_DEF_H) + '"' + dis + ' onchange="logoSet(\'h\',this.value)"> %</label>'
         + '</div>'
         + '<div class="lg-row" style="margin-top:8px">'
-        + '<label class="lg-field">X <input class="lg-num" id="lgX" type="number" min="-200" max="200" step="1" value="' + (has ? lg.x : 0) + '"' + dis + ' onchange="logoSet(\'x\',this.value)"> %</label>'
-        + '<label class="lg-field">Y <input class="lg-num" id="lgY" type="number" min="-200" max="200" step="1" value="' + (has ? lg.y : 0) + '"' + dis + ' onchange="logoSet(\'y\',this.value)"> %</label>'
+        + '<label class="lg-field">X <input class="lg-num" id="lgX" type="number" min="-200" max="200" step="1" value="' + (has ? geo.x : 0) + '"' + dis + ' onchange="logoSet(\'x\',this.value)"> %</label>'
+        + '<label class="lg-field">Y <input class="lg-num" id="lgY" type="number" min="-200" max="200" step="1" value="' + (has ? geo.y : 0) + '"' + dis + ' onchange="logoSet(\'y\',this.value)"> %</label>'
         + '<button class="btn btn-secondary" style="padding:4px 10px;font-size:var(--fs-micro)"' + dis + ' onclick="logoCenter()">居中</button>'
+        + (selWin ? '<button class="btn btn-secondary" style="padding:4px 10px;font-size:var(--fs-micro)"' + (ownSel ? '' : ' disabled') + ' onclick="logoResetWin()">恢复默认</button>' : '')
         + '</div>'
-        + '<div class="lg-hint">宽/高按素材窗口的宽/高分别计算；坐标原点 = 窗口中心点，X 正向右、Y 正向下。默认 50%×50%、坐标 (0,0) 即居中。</div>'
+        + '<div class="lg-hint">' + esc(selWin
+            ? '现在只改这扇窗（' + tgtName + '）。左画布按这扇窗的比例显示；再点一次「显示窗口」里同一行的名字，可回到改默认几何。'
+            : '不选窗口时改的是房间默认几何，所有没有单独设置的窗都跟着它。点「显示窗口」里的窗口名，可单独调那一扇。') + '</div>'
         + '</div>';
 
     // 显示窗口

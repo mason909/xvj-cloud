@@ -709,7 +709,17 @@ function roomSceneDigest(cfg) {
   // LOGO 是叠在素材之上的画面元素：文件（url 含 md5）、几何、哪几扇窗口显示任一变化都要让设备重排。
   // 只在真设了时才塞这一段（同上：存量房间指纹不能漂）。
   const lg = roomLogoField(cfg);
-  if (lg) parts.push(['logo', lg.url, lg.x, lg.y, lg.w, lg.h, lg.windows.A.join(','), lg.windows.B.join(',')].join('|'));
+  if (lg) {
+    const seg = ['logo', lg.url, lg.x, lg.y, lg.w, lg.h, lg.windows.A.join(','), lg.windows.B.join(',')];
+    // 逐窗几何按键名定序拼（roomLogoField 已排序），任一扇窗的数值变了都要让设备重排
+    if (lg.per_win) {
+      Object.keys(lg.per_win).forEach(function (id) {
+        const g = lg.per_win[id];
+        seg.push(id + ':' + g.x + ',' + g.y + ',' + g.w + ',' + g.h);
+      });
+    }
+    parts.push(seg.join('|'));
+  }
   return crypto.createHash('sha1').update(JSON.stringify(parts)).digest('hex').slice(0, 12);
 }
 
@@ -1017,15 +1027,18 @@ function findOutputError(cfg) {
  *     url 只认 /uploads/logos/<roomId>/logo-<md5前12>.<视频扩展>，防外链与路径穿越
  *   x / y：LOGO 中心相对「素材窗口中心」的偏移百分比（窗口宽/高为分母，向右/向下为正，默认 0）
  *   w / h：LOGO 视频宽/高占素材窗口宽/高的百分比（默认 50）
+ *   per_win：{ 窗口id: {x,y,w,h} } —— 逐窗几何；各窗宽高比不同，同一套相对几何摆出来观感不一样，
+ *     所以允许每扇窗单独定。缺字段跟随上面这套房间默认；不在表里的窗口一律用默认
  *   windows：{ A:[窗口id], B:[窗口id] } —— 只有列在这里的窗口才可能显示；
  *     真正出不出还要看该窗口当前文件夹的 play_settings.logo（两者同时为真，见 playSettingsValue）
- * 值域：x/y ∈ [-200,200]，w/h ∈ (0,100]；每幕最多 64 个窗口 id。
+ * 值域：x/y ∈ [-200,200]，w/h ∈ (0,100]；每幕最多 64 个窗口 id；per_win 最多 128 项。
  * 没设时整个键不落：存量房间的 rev 必须与加这个字段之前逐字节相同（同 output / play_settings 的教训）。
  */
 const LOGO_URL_RE = /^\/uploads\/logos\/[A-Za-z0-9_-]{1,64}\/logo-[a-f0-9]{6,32}\.(?:mp4|webm|mov|avi|mkv)$/;
 const LOGO_THUMB_RE = /^\/uploads\/logos\/[A-Za-z0-9_-]{1,64}\/logo-[a-f0-9]{6,32}\.jpg$/;
 const LOGO_WINDOW_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const LOGO_WINDOWS_MAX = 64;
+const LOGO_PER_MAX = 128;
 const LOGO_PCT_MIN = 1, LOGO_PCT_MAX = 100, LOGO_OFF_MAX = 200;
 
 function logoNum(v, dflt) {
@@ -1042,13 +1055,36 @@ function logoWinIds(v) {
   });
   return out;
 }
+/**
+ * per_win → 确定形状（按窗口 id 排序、去脏、封顶）；缺字段跟随 base（房间默认几何）。
+ * 只读侧归一：手改库塞进来的坏味在这里掉，不阻断下发。
+ */
+function logoPerMap(v, base) {
+  const out = {};
+  if (!isPlainObject(v)) return out;
+  const ids = Object.keys(v).sort();
+  for (let i = 0; i < ids.length && Object.keys(out).length < LOGO_PER_MAX; i++) {
+    const id = ids[i];
+    if (!LOGO_WINDOW_ID_RE.test(id)) continue;
+    const g = v[id];
+    if (!isPlainObject(g)) continue;
+    out[id] = {
+      x: logoOff(g.x, base.x),
+      y: logoOff(g.y, base.y),
+      w: logoPct(g.w, base.w),
+      h: logoPct(g.h, base.h)
+    };
+  }
+  return out;
+}
 /** config.logo → 确定形状；没有/地址不合法当"没设"（脏值写库前已被 findLogoError 拦下，能到这的只剩手改库） */
 function roomLogoField(cfg) {
   const v = cfg && cfg.logo;
   if (!isPlainObject(v)) return null;
   if (typeof v.url !== 'string' || !LOGO_URL_RE.test(v.url)) return null;
   const wins = isPlainObject(v.windows) ? v.windows : {};
-  return {
+  const base = { x: logoOff(v.x, 0), y: logoOff(v.y, 0), w: logoPct(v.w, 50), h: logoPct(v.h, 50) };
+  const out = {
     url: v.url,
     thumbnail: (typeof v.thumbnail === 'string' && LOGO_THUMB_RE.test(v.thumbnail)) ? v.thumbnail : '',
     filename: clampStr(v.filename, 255),
@@ -1056,14 +1092,18 @@ function roomLogoField(cfg) {
     size: Math.max(0, Math.floor(logoNum(v.size, 0))),
     width: Math.max(0, Math.floor(logoNum(v.width, 0))),
     height: Math.max(0, Math.floor(logoNum(v.height, 0))),
-    x: logoOff(v.x, 0),
-    y: logoOff(v.y, 0),
-    w: logoPct(v.w, 50),
-    h: logoPct(v.h, 50),
+    x: base.x,
+    y: base.y,
+    w: base.w,
+    h: base.h,
     windows: { A: logoWinIds(wins.A), B: logoWinIds(wins.B) }
   };
+  // 空表不落键：没逐窗设置时形状必须与加 per_win 之前逐字节相同（rev 不漂）
+  const per = logoPerMap(v.per_win, base);
+  if (Object.keys(per).length > 0) out.per_win = per;
+  return out;
 }
-/** LOGO 写入校验：几何必须是数值且在值域内；窗口名单的脏元素由 roomLogoField 丢弃 */
+/** LOGO 写入校验：几何必须是数值且在值域内；窗口名单/逐窗表的脏元素由 roomLogoField 丢弃 */
 function findLogoError(cfg) {
   const v = cfg && cfg.logo;
   if (v === undefined || v === null) return null;
@@ -1074,10 +1114,26 @@ function findLogoError(cfg) {
     const n = Number(val);
     return (Number.isFinite(n) && n >= min && n <= max) ? null : `LOGO 的${name}必须是 ${min}~${max} 之间的数值`;
   };
-  return bad('X 位置', v.x, -LOGO_OFF_MAX, LOGO_OFF_MAX)
+  const err = bad('X 位置', v.x, -LOGO_OFF_MAX, LOGO_OFF_MAX)
     || bad('Y 位置', v.y, -LOGO_OFF_MAX, LOGO_OFF_MAX)
     || bad('宽度', v.w, LOGO_PCT_MIN, LOGO_PCT_MAX)
     || bad('高度', v.h, LOGO_PCT_MIN, LOGO_PCT_MAX);
+  if (err) return err;
+  if (v.per_win === undefined || v.per_win === null) return null;
+  if (!isPlainObject(v.per_win)) return 'LOGO 的逐窗几何必须是 { 窗口id: {x,y,w,h} } 的对象';
+  const ids = Object.keys(v.per_win);
+  if (ids.length > LOGO_PER_MAX) return `LOGO 的逐窗几何最多 ${LOGO_PER_MAX} 扇窗口`;
+  for (const id of ids) {
+    if (!LOGO_WINDOW_ID_RE.test(id)) return 'LOGO 的逐窗几何里有不合法的窗口 id';
+    const g = v.per_win[id];
+    if (!isPlainObject(g)) return `LOGO 窗口 ${id} 的逐窗几何必须是对象`;
+    const sub = bad(`窗口 ${id} 的 X 位置`, g.x, -LOGO_OFF_MAX, LOGO_OFF_MAX)
+      || bad(`窗口 ${id} 的 Y 位置`, g.y, -LOGO_OFF_MAX, LOGO_OFF_MAX)
+      || bad(`窗口 ${id} 的宽度`, g.w, LOGO_PCT_MIN, LOGO_PCT_MAX)
+      || bad(`窗口 ${id} 的高度`, g.h, LOGO_PCT_MIN, LOGO_PCT_MAX);
+    if (sub) return sub;
+  }
+  return null;
 }
 
 /**
