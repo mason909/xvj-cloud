@@ -282,9 +282,11 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
    模式 = 点歌窗三套配置之一，选哪套这一格在播时就只出哪套点歌窗 */
 .ps-hdmi{width:180px}
 .ps-dmx{width:88px}
+.ps-logo{width:86px}
 .ps-tbl .wb-sw{display:inline-flex}
 .ps-tbl .wb-sw input:checked+.sl{background:#4caf50}
 .ps-tbl .wb-sw input:checked+.sl+.kb{left:23px}
+.ps-tbl .wb-sw.ps-logo-sw input:checked+.sl{background:#9b59b6}
 /* 点歌屏模式：四态单选（关 / 模式1 / 模式2 / 模式3），32行一色靠 .on 画 */
 .ps-seg{display:inline-flex;border:1px solid #3a3a3a;border-radius:4px;overflow:hidden}
 .ps-seg-item{position:relative;display:inline-flex;align-items:center;justify-content:center;padding:3px 5px;font-size:var(--fs-micro);color:#888;cursor:pointer;border-left:1px solid #3a3a3a;white-space:nowrap}
@@ -293,6 +295,44 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .ps-seg-item:hover{color:#ddd;background:#262626}
 .ps-seg-item.on{background:rgba(76,175,80,0.18);color:#4caf50;font-weight:600}
 .ps-seg-item:focus-within{outline:1px solid #4caf50;outline-offset:-1px}
+/* ===== LOGO 设置（工作台「LOGO设置」模式）===== */
+/* 左边 16:9 画布：空态是拖拽上传区，上传后显示 LOGO 首帧（缩略图），尺寸/位置在右侧按“素材窗口”的百分比设 */
+.lg-wrap{display:flex;gap:14px;margin-top:10px;align-items:flex-start}
+.lg-left{flex:1 1 62%;min-width:0}
+.lg-right{flex:0 0 340px;max-width:340px}
+.lg-canvas{position:relative;width:100%;aspect-ratio:16/9;background:#111;border:2px dashed #3a3a3a;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;transition:border-color .15s,background .15s}
+.lg-canvas:hover{border-color:#5a4a6a}
+.lg-canvas.over{border-color:#9b59b6;background:#1a1024}
+.lg-canvas img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.lg-box{position:absolute;border:1.5px solid rgba(155,89,182,.9);border-radius:3px;background:rgba(155,89,182,.08);pointer-events:none;box-sizing:border-box}
+.lg-box span{position:absolute;left:0;top:-18px;font-size:10px;color:#c99ee0;background:rgba(20,10,30,.85);padding:0 4px;border-radius:2px;white-space:nowrap}
+.lg-empty{position:relative;text-align:center;color:#8a8a8a;font-size:var(--fs-dense);line-height:2;pointer-events:none;z-index:1}
+.lg-empty .big{display:block;font-size:22px;color:#6f5a82;margin-bottom:2px}
+.lg-tip{color:#777;font-size:var(--fs-micro);margin-top:7px;line-height:1.7}
+.lg-card{background:#2a2a2a;border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.lg-card-t{color:#8d8d8d;font-size:var(--fs-micro);font-weight:bold;letter-spacing:.05em;margin-bottom:8px}
+.lg-sub{color:#5f6b7a;font-weight:normal}
+.lg-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.lg-field{display:flex;align-items:center;gap:4px;color:#bbb;font-size:var(--fs-meta)}
+.lg-num{width:72px;background:#1a1a1a;color:#eee;border:1px solid #3a3a3a;border-radius:4px;padding:4px 6px;font-size:var(--fs-meta)}
+.lg-num:focus{border-color:#9b59b6;outline:none}
+.lg-hint{color:#777;font-size:var(--fs-micro);margin-top:7px;line-height:1.7}
+.lg-win{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid #333}
+.lg-win:last-child{border-bottom:none}
+.lg-win-id{color:#e94560;font-weight:bold;font-size:var(--fs-meta)}
+.lg-win-meta{color:#777;font-size:var(--fs-micro);margin-left:6px}
+.lg-win .wb-sw{font-size:var(--fs-meta)}
+.lg-win .wb-sw .tk{width:36px;height:20px}
+.lg-win .wb-sw .kb{width:14px;height:14px}
+.lg-win .wb-sw input:checked+.sl{background:#4caf50}
+.lg-win .wb-sw input:checked+.sl+.kb{left:19px}
+.lg-scene{color:#9b59b6;font-size:var(--fs-micro);margin:8px 0 2px;font-weight:bold;letter-spacing:.05em}
+.lg-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}
+.lg-stat{flex:1;color:#777;font-size:var(--fs-micro);min-width:0}
+.lg-stat.err{color:#e94560}
+.lg-stat.ok{color:#4caf50}
+.lg-file{color:#9aa7b6;font-size:var(--fs-micro);margin-top:7px;word-break:break-all}
+@media(max-width:1100px){.lg-wrap{flex-direction:column}.lg-right{flex:1 1 auto;max-width:none;width:100%}}
 @media(max-width:1180px){
 .content{padding:18px}
 .wb-row{gap:12px}
@@ -945,6 +985,13 @@ var s = {
     _psErr: '',            // 播放设置自动保存失败的一行红字（成功后清掉）
     _psCopying: false,     // 全局复制进行中（防连点）
     _psSaveQ: null,        // 播放设置写库的串行队列（同 _wpSaveQ：两次改动挨得近时后一次不能拿着旧 config PUT）
+    _logoMode: false,      // 工作台「LOGO设置」编辑模式（与窗口/截取/墙板/播放设置互斥）
+    _logoDraft: null,      // LOGO 草稿 {roomId, logo:{url,...,x,y,w,h,windows:{A,B}}|null, base}，只跟当前房间绑定
+    _logoNote: '',         // 自动保存/上传成功后的一行回执
+    _logoErr: '',          // 自动保存/上传失败的一行红字
+    _logoUploading: false, // LOGO 上传中（防连点/重复拖拽）
+    _logoSaveQ: null,      // LOGO 写库的串行队列（同播放设置：连改数值时不能拿旧 config PUT）
+    _logoTimer: null,      // 数值/窗口开关的自动保存防抖句柄
     _snap: localStorage.getItem('xsnap') !== '0',   // 窗口画布吸附开关（纯编辑辅助，本地偏好，默认开）
     fs: [],
     ms: [],
@@ -1733,6 +1780,9 @@ async function sr(id) {
         s._wpDraft = null;        // 墙板表草稿同样按房间隔离，重绘时按新房间的配置重建
         _wpLearnReset();          // 等按键状态与倒计时也是这间房的：不换干净的话，旧房间的帧会顶在新房间的学习区里
         s._psDraft = null;        // 播放设置表同理
+        s._logoDraft = null;      // LOGO 设置草稿同样按房间隔离
+        s._logoErr = '';
+        s._logoNote = '';
     }
     s.rf = id;
     localStorage.setItem('xroom', id);
@@ -1866,7 +1916,7 @@ function rmDevice() {
     var roomDevices = s.ds.filter(function(d) { return d.room_id === s.rf && d.authorized === 1; });
     
     var h = '<h3 style="color:#e94560">' + esc(r.name || '') + ' (' + esc(r.store_name || '') + ')</h3>';
-    // 工作台：调试模式 / 窗口配置 / 输入截取 / 墙板配置 / 播放设置 五个开关并排
+    // 工作台：调试模式 / 窗口配置 / 输入截取 / 墙板配置 / 播放设置 / LOGO 设置 六个开关并排
     h += '<div class="wb-panel"><div class="wb-cap">工作台</div><div class="wb-row">';
     h += _wbSw('调试模式', ['roomDebugToggle', 'roomDebugSlider', 'roomDebugKnob'], _roomDebugOn(), '#4caf50', 'toggleRoomDebug()');
     h += _wbSw('窗口配置', ['winToggle', 'winSlider', 'winKnob'], s._windowEditorActive, '#e94560', 'sfW()');
@@ -1876,6 +1926,8 @@ function rmDevice() {
     h += _wbSw('墙板配置', ['wpToggle', 'wpSlider', 'wpKnob'], s._wpMode, '#f5a623', 'sfWP()');
     // 播放设置：同样一张 01~30 × A/B 的总表（播放顺序按文件夹各设一份，A、B 是两套独立素材目录）
     h += _wbSw('播放设置', ['psToggle', 'psSlider', 'psKnob'], s._psMode, '#4aa3df', 'sfPS()');
+    // LOGO 设置：房间级一份黑底 LOGO 视频 + 相对素材窗口的几何 + 哪些窗口叠加它
+    h += _wbSw('LOGO设置', ['logoToggle', 'logoSlider', 'logoKnob'], s._logoMode, '#9b59b6', 'sfLogo()');
     h += '</div></div>';
 
     // 显示房间设备列表
@@ -1934,7 +1986,7 @@ function rmDevice() {
     }
     
     // 墙板表/播放设置表把 01~30 摊成行、A/B 摊成列，文件夹 tab 和场景切换在这两屏上是重复入口
-    var hideTabs = (s._windowEditorActive || s._wpMode || s._psMode) ? 'display:none' : '';
+    var hideTabs = (s._windowEditorActive || s._wpMode || s._psMode || s._logoMode) ? 'display:none' : '';
 
     // 场景选择器（第一幕/第二幕）
     var curS = s._curScene || 'A';
@@ -1979,6 +2031,14 @@ function rmDevice() {
         g.innerHTML = h;
         updateRoomDebugToggle();
         renderPsEditor();
+        return;
+    }
+
+    // LOGO 设置模式：同样独占整块工作区（它也是「读整份 config → 改 logo → PUT 回去」）
+    if (s._logoMode) {
+        g.innerHTML = h;
+        updateRoomDebugToggle();
+        renderLogoEditor();
         return;
     }
     
@@ -2247,6 +2307,7 @@ function sfW() {
     if (wt.checked) {
         // 开关 ON → 进入窗口模式，墙板表/播放设置表收起（它们的改动已经/正在自动落库）
         _exitTableModes();
+        _exitLogoMode();
         s._windowEditorActive = true;
         s._selWin = null;
         if (!s._curScene) s._curScene = 'A';
@@ -2279,7 +2340,7 @@ function sfCrop() {
     var ct = document.getElementById('cropToggle');
     if (!ct) return;
     // 打开取景要连带打开窗口配置，而窗口配置与墙板表/播放设置表互斥 → 先把那两张表收掉
-    if (ct.checked) _exitTableModes();
+    if (ct.checked) { _exitTableModes(); _exitLogoMode(); }
     s._cropMode = !!ct.checked;
     var cs = document.getElementById('cropSlider');
     var ck = document.getElementById('cropKnob');
@@ -2444,7 +2505,7 @@ function _wpLearnReset() {
 async function sfWP() {
     var bt = document.getElementById('wpToggle');
     if (!bt) return;
-    if (bt.checked) _exitTableModes();   // 开表：播放设置表收起；那张表的改动已/正在自动落库，不用弹框
+    if (bt.checked) { _exitTableModes(); _exitLogoMode(); }   // 开表：播放设置表/LOGO 设置收起；改动已/正在自动落库，不用弹框
     await flushAutoSync();   // 墙板表写库是「GET 最新 config → 改自己的键 → 整份 PUT」，防抖里还压着一次窗口编辑的话，
                              // 那份 GET 拿到的是编辑前的 windows，PUT 回去等于把刚改的跟随/文件夹抹掉（和切幕同一个坑）
     s._wpMode = !!bt.checked;
@@ -3466,14 +3527,14 @@ async function wpCopyAll() {
 // 存量房间不会因为新增这个字段而 rev 漂移一次（那会让每台在线设备白重同步、视频从头播）。
 // 叠化（dissolve / dissolve_ms）已于 2026-11-12 随功能一起删除：素材轮播交接一律硬切。
 // 后续要加的设置项直接往这一组列里添，草稿/快照/保存三处都按「整格对象」走，不用改结构。
-// 点歌屏（hdmi）/ DMX512 控制（dmx）两个开关按文件夹一行一控，同时写 A/B 两幕：
+// 点歌屏（hdmi）/ DMX512 控制（dmx）/ LOGO 叠加（logo）三个开关按文件夹一行一控，同时写 A/B 两幕：
 // 墙板一格一码不分幕，两幕永远同格，分两列只会让人拨出一半开一半关的自相矛盾状态。
 // ============================================================================
 
 var PS_ORDERS = ['seq', 'shuffle'];
 
 /**
- * 一格设置的规范形状；全默认（顺序循环 + 点歌屏关 + DMX512 关）→ null = 不落键。
+ * 一格设置的规范形状；全默认（顺序循环 + 点歌屏关 + DMX512 关 + LOGO 关）→ null = 不落键。
  * 读库和编辑都过它，两处不会各漂一份口径。
  */
 function _psCell(v) {
@@ -3487,6 +3548,7 @@ function _psCell(v) {
         if (v.hdmi_mode === 2 || v.hdmi_mode === 3) o.hdmi_mode = v.hdmi_mode;
     }
     if (v.dmx === true) o.dmx = true;
+    if (v.logo === true) o.logo = true;
     return Object.keys(o).length ? o : null;
 }
 
@@ -3514,7 +3576,7 @@ function _psSnap(d) {
         var o = {};
         Object.keys(m).sort().forEach(function (k) {
             var c = m[k];
-            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq', String(_psHdmiModeOf(c)), c.dmx === true ? 'on' : 'off'];
+            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq', String(_psHdmiModeOf(c)), c.dmx === true ? 'on' : 'off', c.logo === true ? 'on' : 'off'];
         });
         return o;
     };
@@ -3541,7 +3603,7 @@ function _exitTableModes() {
 async function sfPS() {
     var pt = document.getElementById('psToggle');
     if (!pt) return;
-    if (pt.checked) _exitTableModes();   // 开表：墙板表收起
+    if (pt.checked) { _exitTableModes(); _exitLogoMode(); }   // 开表：墙板表/LOGO 设置收起
     await flushAutoSync();   // 写库是整份 config 读后写，防抖里还压着窗口编辑的话会把刚改的 windows 抹掉
     s._psMode = !!pt.checked;
     if (s._psMode) {
@@ -3612,6 +3674,16 @@ function _psDmxSw(fid, d) {
         + '<span class="sl"></span><span class="kb"></span></span></label>';
 }
 
+/** 一行的 LOGO 叠加开关：一行一控写 A/B 两幕（默认关；还要求 LOGO 设置里这扇窗也开着） */
+function _psLogoSwh(fid, d) {
+    var ca = d.A[fid], cb = d.B[fid];
+    var on = (ca && ca.logo === true) || (cb && cb.logo === true);
+    return '<label class="wb-sw ps-logo-sw" title="' + escA('开 = 这一格在播时允许叠加 LOGO（还要在「LOGO设置」里把这扇素材窗打开）；关 = 这一格不显示 LOGO。默认关') + '">'
+        + '<span class="tk"><input type="checkbox" name="psl-' + fid + '"' + (on ? ' checked' : '')
+        + ' aria-label="文件夹' + fid + ' 的 LOGO 叠加开关" onchange="psSetLogo(\'' + fid + '\',this.checked)">'
+        + '<span class="sl"></span><span class="kb"></span></span></label>';
+}
+
 function _psTableHtml() {
     var d = _psDraftOf();
     if (!d) return '<div class="empty" style="margin-top:10px">房间数据还没加载完，关掉「播放设置」再开一次</div>';
@@ -3627,16 +3699,17 @@ function _psTableHtml() {
     if (s._psNote) h += '<span style="font-size:var(--fs-micro);color:#4caf50">✓ ' + esc(s._psNote) + '</span>';
     if (s._psErr) h += '<span class="wp-warn" style="color:#e94560">' + esc(s._psErr) + '</span>';
     h += '<span style="flex:1"></span>';
-    h += '<button class="btn btn-sync" id="psCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的播放设置（每格的播放顺序、点歌屏模式、DMX512 开关）覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="psCopyAll()">全局复制</button>';
+    h += '<button class="btn btn-sync" id="psCopyBtn" style="padding:5px 14px;font-size:var(--fs-meta);margin-right:6px" title="把当前房间的播放设置（每格的播放顺序、点歌屏模式、DMX512 开关、LOGO 开关）覆盖到本店其余房间（其它配置与其他店铺一概不碰）" onclick="psCopyAll()">全局复制</button>';
     h += '<button class="btn btn-primary" id="psSaveBtn" style="padding:5px 18px;font-size:var(--fs-meta)" title="改动会自动保存；这里可立即落库，或重试上一次失败" onclick="psSave()">保存</button>';
     h += '<button class="btn btn-secondary" style="padding:5px 14px;font-size:var(--fs-meta);margin-left:6px" title="丢掉未落库的改动，按云端当前配置重画" onclick="psReload()">重读</button>';
     h += '</div>';
-    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关（不显示点歌窗）、DMX512 控制关。点歌屏模式：点歌窗在「窗口配置」里按属性栏分成模式1/2/3 三套，这里选哪套，这一格在播时就只出哪套点歌窗。开了 DMX512 控制的格子：DMX512 副板通道 1 的值一变就切到文件夹 NN（值 N = 格子 NN，1~30 有效，0 不动，31~255 忽略）；DMX 串口在「墙板配置」里设。</div>';
+    h += '<div style="color:#666;font-size:var(--fs-micro);margin-top:6px">改动会自动保存。素材轮播的交接一律硬切（切墙板、切幕、试播接管同样硬切）。未设置的格子 = 顺序循环、点歌屏关（不显示点歌窗）、DMX512 控制关、LOGO 叠加关。点歌屏模式：点歌窗在「窗口配置」里按属性栏分成模式1/2/3 三套，这里选哪套，这一格在播时就只出哪套点歌窗。开了 DMX512 控制的格子：DMX512 副板通道 1 的值一变就切到文件夹 NN（值 N = 格子 NN，1~30 有效，0 不动，31~255 忽略）；DMX 串口在「墙板配置」里设。LOGO 叠加：这里开了文件夹、且「LOGO设置」里那扇素材窗也开着，两个条件同时满足才出 LOGO。</div>';
 
     h += '<table class="wp-tbl ps-tbl"><thead>'
         + '<tr><th rowspan="2">文件夹</th><th colspan="2">第一幕 (A)</th><th colspan="2" class="ps-sep">第二幕 (B)</th>'
         + '<th rowspan="2" class="ps-sep ps-hdmi">点歌屏模式</th>'
-        + '<th rowspan="2" class="ps-sep ps-dmx">DMX512控制</th></tr>'
+        + '<th rowspan="2" class="ps-sep ps-dmx">DMX512控制</th>'
+        + '<th rowspan="2" class="ps-sep ps-logo">LOGO</th></tr>'
         + '<tr><th>素材</th><th>播放顺序</th>'
         + '<th class="ps-sep">素材</th><th>播放顺序</th></tr>'
         + '</thead><tbody>';
@@ -3647,6 +3720,7 @@ function _psTableHtml() {
             + _psGroupHtml('B', f, d.B[f], (fm.B[f] || []).length, true)
             + '<td class="ps-sep">' + _psHdmiSeg(f, d) + '</td>'
             + '<td class="ps-sep">' + _psDmxSw(f, d) + '</td>'
+            + '<td class="ps-sep">' + _psLogoSwh(f, d) + '</td>'
             + '</tr>';
     }
     h += '</tbody></table>';
@@ -3686,6 +3760,8 @@ function _psSetCell(sc, fid, field, v) {
         }
     } else if (field === 'dmx') {
         if (v) cell.dmx = true; else delete cell.dmx;
+    } else if (field === 'logo') {
+        if (v) cell.logo = true; else delete cell.logo;
     } else return false;
     if (Object.keys(cell).length) d[sc][fid] = cell; else delete d[sc][fid];
     return true;
@@ -3707,6 +3783,14 @@ function psSetHdmi(fid, mode) {
 function psSetDmx(fid, on) {
     _psSetCell('A', fid, 'dmx', on);
     _psSetCell('B', fid, 'dmx', on);
+    renderPsEditor();
+    _psAutoSaveSoon();
+}
+
+/** LOGO 叠加开关按行拨：同样 A、B 两幕同值 */
+function psSetLogo(fid, on) {
+    _psSetCell('A', fid, 'logo', on);
+    _psSetCell('B', fid, 'logo', on);
     renderPsEditor();
     _psAutoSaveSoon();
 }
@@ -3803,7 +3887,7 @@ async function psSave() {
 }
 
 /**
- * 全局复制：把当前房间的播放设置（两幕每格的播放顺序 + 点歌屏模式 + DMX512 开关）覆盖到**本店**其余房间。
+ * 全局复制：把当前房间的播放设置（两幕每格的播放顺序 + 点歌屏模式 + DMX512 开关 + LOGO 开关）覆盖到**本店**其余房间。
  * 边界与墙板表同一口径：只认当前房间的 store_name；每间房读后写、只换 scenes.A/B.play_settings，
  * 其它配置（窗口/墙板/输出基准）一概不碰。复制的是当前草稿，所以最后把自己也存一次，
  * 保证"复制出去的"就是"这里留下的"。一间失败不拦后面：最后报出成功数与失败名单。
@@ -3823,7 +3907,7 @@ async function psCopyAll() {
     catch (e) { alert('取房间列表失败: ' + e.message); return; }
     var others = list.filter(function (r) { return r && r.id !== s.rf; });
     if (!others.length) { alert('本店没有其它房间可覆盖。'); return; }
-    if (!confirm('把当前房间的播放设置（每格播放顺序、点歌屏模式、DMX512 开关）覆盖到「' + store + '」的其余 '
+    if (!confirm('把当前房间的播放设置（每格播放顺序、点歌屏模式、DMX512 开关、LOGO 开关）覆盖到「' + store + '」的其余 '
         + others.length + ' 间房？\n\n它们原本的播放设置会被整体替换，其它配置与其他店铺不受影响。')) return;
     var psA = JSON.parse(JSON.stringify(d.A)), psB = JSON.parse(JSON.stringify(d.B));
     s._psCopying = true;
@@ -3858,6 +3942,469 @@ async function psCopyAll() {
     s._psNote = '已把播放设置覆盖到本店 ' + ok + ' 间房' + (bad.length ? '，' + bad.length + ' 间失败' : '');
     renderPsEditor();
     if (bad.length) alert('有 ' + bad.length + ' 间房没覆盖成功：\n' + bad.join('\n'));
+}
+
+
+// ============================================================================
+// 【F-06j】LOGO 设置（工作台「LOGO设置」模式）
+//   一间房一份 LOGO 视频：上传 → 首帧预览 → 相对素材窗口的几何 → 按幕勾选显示窗口。
+//   与窗口/截取/墙板/播放设置互斥：这里也是「读整份 config → 只换 logo → PUT 回去」。
+//   真正出画 = 本页窗口开关 ∧ 播放设置该文件夹的 logo 开关（见 server playSettingsValue）。
+//   写库走串行队列 + 500ms 防抖，快照在改动那一刻取：切页/切房间时在路上那笔仍落原房间。
+//   几何口径与服务端 roomLogoField 一致：x/y 是 LOGO 中心相对窗口中心的偏移百分比，
+//   w/h 是 LOGO 视频宽/高占窗口宽/高的百分比；左画布按"一扇 16:9 素材窗"等比演示。
+// ============================================================================
+
+var LOGO_DEF_W = 50, LOGO_DEF_H = 50;
+var LOGO_VIDEO_EXT = ['mp4', 'webm', 'mov', 'avi', 'mkv'];
+
+function _logoClamp(v, dflt, min, max) {
+    var n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
+    if (!Number.isFinite(n)) n = dflt;
+    return Math.round(Math.min(max, Math.max(min, n)) * 10) / 10;
+}
+function _logoPct(v, dflt) { return _logoClamp(v, dflt, 1, 100); }
+function _logoOff(v, dflt) { return _logoClamp(v, dflt, -200, 200); }
+function _logoWinArr(v) {
+    var out = [];
+    if (!Array.isArray(v)) return out;
+    v.forEach(function (id) {
+        if (typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id) && out.indexOf(id) < 0 && out.length < 64) out.push(id);
+    });
+    return out;
+}
+
+/** config.logo → 编辑形状；没设 / 地址不合法按没用处理（与服务端 roomLogoField 同口径） */
+function _logoNorm(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    if (typeof v.url !== 'string' || !/^\/uploads\/logos\/[A-Za-z0-9_-]{1,64}\/logo-[a-f0-9]{6,32}\.(?:mp4|webm|mov|avi|mkv)$/.test(v.url)) return null;
+    var wins = (v.windows && typeof v.windows === 'object' && !Array.isArray(v.windows)) ? v.windows : {};
+    return {
+        url: v.url,
+        thumbnail: typeof v.thumbnail === 'string' ? v.thumbnail : '',
+        filename: typeof v.filename === 'string' ? v.filename : '',
+        md5: typeof v.md5 === 'string' ? v.md5 : '',
+        size: Math.max(0, Math.floor(Number(v.size) || 0)),
+        width: Math.max(0, Math.floor(Number(v.width) || 0)),
+        height: Math.max(0, Math.floor(Number(v.height) || 0)),
+        x: _logoOff(v.x, 0),
+        y: _logoOff(v.y, 0),
+        w: _logoPct(v.w, LOGO_DEF_W),
+        h: _logoPct(v.h, LOGO_DEF_H),
+        windows: { A: _logoWinArr(wins.A), B: _logoWinArr(wins.B) }
+    };
+}
+
+/** 快照：只比文件地址 + 几何 + 窗口名单（元数据/编辑顺序不算内容差异） */
+function _logoSnap(lg) {
+    if (!lg || !lg.url) return '';
+    return JSON.stringify([lg.url, lg.x, lg.y, lg.w, lg.h,
+        (lg.windows.A || []).slice().sort(), (lg.windows.B || []).slice().sort()]);
+}
+
+function _exitLogoMode() {
+    s._logoMode = false;
+    s._logoDraft = null;
+    s._logoErr = '';
+    s._logoNote = '';
+    s._logoUploading = false;
+}
+
+/**
+ * 「LOGO设置」开关：打开 → 整块工作台换成 LOGO 编辑页。
+ * 与另外三张表同一套互斥理由（各自「读整份 config → 改自己的键 → PUT 回去」），
+ * 打开前先把路上的窗口编辑落库，免得这边读后写把 windows 抹掉。
+ */
+async function sfLogo() {
+    var lt = document.getElementById('logoToggle');
+    if (!lt) return;
+    if (lt.checked) _exitTableModes();
+    await flushAutoSync();
+    s._logoMode = !!lt.checked;
+    if (s._logoMode) {
+        s._windowEditorActive = false;
+        _exitCropMode();
+        s._selWin = null;
+        s._logoErr = '';
+        s._logoNote = '';
+    } else {
+        _exitLogoMode();
+    }
+    rmDevice();
+}
+
+/** 草稿：只认当前房间（切房间在 sr 里作废），数据取 s.rooms 缓存；落库时才现读云端最新 config */
+function _logoDraftOf() {
+    if (s._logoDraft && s._logoDraft.roomId === s.rf) return s._logoDraft;
+    var r = s.rooms.find(function (x) { return x.id === s.rf; });
+    if (!r) return null;
+    var cfg = _loadRoomCfg(r);
+    var d = { roomId: s.rf, logo: _logoNorm(cfg.logo) };
+    d.base = _logoSnap(d.logo);
+    s._logoDraft = d;
+    return d;
+}
+
+function _logoStatus(text, cls) {
+    var el = document.getElementById('lgStat');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'lg-stat' + (cls ? (' ' + cls) : '');
+}
+
+function _logoSetInput(id, val) {
+    var el = document.getElementById(id);
+    if (el) el.value = String(val);
+}
+
+/** 画布上的虚框 = LOGO 视频画面在素材窗里的落点（左画布按一扇 16:9 窗演示） */
+function _logoPaintBox(lg) {
+    var b = document.getElementById('lgBox');
+    if (!b || !lg) return;
+    b.style.left = (50 + lg.x / 2 - lg.w / 2) + '%';
+    b.style.top = (50 + lg.y / 2 - lg.h / 2) + '%';
+    b.style.width = lg.w + '%';
+    b.style.height = lg.h + '%';
+    var sp = b.querySelector('span');
+    if (sp) sp.textContent = 'LOGO 画面 ' + lg.w + '%×' + lg.h + '%';
+}
+
+/** 侧栏数字框改动：夹到值域、写回输入框、立刻自动保存（不重绘，避免打字被吞） */
+function logoSet(field, v) {
+    var d = _logoDraftOf();
+    if (!d || !d.logo) return;
+    if (field === 'w') { d.logo.w = _logoPct(v, LOGO_DEF_W); _logoSetInput('lgW', d.logo.w); }
+    else if (field === 'h') { d.logo.h = _logoPct(v, LOGO_DEF_H); _logoSetInput('lgH', d.logo.h); }
+    else if (field === 'x') { d.logo.x = _logoOff(v, 0); _logoSetInput('lgX', d.logo.x); }
+    else if (field === 'y') { d.logo.y = _logoOff(v, 0); _logoSetInput('lgY', d.logo.y); }
+    else return;
+    _logoPaintBox(d.logo);
+    _logoStatus('保存中…', '');
+    _logoAutoSaveSoon();
+}
+
+/** 一键居中：坐标归零（宽高不动） */
+function logoCenter() {
+    var d = _logoDraftOf();
+    if (!d || !d.logo) return;
+    d.logo.x = 0;
+    d.logo.y = 0;
+    _logoSetInput('lgX', 0);
+    _logoSetInput('lgY', 0);
+    _logoPaintBox(d.logo);
+    _logoStatus('已居中，保存中…', '');
+    _logoAutoSaveSoon();
+}
+
+/** 一扇素材窗的显示开关：只动本幕名单，另一幕不受影响 */
+function logoToggleWin(sc, id, on) {
+    var d = _logoDraftOf();
+    if (!d || !d.logo) return;
+    var arr = d.logo.windows[sc] || (d.logo.windows[sc] = []);
+    var i = arr.indexOf(id);
+    if (on && i < 0) arr.push(id);
+    if (!on && i >= 0) arr.splice(i, 1);
+    _logoStatus('保存中…', '');
+    _logoAutoSaveSoon();
+}
+
+/** 文件中转：拖拽/点击共用一条上传链路 */
+function logoPick() {
+    if (s._logoUploading) return;
+    var f = document.getElementById('lgFile');
+    if (f) f.click();
+}
+function logoFilePicked(inp) {
+    var f = inp.files && inp.files[0];
+    inp.value = '';   // 允许连续选同一个文件触发 change
+    if (f) logoUpload(f);
+}
+function logoDragOver(e) {
+    if (!_dragHasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    var c = document.getElementById('lgCanvas');
+    if (c) c.classList.add('over');
+}
+function logoDragLeave(e) {
+    var c = document.getElementById('lgCanvas');
+    if (c) c.classList.remove('over');
+}
+function logoDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var c = document.getElementById('lgCanvas');
+    if (c) c.classList.remove('over');
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) logoUpload(f);
+}
+
+function _logoExtOk(name) {
+    var m = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+    return !!m && LOGO_VIDEO_EXT.indexOf(m[1]) >= 0;
+}
+
+/**
+ * 上传：POST /api/rooms/:id/logo（multipart，服务端转封装 + 抽首帧 + 算 md5）。
+ * 成功拿到 {url, thumbnail, filename, md5, size, width, height}，保留原几何与窗口名单，随即自动落库。
+ * 上传途中切房间则丢弃这次结果（文件留在服务器，下次上传会被清掉），不把 A 房的 LOGO 写进 B 房。
+ */
+function logoUpload(file) {
+    if (!s.rf) { alert('请先选择房间'); return; }
+    if (s._logoUploading) return;
+    if (!_logoExtOk(file.name)) { alert('LOGO 只支持视频文件：' + LOGO_VIDEO_EXT.join(' / ')); return; }
+    var rid = s.rf;
+    s._logoUploading = true;
+    s._logoErr = '';
+    _logoStatus('上传中 0%…', '');
+    var hint0 = document.getElementById('lgHint');
+    if (hint0) hint0.textContent = '上传中 0%…';
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/rooms/' + encodeURIComponent(rid) + '/logo');
+    xhr.upload.onprogress = function (e) {
+        if (!e.lengthComputable || s.rf !== rid) return;
+        var pct = Math.round(e.loaded / e.total * 100);
+        _logoStatus('上传中 ' + pct + '%…', '');
+        var hint = document.getElementById('lgHint');
+        if (hint) hint.textContent = '上传中 ' + pct + '%…';
+    };
+    xhr.onload = function () {
+        s._logoUploading = false;
+        var j = null;
+        try { j = JSON.parse(xhr.responseText); } catch (e) {}
+        if (xhr.status < 200 || xhr.status >= 300 || !j || j.error) {
+            var msg = (j && j.error) || ('HTTP ' + xhr.status);
+            s._logoErr = '上传失败：' + msg;
+            if (s.rf === rid && s._logoMode) renderLogoEditor();
+            alert('LOGO 上传失败：' + msg);
+            return;
+        }
+        if (s.rf !== rid) { alert('房间已切换，这次 LOGO 上传结果已丢弃，请在当前房间重新上传'); return; }
+        var d = _logoDraftOf();
+        if (!d) { alert('房间数据还没加载完，LOGO 已上传但未写入配置，请重进本页再传一次'); return; }
+        var keep = d.logo || { x: 0, y: 0, w: LOGO_DEF_W, h: LOGO_DEF_H, windows: { A: [], B: [] } };
+        d.logo = {
+            url: j.url,
+            thumbnail: j.thumbnail || '',
+            filename: j.filename || '',
+            md5: j.md5 || '',
+            size: j.size || 0,
+            width: j.width || 0,
+            height: j.height || 0,
+            x: _logoOff(keep.x, 0),
+            y: _logoOff(keep.y, 0),
+            w: _logoPct(keep.w, LOGO_DEF_W),
+            h: _logoPct(keep.h, LOGO_DEF_H),
+            windows: {
+                A: (keep.windows && Array.isArray(keep.windows.A) ? keep.windows.A : []).slice(),
+                B: (keep.windows && Array.isArray(keep.windows.B) ? keep.windows.B : []).slice()
+            }
+        };
+        s._logoNote = '已上传';
+        s._logoErr = '';
+        if (s._logoMode) renderLogoEditor();
+        _logoSaveSnap({ roomId: rid, want: _logoSnap(d.logo), logo: JSON.parse(JSON.stringify(d.logo)) });
+    };
+    xhr.onerror = function () {
+        s._logoUploading = false;
+        s._logoErr = '上传失败：网络错误';
+        if (s.rf === rid && s._logoMode) renderLogoEditor();
+        alert('LOGO 上传失败：网络错误');
+    };
+    var fd = new FormData();
+    fd.append('file', file);
+    xhr.send(fd);
+}
+
+/** 移除：从 config 里删掉整个 logo（文件留在服务器，下次上传时服务端会清掉旧文件） */
+function logoRemove() {
+    var d = _logoDraftOf();
+    if (!d || !d.logo || !s.rf) return;
+    if (!confirm('移除本房间的 LOGO？设备端会停止叠加；文件留在服务器上，下次上传会被覆盖。')) return;
+    var rid = s.rf;
+    d.logo = null;
+    s._logoNote = '已移除';
+    s._logoErr = '';
+    renderLogoEditor();
+    _logoSaveSnap({ roomId: rid, want: '', logo: null });
+}
+
+/** 改动后的自动保存：500ms 防抖；快照在改动这一刻取，切页/切房间也不会丢 */
+function _logoAutoSaveSoon() {
+    var d = _logoDraftOf();
+    if (!d || !s.rf) return;
+    var snap = { roomId: s.rf, want: _logoSnap(d.logo), logo: d.logo ? JSON.parse(JSON.stringify(d.logo)) : null };
+    if (s._logoTimer) clearTimeout(s._logoTimer);
+    s._logoTimer = setTimeout(function () {
+        s._logoTimer = null;
+        _logoSaveSnap(snap);
+    }, TABLE_AUTO_SAVE_MS);
+}
+
+/**
+ * 把一份 LOGO 快照落库：串行队列，先 flushAutoSync 再 GET 最新 config，只换 config.logo 再 PUT。
+ * resolve(null) = 成功；resolve(Error) = 失败（红字已更新）。
+ */
+function _logoSaveSnap(snap) {
+    if (!snap || !snap.roomId) return Promise.resolve(null);
+    var job = function () {
+        return flushAutoSync()
+            .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(snap.roomId)); })
+            .then(function (roomObj) {
+                if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
+                var cfg = _loadRoomCfg(roomObj);
+                if (snap.logo) cfg.logo = JSON.parse(JSON.stringify(snap.logo)); else delete cfg.logo;
+                return apiCall('/api/rooms/' + encodeURIComponent(snap.roomId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: JSON.stringify(cfg) })
+                }).then(function () { return cfg; });
+            })
+            .then(function (cfg) {
+                var idx = s.rooms.findIndex(function (x) { return x.id === snap.roomId; });
+                if (idx >= 0) {
+                    var room = JSON.parse(JSON.stringify(s.rooms[idx]));
+                    room.config = JSON.stringify(cfg);
+                    s.rooms[idx] = room;
+                }
+                var cur = s._logoDraft;
+                if (cur && cur.roomId === snap.roomId) cur.base = snap.want;
+                s._logoErr = '';
+                if (s._logoMode && cur && cur.roomId === snap.roomId) _logoStatus(s._logoNote || '已自动保存', 'ok');
+                return null;
+            })
+            .catch(function (e) {
+                s._logoErr = '自动保存失败：' + e.message;
+                if (s._logoMode) _logoStatus(s._logoErr, 'err');
+                return e;
+            });
+    };
+    s._logoSaveQ = (s._logoSaveQ || Promise.resolve()).then(job, job);
+    return s._logoSaveQ;
+}
+
+function _logoSize(n) {
+    n = Number(n) || 0;
+    if (n <= 0) return '';
+    return n >= 1048576 ? (Math.round(n / 104857.6) / 10) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+}
+
+/** 一幕的素材窗口列表（只列 SCENE_A/SCENE_B 素材窗；点歌窗/HDMI/纯色窗不参与 LOGO） */
+function _logoWinListHtml(sc, lg) {
+    var r = s.rooms.find(function (x) { return x.id === s.rf; });
+    var head = '<div class="lg-scene">' + (sc === 'A' ? '第一幕 (A)' : '第二幕 (B)') + ' 素材窗口</div>';
+    if (!r) return head + '<div class="lg-hint">房间数据还没加载完。</div>';
+    var cfg = _loadRoomCfg(r);
+    var wins = (cfg.scenes[sc] || {}).windows || [];
+    var mats = wins.filter(function (w) {
+        var t = w && w.content && w.content.type;
+        return t === 'SCENE_A' || t === 'SCENE_B';
+    });
+    if (!mats.length) return head + '<div class="lg-hint">这一幕还没有素材窗口（先到「窗口配置」里添加）。</div>';
+    var on = (lg && lg.windows && Array.isArray(lg.windows[sc])) ? lg.windows[sc] : [];
+    var dis = (lg && lg.url) ? '' : ' disabled';
+    var h = head;
+    mats.forEach(function (w) {
+        var checked = on.indexOf(w.id) >= 0;
+        var meta = esc(w.id) + ' · ' + Math.round(Number(w.x) || 0) + ',' + Math.round(Number(w.y) || 0)
+            + ' ' + Math.round(Number(w.width) || 0) + '×' + Math.round(Number(w.height) || 0)
+            + (w.enabled === false ? ' · 已隐藏' : '');
+        h += '<div class="lg-win"><div style="min-width:0"><span class="lg-win-id">' + esc(w.name || w.id) + '</span>'
+            + '<span class="lg-win-meta">' + meta + '</span></div>'
+            + '<label class="wb-sw" title="' + escA('开 = 这扇窗口允许叠加 LOGO（还要该文件夹的 LOGO 开关也开着）') + '">'
+            + '<span class="tk"><input type="checkbox"' + (checked ? ' checked' : '') + dis
+            + ' aria-label="' + escA((sc === 'A' ? '第一幕' : '第二幕') + ' 窗口 ' + (w.name || w.id) + ' 显示 LOGO') + '"'
+            + ' onchange="logoToggleWin(\'' + sc + '\',\'' + escJsA(w.id) + '\',this.checked)">'
+            + '<span class="sl"></span><span class="kb"></span></span></label></div>';
+    });
+    return h;
+}
+
+function _logoHtml() {
+    var d = _logoDraftOf();
+    if (!d) return '<div class="empty" style="margin-top:10px">房间数据还没加载完，关掉「LOGO设置」再开一次</div>';
+    var lg = d.logo, has = !!(lg && lg.url);
+    var dis = has ? '' : ' disabled';
+    var h = '<div class="lg-wrap"><div class="lg-left">';
+
+    h += '<div class="lg-canvas" id="lgCanvas" role="button" tabindex="0"'
+        + ' title="' + escA(has ? '点击或拖入新文件可替换当前 LOGO' : '点击选择文件，或把视频拖到这里') + '"'
+        + ' onclick="logoPick()"'
+        + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();logoPick();}"'
+        + ' ondragover="logoDragOver(event)" ondragleave="logoDragLeave(event)" ondrop="logoDrop(event)">';
+    if (has && lg.thumbnail) {
+        h += '<img src="' + escA(lg.thumbnail) + '" alt="LOGO 首帧预览">';
+    }
+    if (has) {
+        var left = 50 + lg.x / 2 - lg.w / 2, top = 50 + lg.y / 2 - lg.h / 2;
+        h += '<div class="lg-box" id="lgBox" style="left:' + left + '%;top:' + top + '%;width:' + lg.w + '%;height:' + lg.h + '%">'
+            + '<span>LOGO 画面 ' + lg.w + '%×' + lg.h + '%</span></div>';
+        if (!lg.thumbnail) h += '<div class="lg-empty"><span class="big">✓</span>LOGO 已上传<br>首帧预览暂不可用</div>';
+    } else {
+        h += '<div class="lg-empty"><span class="big">＋</span>请拖拽 LOGO 文件至此上传<br>'
+            + '<span style="font-size:var(--fs-micro)">或点这里选文件 · 纯黑底 16:9 视频 · ≤100MB</span></div>';
+    }
+    h += '</div>';
+    h += '<div class="lg-hint" id="lgHint">' + esc(has
+        ? '点击画面或右侧「重新上传」可替换；拖入视频也可直接替换。虚框 = LOGO 画面在素材窗里的落点。'
+        : '支持 mp4 / webm / mov / avi / mkv，建议 16:9、纯黑底、LOGO 居中。') + '</div>';
+    h += '</div><div class="lg-right">';
+
+    // 尺寸与位置
+    h += '<div class="lg-card"><div class="lg-card-t">尺寸与位置 <span class="lg-sub">（相对每扇素材窗口）</span></div>'
+        + '<div class="lg-row">'
+        + '<label class="lg-field">宽 <input class="lg-num" id="lgW" type="number" min="1" max="100" step="1" value="' + (has ? lg.w : LOGO_DEF_W) + '"' + dis + ' onchange="logoSet(\'w\',this.value)"> %</label>'
+        + '<label class="lg-field">高 <input class="lg-num" id="lgH" type="number" min="1" max="100" step="1" value="' + (has ? lg.h : LOGO_DEF_H) + '"' + dis + ' onchange="logoSet(\'h\',this.value)"> %</label>'
+        + '</div>'
+        + '<div class="lg-row" style="margin-top:8px">'
+        + '<label class="lg-field">X <input class="lg-num" id="lgX" type="number" min="-200" max="200" step="1" value="' + (has ? lg.x : 0) + '"' + dis + ' onchange="logoSet(\'x\',this.value)"> %</label>'
+        + '<label class="lg-field">Y <input class="lg-num" id="lgY" type="number" min="-200" max="200" step="1" value="' + (has ? lg.y : 0) + '"' + dis + ' onchange="logoSet(\'y\',this.value)"> %</label>'
+        + '<button class="btn btn-secondary" style="padding:4px 10px;font-size:var(--fs-micro)"' + dis + ' onclick="logoCenter()">居中</button>'
+        + '</div>'
+        + '<div class="lg-hint">宽/高按素材窗口的宽/高分别计算；坐标原点 = 窗口中心点，X 正向右、Y 正向下。默认 50%×50%、坐标 (0,0) 即居中。</div>'
+        + '</div>';
+
+    // 显示窗口
+    h += '<div class="lg-card"><div class="lg-card-t">显示窗口 <span class="lg-sub">（开 = 该窗口叠加 LOGO）</span></div>'
+        + _logoWinListHtml('A', lg)
+        + _logoWinListHtml('B', lg)
+        + '<div class="lg-hint">还要在「播放设置」里把对应文件夹的 LOGO 开关打开——两处都开才叠加。</div>'
+        + '</div>';
+
+    // 文件与状态
+    var meta = '';
+    if (has) {
+        var parts = [];
+        if (lg.width && lg.height) parts.push(lg.width + '×' + lg.height);
+        var sz = _logoSize(lg.size);
+        if (sz) parts.push(sz);
+        if (lg.md5) parts.push(lg.md5.slice(0, 12));
+        meta = '<div class="lg-file">' + esc(lg.filename || lg.url.split('/').pop() || 'LOGO 视频')
+            + (parts.length ? '<br>' + esc(parts.join(' · ')) : '') + '</div>';
+    }
+    var statCls = s._logoErr ? ' err' : (s._logoNote ? ' ok' : '');
+    var statTxt = s._logoErr || s._logoNote || (has ? '改动自动保存' : '等待上传');
+    h += '<div class="lg-card"><div class="lg-card-t">LOGO 文件</div>'
+        + (meta || '<div class="lg-hint">还没有上传。</div>')
+        + '<div class="lg-actions" style="margin-top:8px">'
+        + '<button class="btn btn-primary" style="padding:5px 14px;font-size:var(--fs-meta)"' + (s._logoUploading ? ' disabled' : '') + ' onclick="logoPick()">' + (s._logoUploading ? '上传中…' : (has ? '重新上传' : '上传')) + '</button>'
+        + (has ? '<button class="btn" style="padding:5px 14px;font-size:var(--fs-meta);background:#7a2b2b;color:#fff" onclick="logoRemove()">移除</button>' : '')
+        + '</div>'
+        + '<div id="lgStat" class="lg-stat' + statCls + '">' + esc(statTxt) + '</div>'
+        + '<input type="file" id="lgFile" accept="video/*,.mp4,.webm,.mov,.avi,.mkv" style="display:none" onchange="logoFilePicked(this)">'
+        + '</div>';
+
+    return h + '</div></div>';
+}
+
+/** 重画 LOGO 页（整块自替换；状态条走 _logoStatus 原地更新，不会打断正在输入的数字框） */
+function renderLogoEditor() {
+    var g = document.getElementById('dg');
+    if (!g) return;
+    var html = '<div id="lgWrap">' + _logoHtml() + '</div>';
+    var old = document.getElementById('lgWrap');
+    if (old) old.outerHTML = html;
+    else g.insertAdjacentHTML('beforeend', html);
 }
 
 

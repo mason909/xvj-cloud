@@ -24,10 +24,11 @@ const names = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isS
   'roomDmxFields', 'roomDmxDigest', 'findDmxFieldError',
   'wallpanelBitOk', 'wallpanelBitChoice', 'normalizeWallpanelCode', 'findBitChoiceError', 'normalizeWallpanelRule', 'normalizeWallpanelBindings', 'findWallpanelBindingsError', 'wallpanelSourceName',
   'outputPx', 'roomOutputField', 'findOutputError', 'rememberDeviceScreen', 'deviceScreen',
+  'clampStr', 'logoNum', 'logoPct', 'logoOff', 'logoWinIds', 'roomLogoField', 'findLogoError',
   'normalizeDeviceFrames', 'rememberDeviceFrames', 'deviceFrames',
   'roomSyncFields', 'windowCommandPayload'];
 // 模块级常量（编号区间、波特率档、默认节点、播放设置取值域、串口字符格式档、学习表判据）：抠出来的函数直接引用它们，不带上就 ReferenceError
-const consts = src.match(/^const (WALLPANEL_BAUDS|WALLPANEL_DEFAULT_PATH|DMX_BAUDS|DMX_DEFAULT_PATH|DMX_DEFAULT_BAUD|PLAY_ORDERS|PLAY_DISSOLVE_MS_MIN|OUTPUT_MIN_PX|DEVICE_SCREEN_TTL|WALLPANEL_DATA_BITS|WALLPANEL_PARITIES|WALLPANEL_STOP_BITS|WALLPANEL_FRAME_HEX_RE|WALLPANEL_BINDINGS_MAX|WALLPANEL_BINDING_SOURCES|WALLPANEL_LEARN_MAX_S|PRESET_FOLDER_RE|DEVICE_FRAMES_TTL|DEVICE_FRAMES_MAX).*$/gm).join('\n')
+const consts = src.match(/^const (WALLPANEL_BAUDS|WALLPANEL_DEFAULT_PATH|DMX_BAUDS|DMX_DEFAULT_PATH|DMX_DEFAULT_BAUD|PLAY_ORDERS|PLAY_DISSOLVE_MS_MIN|OUTPUT_MIN_PX|DEVICE_SCREEN_TTL|WALLPANEL_DATA_BITS|WALLPANEL_PARITIES|WALLPANEL_STOP_BITS|WALLPANEL_FRAME_HEX_RE|WALLPANEL_BINDINGS_MAX|WALLPANEL_BINDING_SOURCES|WALLPANEL_LEARN_MAX_S|PRESET_FOLDER_RE|DEVICE_FRAMES_TTL|DEVICE_FRAMES_MAX|LOGO_URL_RE|LOGO_THUMB_RE|LOGO_WINDOW_ID_RE|LOGO_WINDOWS_MAX|LOGO_PCT_MIN).*$/gm).join('\n')
   // 任务 #177：设备自报屏幕像素的缓存在同一层，编辑器"取本机"读的就是它
   + '\n' + src.match(/^const deviceScreenAt = .*$/m)[0]
   // 【S-06f】帧台账同上，另外 TTL 也要能改：过期淘汰那条分支只能靠拨时间戳测
@@ -463,6 +464,36 @@ eq('换个基准又是另一个 rev', (() => {
   const b = T.roomSceneDigest({ scenes: dgBase.scenes, output: { w: 2400, h: 1440 } });
   return [a !== dgLegacy, a !== b];
 })(), [true, true]);
+
+console.log('LOGO（config.logo 归一 / 校验 / rev）:');
+const lgUrl = '/uploads/logos/room_x/logo-abcdef123456.mp4';
+eq('没设 → null（devices 载荷里也是 null）', T.roomLogoField({}), null);
+eq('外链 url 不收', T.roomLogoField({ logo: { url: 'https://evil/x.mp4' } }), null);
+eq('路径穿越 url 不收', T.roomLogoField({ logo: { url: '/uploads/logos/../x.mp4' } }), null);
+eq('默认几何 50×50 居中', (() => { const l = T.roomLogoField({ logo: { url: lgUrl } }); return [l.x, l.y, l.w, l.h]; })(), [0, 0, 50, 50]);
+eq('几何夹取：宽高 1~100、偏移 ±200', (() => { const l = T.roomLogoField({ logo: { url: lgUrl, x: 999, y: -999, w: 500, h: 0 } }); return [l.x, l.y, l.w, l.h]; })(), [200, -200, 100, 1]);
+eq('窗口名单只留 A/B、去重、坏 id 丢掉', (() => {
+  const l = T.roomLogoField({ logo: { url: lgUrl, windows: { A: ['w1', 'w1', 'bad id', 7], B: 'no', C: ['w9'] } } });
+  return [JSON.stringify(l.windows.A), JSON.stringify(l.windows.B), l.windows.C];
+})(), ['["w1"]', '[]', undefined]);
+eq('外链缩略图丢掉', T.roomLogoField({ logo: { url: lgUrl, thumbnail: 'https://evil/t.jpg' } }).thumbnail, '');
+eq('合法输入不报错', T.findLogoError({ logo: { url: lgUrl, x: -200, y: 200, w: 100, h: 1 } }), null);
+eq('宽 0 → 400 文案', T.findLogoError({ logo: { url: lgUrl, w: 0 } }).slice(0, 4), 'LOGO');
+eq('偏移越界 → 400', T.findLogoError({ logo: { url: lgUrl, x: 201 } }).slice(0, 4), 'LOGO');
+eq('非数字 → 400', T.findLogoError({ logo: { url: lgUrl, w: 'abc' } }).slice(0, 4), 'LOGO');
+eq('没设 logo 时 rev 与加字段前逐字节相同', T.roomSceneDigest(dgBase), dgLegacy);
+eq('设了 logo 才改 rev', T.roomSceneDigest({ scenes: dgBase.scenes, logo: { url: lgUrl } }) !== dgLegacy, true);
+eq('改几何/窗口名单各是另一个 rev', (() => {
+  const a = T.roomSceneDigest({ scenes: dgBase.scenes, logo: { url: lgUrl } });
+  const b = T.roomSceneDigest({ scenes: dgBase.scenes, logo: { url: lgUrl, w: 60 } });
+  const c = T.roomSceneDigest({ scenes: dgBase.scenes, logo: { url: lgUrl, windows: { A: ['w1'], B: [] } } });
+  return [a !== b, a !== c, b !== c];
+})(), [true, true, true]);
+eq('filename/md5/thumbnail 不进 rev（同字节不同元数据不重排）', (() => {
+  const a = T.roomLogoField({ logo: { url: lgUrl, filename: 'A.mp4', md5: 'abcdef123456' } });
+  const b = T.roomLogoField({ logo: { url: lgUrl, filename: 'B.mp4', md5: 'ffffffffffff' } });
+  return a.url === b.url;
+})(), true);
 
 console.log('parseRoomConfig:');
 eq('合法字符串', T.parseRoomConfig('{"debug":true}'), { debug: true });

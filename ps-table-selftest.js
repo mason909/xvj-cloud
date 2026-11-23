@@ -14,7 +14,8 @@ function grab(name) {
   return src.slice(i, j + 2);
 }
 const names = ['_psCell', '_psTableOf', '_psSnap',
-  '_psGroupHtml', '_psSetCell', '_psHdmiSw', '_psDmxSw', '_psDraftOf', '_psTableHtml', 'psSet', 'psSetHdmi', 'psSetDmx',
+  '_psGroupHtml', '_psSetCell', '_psHdmiModeOf', '_psHdmiSeg', '_psDmxSw', '_psLogoSwh',
+  '_psDraftOf', '_psTableHtml', 'psSet', 'psSetHdmi', 'psSetDmx', 'psSetLogo',
   // 自动保存：psSet 改完就排防抖，_psSaveSnap 才是真正落库的那一段（读后写 + 基线回填）
   '_psAutoSaveSoon', '_psSaveSnap',
   // 切表：四张表都改动即保存，两个退出函数只需把状态与学习清干净，不再弹确认框
@@ -69,7 +70,13 @@ eq('点歌屏开（hdmi:true）落键', T._psCell({ hdmi: true }), { hdmi: true 
 eq('点歌屏关（hdmi:false）= 默认，不落键', T._psCell({ hdmi: false }), null);
 eq('DMX512 开（dmx:true）落键', T._psCell({ dmx: true }), { dmx: true });
 eq('DMX512 关（dmx:false）= 默认，不落键', T._psCell({ dmx: false }), null);
+eq('LOGO 开（logo:true）落键', T._psCell({ logo: true }), { logo: true });
+eq('LOGO 关（logo:false）= 默认，不落键', T._psCell({ logo: false }), null);
 eq('三个键共存时都保留', T._psCell({ order: 'shuffle', hdmi: true, dmx: true }), { order: 'shuffle', hdmi: true, dmx: true });
+eq('四个键共存时都保留（LOGO 只落 true）', T._psCell({ order: 'shuffle', hdmi: true, dmx: true, logo: true }),
+  { order: 'shuffle', hdmi: true, dmx: true, logo: true });
+eq('点歌屏模式2/3 连同 hdmi_mode 一起带', T._psCell({ hdmi: true, hdmi_mode: 2 }),
+  { hdmi: true, hdmi_mode: 2 });
 eq('两个键共存时都保留', T._psCell({ order: 'shuffle', hdmi: true }), { order: 'shuffle', hdmi: true });
 eq('hdmi 脏值（非 true）当默认关', [T._psCell({ hdmi: 'yes' }), T._psCell({ hdmi: 1 })], [null, null]);
 eq('dmx 脏值（非 true）当默认关', [T._psCell({ dmx: 'yes' }), T._psCell({ dmx: 1 })], [null, null]);
@@ -93,8 +100,12 @@ eq('B 幕变了也算改动', T._psSnap({ A: d0.A, B: { '01': { order: 'shuffle'
 eq('多带的脏键（如残留 dissolve）不算改动 —— 与服务端丢键同口径', T._psSnap({ A: { '01': { order: 'shuffle', dissolve: true } }, B: {} }), T._psSnap(d0));
 eq('点歌屏拨了一下也算改动', T._psSnap({ A: { '01': { hdmi: true } }, B: {} }) !== T._psSnap({ A: {}, B: {} }), true);
 eq('DMX512 拨了一下也算改动', T._psSnap({ A: { '01': { dmx: true } }, B: {} }) !== T._psSnap({ A: {}, B: {} }), true);
+eq('LOGO 拨了一下也算改动', T._psSnap({ A: { '01': { logo: true } }, B: {} }) !== T._psSnap({ A: {}, B: {} }), true);
+eq('点歌屏模式2 ↔ 模式3 算改动', T._psSnap({ A: { '01': { hdmi: true, hdmi_mode: 2 } }, B: {} })
+  !== T._psSnap({ A: { '01': { hdmi: true, hdmi_mode: 3 } }, B: {} }), true);
 eq('hdmi:false 读进草稿时按默认丢掉（快照里只剩真设置）', T._psTableOf({ scenes: { A: { play_settings: { '01': { hdmi: false } } } } }, 'A'), {});
 eq('dmx:false 读进草稿时按默认丢掉', T._psTableOf({ scenes: { A: { play_settings: { '01': { dmx: false } } } } }, 'A'), {});
+eq('logo:false 读进草稿时按默认丢掉', T._psTableOf({ scenes: { A: { play_settings: { '01': { logo: false } } } } }, 'A'), {});
 
 console.log('_psGroupHtml（一幕一格两个 td）:');
 const gOff = T._psGroupHtml('A', '01', null, 0, false);
@@ -141,6 +152,12 @@ eq('按行拨：A、B 两幕落同一个值', (() => { const d = seed({ '02': { 
 eq('开了再关 → 整格回到基线（hdmi 键删掉）', (() => { const d = seed(); T.psSetHdmi('01', true); T.psSetHdmi('01', false); return [d.A, d.B, T._psSnap(d) === d.base]; })(),
   [{}, {}, true]);
 eq('只开了点歌屏 → 草稿算脏（这格要落键）', (() => { const d = seed(); T.psSetHdmi('01', true); return T._psSnap(d) !== d.base; })(), true);
+eq('拨模式2 → 落 hdmi + hdmi_mode（A/B 同写）', (() => { const d = seed(); T.psSetHdmi('01', 2); return [d.A, d.B]; })(),
+  [{ '01': { hdmi: true, hdmi_mode: 2 } }, { '01': { hdmi: true, hdmi_mode: 2 } }]);
+eq('模式2 拨回模式1 → hdmi_mode 键删掉（存量形状）', (() => { const d = seed({ '01': { hdmi: true, hdmi_mode: 2 } }); T.psSetHdmi('01', 1); return d.A; })(),
+  { '01': { hdmi: true } });
+eq('模式3 拨到关 → 两键一起删', (() => { const d = seed({ '01': { hdmi: true, hdmi_mode: 3 } }); T.psSetHdmi('01', 0); return [d.A, T._psSnap(d) === d.base]; })(),
+  [{}, false]);
 eq('读库时全默认的格子不进草稿', (() => { const d = seed({ '01': { order: 'seq' }, '02': { order: 'shuffle' } }); return Object.keys(d.A); })(), ['02']);
 
 console.log('DMX512 控制开关（psSetDmx：一行拨 A/B 两幕）:');
@@ -153,27 +170,42 @@ eq('按行拨：A、B 两幕落同一个值', (() => { const d = seed({}, {}); T
 eq('开了再关 → 整格回到基线（dmx 键删掉）', (() => { const d = seed(); T.psSetDmx('01', true); T.psSetDmx('01', false); return [d.A, d.B, T._psSnap(d) === d.base]; })(),
   [{}, {}, true]);
 eq('只开了 DMX → 草稿算脏（这格要落键）', (() => { const d = seed(); T.psSetDmx('01', true); return T._psSnap(d) !== d.base; })(), true);
-console.log('_psTableHtml（整表结构：7 列 × 30 行，表头两层不能错位）:');
+
+console.log('LOGO 叠加开关（psSetLogo：一行拨 A/B 两幕）:');
+eq('拨 LOGO 不动这一格的其它设置', (() => { const d = seed({ '01': { order: 'shuffle', hdmi: true, dmx: true } }); T.psSetLogo('01', true); return d.A; })(),
+  { '01': { order: 'shuffle', hdmi: true, dmx: true, logo: true } });
+eq('拨点歌屏不抹 LOGO', (() => { const d = seed({ '01': { logo: true } }); T.psSetHdmi('01', 2); return d.A; })(),
+  { '01': { logo: true, hdmi: true, hdmi_mode: 2 } });
+eq('按行拨：A、B 两幕落同一个值', (() => { const d = seed({}, {}); T.psSetLogo('02', true); return [d.A, d.B]; })(),
+  [{ '02': { logo: true } }, { '02': { logo: true } }]);
+eq('开了再关 → 整格回到基线（logo 键删掉）', (() => { const d = seed(); T.psSetLogo('01', true); T.psSetLogo('01', false); return [d.A, d.B, T._psSnap(d) === d.base]; })(),
+  [{}, {}, true]);
+eq('只开了 LOGO → 草稿算脏（这格要落键）', (() => { const d = seed(); T.psSetLogo('01', true); return T._psSnap(d) !== d.base; })(), true);
+console.log('_psTableHtml（整表结构：8 列 × 30 行，表头两层不能错位）:');
 s.rf = 'r1';
 s.rooms = [{ id: 'r1', config: JSON.stringify({ scenes: {
-  A: { folder_mappings: { '01': ['a', 'b'], '03': ['c'] }, play_settings: { '01': { order: 'shuffle' }, '02': { hdmi: true, dmx: true } } },
+  A: { folder_mappings: { '01': ['a', 'b'], '03': ['c'] }, play_settings: { '01': { order: 'shuffle' }, '02': { hdmi: true, dmx: true, logo: true } } },
   B: { folder_mappings: { '02': ['d'] }, play_settings: { '02': { order: 'shuffle', hdmi: true } } } } }) }];
 s._psDraft = null;
 const tbl = T._psTableHtml();
 const trs = tbl.match(/<tr>[\s\S]*?<\/tr>/g) || [];
 eq('表头 2 行 + 数据 30 行', trs.length, 32);
-eq('第一层表头：文件夹/点歌屏/DMX 三个 rowspan2 + 两组 colspan2', (trs[0].match(/rowspan="2"/g) || []).length + (trs[0].match(/colspan="2"/g) || []).length, 5);
-has('表头有「点歌屏」', trs[0], '>点歌屏</th>');
+eq('第一层表头：文件夹/点歌屏/DMX/LOGO 四个 rowspan2 + 两组 colspan2', (trs[0].match(/rowspan="2"/g) || []).length + (trs[0].match(/colspan="2"/g) || []).length, 6);
+has('表头有「点歌屏模式」', trs[0], '>点歌屏模式</th>');
 has('表头有「DMX512控制」', trs[0], '>DMX512控制</th>');
-eq('第二层表头 4 个 th（文件夹/点歌屏/DMX 三格被 rowspan 占着）', (trs[1].match(/<th/g) || []).length, 4);
-eq('每行 7 个 td', trs.slice(2).map(r => (r.match(/<td/g) || []).length), new Array(30).fill(7));
+has('表头有「LOGO」', trs[0], '>LOGO</th>');
+eq('第二层表头 4 个 th（文件夹/点歌屏/DMX/LOGO 四格被 rowspan 占着）', (trs[1].match(/<th/g) || []).length, 4);
+eq('每行 8 个 td', trs.slice(2).map(r => (r.match(/<td/g) || []).length), new Array(30).fill(8));
 eq('每行 1 个控件 × 2 幕', trs.slice(2).map(r => (r.match(/onchange="psSet\('/g) || []).length), new Array(30).fill(2));
-eq('每行 1 个点歌屏开关', trs.slice(2).map(r => (r.match(/onchange="psSetHdmi\(/g) || []).length), new Array(30).fill(1));
+eq('每行 4 个点歌屏模式单选（关 / 模式1 / 模式2 / 模式3）', trs.slice(2).map(r => (r.match(/onchange="psSetHdmi\(/g) || []).length), new Array(30).fill(4));
 eq('每行 1 个 DMX512 开关', trs.slice(2).map(r => (r.match(/onchange="psSetDmx\(/g) || []).length), new Array(30).fill(1));
-eq('没拨过的行点歌屏默认关（不带 checked）', trs[2].indexOf('name="psh-01" checked') < 0, true);
+eq('每行 1 个 LOGO 开关', trs.slice(2).map(r => (r.match(/onchange="psSetLogo\(/g) || []).length), new Array(30).fill(1));
+eq('没拨过的行点歌屏默认关（「关」单选带 checked）', trs[2].indexOf('name="psh-01" value="0" checked') >= 0, true);
 eq('没拨过的行 DMX 默认关（不带 checked）', trs[2].indexOf('name="psd-01" checked') < 0, true);
-has('02 行 A/B 两幕都开着 → 这一行开关带 checked', trs[3], 'name="psh-02" checked');
+eq('没拨过的行 LOGO 默认关（不带 checked）', trs[2].indexOf('name="psl-01" checked') < 0, true);
+has('02 行 A/B 两幕都开着 → 这一行模式1 单选带 checked', trs[3], 'name="psh-02" value="1" checked');
 has('02 行只 A 幕开了 DMX → 这一行开关也算开', trs[3], 'name="psd-02" checked');
+has('02 行 A 幕开了 LOGO → 这一行开关也算开', trs[3], 'name="psl-02" checked');
 has('开关列带竖分隔', trs[2], 'class="ps-sep">');
 has('A 幕 01 随机循环选中', trs[2], "psSet('A','01','order',this.value)\"><option value=\"seq\">顺序循环</option><option value=\"shuffle\" selected>");
 has('B 幕 02 随机循环选中', trs[3], '<option value="shuffle" selected>随机循环');

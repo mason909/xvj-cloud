@@ -414,6 +414,8 @@ function isSafeSerialPath(s) { return typeof s === 'string' && /^\/dev\/[A-Za-z0
  *   hdmi_mode   点歌窗三套配置里选哪一套（1~3）。缺键 = 1；模式1 不落这个键（存量形状），
  *               只有 2/3 才落。设备端只显示 content.mode 与在播格模式相同的点歌窗（见 APK applyHdmiVisibility）
  *   dmx         true = 这一格接受 DMX512 控制；缺省 = 关（设备端 DMX 接收尚未实现，先按三端同一形状落设置）
+ *   logo        true = 这一格在播时允许叠加 LOGO；缺省 = 关。只是"允许"：窗口还要在 config.logo.windows
+ *               里被勾上，两者同时为真才显示（窗口级开关在「LOGO设置」，文件夹级开关在本表）
  * A、B 是两套独立物理目录（scenea/01 与 sceneb/01 装的不是同一批片子），所以设置按幕各存一份。
  * 全默认的格子一律不落键：给每幕挂一张 30 格默认表会让 roomSceneDigest 当场全库漂移一次，
  * 部署后每台在线设备都被对账判成"rev 落后"补发一发同步、视频从头播（与 play_settings「空表不落键」同理）。
@@ -438,6 +440,7 @@ function playSettingsValue(v) {
     if (v.hdmi_mode === 2 || v.hdmi_mode === 3) out.hdmi_mode = v.hdmi_mode;
   }
   if (v.dmx === true) out.dmx = true;
+  if (v.logo === true) out.logo = true;
   return Object.keys(out).length ? out : null;
 }
 
@@ -492,6 +495,9 @@ function findPlaySettingsError(cfg) {
       }
       if (cell.dmx !== undefined && cell.dmx !== null && typeof cell.dmx !== 'boolean') {
         return `${where} 的 DMX512 控制开关只能是 true（接受）或 false（不接受）`;
+      }
+      if (cell.logo !== undefined && cell.logo !== null && typeof cell.logo !== 'boolean') {
+        return `${where} 的 LOGO 开关只能是 true（显示）或 false（关闭）`;
       }
     }
   }
@@ -595,6 +601,13 @@ function prepareRoomConfig(raw, existingCfg) {
   var outVal = roomOutputField(merged);
   if (outVal) merged.output = outVal; else delete merged.output;
 
+  // LOGO（房间级一份 + 相对窗口的几何 + 窗口名单）：确定形状落库，非法值先 400。
+  // 不设就把整个键撤掉，存量房间的 rev 与之前逐字节一致。
+  var logoErr = findLogoError(merged);
+  if (logoErr) return { error: logoErr };
+  var logoVal = roomLogoField(merged);
+  if (logoVal) merged.logo = logoVal; else delete merged.logo;
+
   // 播放设置同理：非法的时长/顺序需要在写库前报出去，而不是静默回落成"表里一套、设备演另一套"。
   // 查的是逐幕合并之前的 scenes —— mergeSceneConfig 里的 normalizePlaySettings 会把脏值直接规范化掉，
   // 到那时再查就看不见 incoming 写进来的那串了（DB 里的存量都是当年校验过的，继承回来不用再查一遍）
@@ -693,6 +706,10 @@ function roomSceneDigest(cfg) {
   const parts = [p.A || null, p.B || null];
   const out = roomOutputField(cfg);
   if (out) parts.push(out.w + 'x' + out.h);
+  // LOGO 是叠在素材之上的画面元素：文件（url 含 md5）、几何、哪几扇窗口显示任一变化都要让设备重排。
+  // 只在真设了时才塞这一段（同上：存量房间指纹不能漂）。
+  const lg = roomLogoField(cfg);
+  if (lg) parts.push(['logo', lg.url, lg.x, lg.y, lg.w, lg.h, lg.windows.A.join(','), lg.windows.B.join(',')].join('|'));
   return crypto.createHash('sha1').update(JSON.stringify(parts)).digest('hex').slice(0, 12);
 }
 
@@ -716,6 +733,8 @@ function windowCommandPayload(roomId, cfg) {
     // 输出基准也在这一跳带：只改基准（版式没动）就该由这条轻通道送达，设备按新分母重算每扇窗的几何。
     // 不带的话"改基准"只能等全量同步或重连，编辑器里明明已经生效，屏上却还按旧尺子摆。
     output: roomOutputField(cfg),
+    // LOGO 几何/窗口名单的变化进 rev 后就走这条轻通道，设备原地重排叠加层，不重建播放器
+    logo: roomLogoField(cfg),
     rev: roomSceneDigest(cfg),
     timestamp: Date.now()
   };
@@ -992,6 +1011,76 @@ function findOutputError(cfg) {
 }
 
 /**
+ * LOGO 叠加（config.logo）：房间级一份视频 + 相对素材窗口的几何 + 按幕记录哪些窗口显示。
+ * 三端共用的取值口径（前端 LOGO 设置页；APK 的 LogoCanvasView 后续实现）：
+ *   url / thumbnail / md5 / size / width / height：上传接口返回的同名元数据；
+ *     url 只认 /uploads/logos/<roomId>/logo-<md5前12>.<视频扩展>，防外链与路径穿越
+ *   x / y：LOGO 中心相对「素材窗口中心」的偏移百分比（窗口宽/高为分母，向右/向下为正，默认 0）
+ *   w / h：LOGO 视频宽/高占素材窗口宽/高的百分比（默认 50）
+ *   windows：{ A:[窗口id], B:[窗口id] } —— 只有列在这里的窗口才可能显示；
+ *     真正出不出还要看该窗口当前文件夹的 play_settings.logo（两者同时为真，见 playSettingsValue）
+ * 值域：x/y ∈ [-200,200]，w/h ∈ (0,100]；每幕最多 64 个窗口 id。
+ * 没设时整个键不落：存量房间的 rev 必须与加这个字段之前逐字节相同（同 output / play_settings 的教训）。
+ */
+const LOGO_URL_RE = /^\/uploads\/logos\/[A-Za-z0-9_-]{1,64}\/logo-[a-f0-9]{6,32}\.(?:mp4|webm|mov|avi|mkv)$/;
+const LOGO_THUMB_RE = /^\/uploads\/logos\/[A-Za-z0-9_-]{1,64}\/logo-[a-f0-9]{6,32}\.jpg$/;
+const LOGO_WINDOW_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const LOGO_WINDOWS_MAX = 64;
+const LOGO_PCT_MIN = 1, LOGO_PCT_MAX = 100, LOGO_OFF_MAX = 200;
+
+function logoNum(v, dflt) {
+  const n = (typeof v === 'number' || typeof v === 'string') ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : dflt;
+}
+function logoPct(v, dflt) { return Math.min(LOGO_PCT_MAX, Math.max(LOGO_PCT_MIN, logoNum(v, dflt))); }
+function logoOff(v, dflt) { return Math.min(LOGO_OFF_MAX, Math.max(-LOGO_OFF_MAX, logoNum(v, dflt))); }
+function logoWinIds(v) {
+  const out = [];
+  if (!Array.isArray(v)) return out;
+  v.forEach(id => {
+    if (typeof id === 'string' && LOGO_WINDOW_ID_RE.test(id) && out.indexOf(id) < 0 && out.length < LOGO_WINDOWS_MAX) out.push(id);
+  });
+  return out;
+}
+/** config.logo → 确定形状；没有/地址不合法当"没设"（脏值写库前已被 findLogoError 拦下，能到这的只剩手改库） */
+function roomLogoField(cfg) {
+  const v = cfg && cfg.logo;
+  if (!isPlainObject(v)) return null;
+  if (typeof v.url !== 'string' || !LOGO_URL_RE.test(v.url)) return null;
+  const wins = isPlainObject(v.windows) ? v.windows : {};
+  return {
+    url: v.url,
+    thumbnail: (typeof v.thumbnail === 'string' && LOGO_THUMB_RE.test(v.thumbnail)) ? v.thumbnail : '',
+    filename: clampStr(v.filename, 255),
+    md5: typeof v.md5 === 'string' ? clampStr(v.md5, 64) : '',
+    size: Math.max(0, Math.floor(logoNum(v.size, 0))),
+    width: Math.max(0, Math.floor(logoNum(v.width, 0))),
+    height: Math.max(0, Math.floor(logoNum(v.height, 0))),
+    x: logoOff(v.x, 0),
+    y: logoOff(v.y, 0),
+    w: logoPct(v.w, 50),
+    h: logoPct(v.h, 50),
+    windows: { A: logoWinIds(wins.A), B: logoWinIds(wins.B) }
+  };
+}
+/** LOGO 写入校验：几何必须是数值且在值域内；窗口名单的脏元素由 roomLogoField 丢弃 */
+function findLogoError(cfg) {
+  const v = cfg && cfg.logo;
+  if (v === undefined || v === null) return null;
+  if (!isPlainObject(v)) return 'LOGO 必须是对象，或整个不设';
+  if (typeof v.url !== 'string' || !LOGO_URL_RE.test(v.url)) return 'LOGO 文件地址不合法，请在「LOGO设置」里重新上传';
+  const bad = (name, val, min, max) => {
+    if (val === undefined || val === null || val === '') return null;
+    const n = Number(val);
+    return (Number.isFinite(n) && n >= min && n <= max) ? null : `LOGO 的${name}必须是 ${min}~${max} 之间的数值`;
+  };
+  return bad('X 位置', v.x, -LOGO_OFF_MAX, LOGO_OFF_MAX)
+    || bad('Y 位置', v.y, -LOGO_OFF_MAX, LOGO_OFF_MAX)
+    || bad('宽度', v.w, LOGO_PCT_MIN, LOGO_PCT_MAX)
+    || bad('高度', v.h, LOGO_PCT_MIN, LOGO_PCT_MAX);
+}
+
+/**
  * 设备自报的屏幕像素（心跳 screen_w/screen_h）：内存缓存 → GET /api/devices 的 d.screen，
  * 供编辑器一键"取本机分辨率"。只放内存不落库，
  * 30s 一跳的瞬时状态没必要为它走 DDL，也没必要把心跳变成写放大；
@@ -1118,7 +1207,9 @@ function roomSyncFields(cfg) {
     window_names: roomWindowNamesFlag(cfg),                     // 窗口名浮层（编辑器开着时各窗正中常亮名字）
     window_testcard: roomWindowTestcardFlag(cfg),               // 测试背景浮层（编辑器开着时各窗盖测试图卡）
     // null = 房间没设输出基准，设备按 1920×1080 设计稿轴向换算（历史口径）
-    output: roomOutputField(cfg)
+    output: roomOutputField(cfg),
+    // null = 没配 LOGO；非空时设备按 url 下载，按 windows/几何叠在素材窗口之上
+    logo: roomLogoField(cfg)
   }, roomWallpanelFields(cfg), roomDmxFields(cfg), {
     rev: roomSceneDigest(cfg)
   });
@@ -3280,6 +3371,30 @@ const uploadMiddleware = multer({
   limits: { fileSize: UPLOAD_MAX_SIZE }
 }).single("file");
 
+/**
+ * LOGO 专用上传（POST /api/rooms/:id/logo）：落盘到 public/uploads/logos/<roomId>/。
+ * 只收视频扩展名白名单里的文件，上限 100MB（LOGO 是循环小片，500MB 的素材上限在这里只会让误传变慢）。
+ * 临时名带真扩展名：ffmpeg 按后缀选封装器，写成 .tmp 会报 "Unable to find a suitable output format"。
+ */
+const LOGO_UPLOAD_MAX_SIZE = 100 * 1024 * 1024;
+const logoUploadMiddleware = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const roomId = String(req.params.id || '');
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(roomId)) return cb(new Error('invalid room id'));
+      const dir = path.join(__dirname, 'public', 'uploads', 'logos', roomId);
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return cb(e); }
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = path.extname(String(file.originalname || '')).toLowerCase();
+      if (UPLOAD_VIDEO_EXT.indexOf(ext) < 0) return cb(new Error('unsupported file type: ' + ext));
+      cb(null, 'tmp-' + Date.now() + ext);
+    }
+  }),
+  limits: { fileSize: LOGO_UPLOAD_MAX_SIZE }
+}).single("file");
+
 app.post("/api/upload", (req, res) => {
   const folder = uploadFolderOf(req);
   if (!folder) return res.status(400).json({ error: "invalid folder" });
@@ -3359,6 +3474,69 @@ app.post("/api/upload", (req, res) => {
       // 失败仍按"无指纹"放行：不能因为一次哈希出错就把用户的上传报成失败。
       md5FileStream(req.file.path).then(finish).catch(() => finish(null));
     }
+  });
+});
+
+/**
+ * 【S-02c】 上传房间 LOGO（POST /api/rooms/:id/logo，multipart 字段名 file）
+ * 只落文件 + 返回元数据，不直接写 config：config 仍由「LOGO设置」页读整份 → 改 logo → PUT 回去，
+ * 与会话里其它配置写入口同一条链（rev / 下发 / 对账都走收敛点）。
+ * 落盘名 = logo-<md5 前 12><ext>：内容一变 URL 就变，绕开 /uploads 的 1 天强缓存；
+ * 同目录旧 logo-* 文件顺手清掉，只留当前这一份 + 首帧缩略图。
+ * 首帧缩略图用于管理台画布预览（设备端不用它）。
+ */
+app.post('/api/rooms/:id/logo', (req, res) => {
+  const roomId = String(req.params.id || '');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(roomId)) return res.status(400).json({ error: 'invalid room id' });
+  db.query('SELECT id FROM rooms WHERE id = ?', [roomId], (errDb, rows) => {
+    if (errDb) return res.status(500).json({ error: errDb.message });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: '房间不存在' });
+    logoUploadMiddleware(req, res, (err) => {
+      if (err) return res.status(400).json({ error: err.message });
+      if (!req.file) return res.status(400).json({ error: 'no file' });
+      const tmp = req.file.path;
+      const dir = path.dirname(tmp);
+      const originalName = decodeUploadName(req.file.originalname) || 'logo';
+      (async () => {
+        await remuxFaststart(tmp);
+        const md5 = await md5FileStream(tmp);
+        const ext = path.extname(tmp).toLowerCase();
+        const base = 'logo-' + md5.slice(0, 12);
+        const finalPath = path.join(dir, base + ext);
+        const thumbPath = path.join(dir, base + '.jpg');
+        fs.renameSync(tmp, finalPath);
+        let width = 0, height = 0, hasThumb = false;
+        try {
+          const probe = await execFileAsync('ffprobe',
+            ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', finalPath]);
+          const wh = String(probe).trim().split(',').map(n => parseInt(n, 10));
+          width = wh[0] || 0; height = wh[1] || 0;
+          await execFileAsync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error',
+            '-i', finalPath, '-frames:v', '1', '-q:v', '2', thumbPath]);
+          hasThumb = true;
+        } catch (e) { /* 探测/首帧失败不阻断上传，前端会退回不显示预览 */ }
+        // 清掉同目录里不属于这一版的旧文件（替换 LOGO / 上次失败留下的 tmp）
+        try {
+          fs.readdirSync(dir).forEach(f => {
+            if (f === path.basename(finalPath) || f === path.basename(thumbPath)) return;
+            safeUnlink(path.join(dir, f));
+          });
+        } catch (e) { /* 清理失败无碍 */ }
+        const relDir = '/uploads/logos/' + roomId + '/';
+        logAction('upload', 'logo', { room: roomId, filename: originalName, md5, size: fs.statSync(finalPath).size });
+        res.json({
+          url: relDir + base + ext,
+          thumbnail: hasThumb ? relDir + base + '.jpg' : '',
+          filename: originalName,
+          md5,
+          size: fs.statSync(finalPath).size,
+          width, height
+        });
+      })().catch(e => {
+        safeUnlink(tmp);
+        res.status(500).json({ error: 'LOGO 处理失败: ' + e.message });
+      });
+    });
   });
 });
 
