@@ -20,7 +20,7 @@ const names = ['prefixedFolderKey', 'panelCellKey', 'normalizeMaterialIds', 'isS
   'mergeSceneConfig', 'prepareRoomConfig',
   'buildPrefixedScenes', 'mergePrefixedMappings',
   'roomSceneDigest', 'isSafeDeviceId', 'parseRoomConfig', 'isSafeFolderName', 'isSafeSerialPath',
-  'roomDebugFlag', 'roomWindowNamesFlag', 'roomWindowTestcardFlag', 'roomWallpanelFields', 'roomWallpanelDigest', 'findWallpanelFieldError', 'resolvePreviewTarget',
+  'roomDebugFlag', 'roomWindowNamesFlag', 'roomWindowTestcardFlag', 'roomLogoGridFlag', 'roomWallpanelFields', 'roomWallpanelDigest', 'findWallpanelFieldError', 'resolvePreviewTarget',
   'roomDmxFields', 'roomDmxDigest', 'findDmxFieldError',
   'wallpanelBitOk', 'wallpanelBitChoice', 'normalizeWallpanelCode', 'findBitChoiceError', 'normalizeWallpanelRule', 'normalizeWallpanelBindings', 'findWallpanelBindingsError', 'wallpanelSourceName',
   'outputPx', 'roomOutputField', 'findOutputError', 'rememberDeviceScreen', 'deviceScreen',
@@ -138,6 +138,21 @@ eq('Editor 开关一次 PUT 写两个键互不影响（各继承各的）',
     const c = T.prepareRoomConfig({ window_names: true, window_testcard: true }, { window_names: false, scenes: {} }).cfg;
     return [c.window_names, c.window_testcard];
   })(), [true, true]);
+console.log('LOGO 设置辅助网格（logo_grid）:');
+eq('严格 true 才算开（"true"/1 不算）',
+  [T.roomLogoGridFlag({ logo_grid: true }), T.roomLogoGridFlag({ logo_grid: 'true' }), T.roomLogoGridFlag({})],
+  [true, false, false]);
+eq('不进 rev（打开 LOGO 页不该惊动素材同步）',
+  T.roomSceneDigest({ logo_grid: true }) === T.roomSceneDigest({}), true);
+eq('同步载荷自愈通道带 logo_grid', T.roomSyncFields({ logo_grid: true }).logo_grid, true);
+eq('与两个编辑器浮层各算各的（不串味）',
+  [T.roomSyncFields({ logo_grid: true }).window_names, T.roomSyncFields({ logo_grid: true }).window_testcard,
+   T.roomSyncFields({ window_names: true }).logo_grid], [false, false, false]);
+eq('写库按严格布尔归一、少带时继承库里值',
+  [T.prepareRoomConfig({ logo_grid: 'true' }, { scenes: {} }).cfg.logo_grid,
+   T.prepareRoomConfig({ logo_grid: 1 }, { scenes: {} }).cfg.logo_grid,
+   T.prepareRoomConfig({}, { logo_grid: true, scenes: {} }).cfg.logo_grid],
+  [false, false, true]);
 eq('学习表落库顺序不影响指纹（同组绑定不虚报"墙板配置变了"）',
   T.roomWallpanelDigest({ wallpanel_bindings: [{ frame: 'F505', folder: '07' }, { frame: 'AA55', folder: '01' }] })
     === T.roomWallpanelDigest({ wallpanel_bindings: [{ frame: 'AA55', folder: '01' }, { frame: 'F505', folder: '07' }] }), true);

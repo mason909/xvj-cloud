@@ -1875,9 +1875,51 @@ function _syncWindowOverlays() {
         _syncWindowOverlays();   // 在飞期间意图又变了（连点/切房间），按最新的再对一次
     });
 }
+/**
+ * LOGO 设置辅助网格（config.logo_grid）：LOGO 页开着时让包厢屏整屏垫一层等像素方格，
+ * 帮人肉眼判断 LOGO 在每扇窗里有没有被拉变形。与编辑器浮层同一套收敛法：
+ * 意图 = LOGO 页开着且选了房间；只在意图变化时 PUT，失败下次重绘补。
+ */
+function _putLogoGrid(roomId, on) {
+    return apiCall('/api/rooms/' + encodeURIComponent(roomId), {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ config: JSON.stringify({ logo_grid: on }) })
+    });
+}
+var _logoGridActual = '';
+var _logoGridBusy = false;
+function _syncLogoGrid() {
+    if (_logoGridBusy) return;
+    var want = (s._logoMode && s.rf) ? s.rf : '';
+    if (want === _logoGridActual) return;
+    _logoGridBusy = true;
+    var from = _logoGridActual;
+    var jobs = [];
+    if (from && from !== want) jobs.push(_putLogoGrid(from, false));
+    if (want) jobs.push(_putLogoGrid(want, true));
+    Promise.all(jobs).then(function() {
+        _logoGridActual = want;
+    }, function(e) {
+        console.warn('LOGO 辅助网格同步失败（下次重绘补）:', e.message);
+    }).then(function() {
+        _logoGridBusy = false;
+        _syncLogoGrid();
+    });
+}
 // 关页/刷新的兜底：尽量把浮层关掉，别让名字/图卡留在包厢屏上。keepalive 让它能在卸载途中发出；
 // 发不出去也无妨——下次打开编辑器再关掉会覆盖回 false。
 window.addEventListener('pagehide', function() {
+    if (_logoGridActual) {
+        try {
+            fetch('/api/rooms/' + encodeURIComponent(_logoGridActual), {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ config: JSON.stringify({ logo_grid: false }) }),
+                keepalive: true
+            });
+        } catch (e) {}
+    }
     if (!_winOverlayActual) return;
     try {
         fetch('/api/rooms/' + encodeURIComponent(_winOverlayActual), {
@@ -1908,6 +1950,7 @@ function _wbSw(label, ids, on, color, onchange) {
 }
 function rmDevice() {
     _syncWindowOverlays();   // 每次重绘都过一遍：窗口配置开/关、切房间都在这里收口，设备端浮层跟着走
+    _syncLogoGrid();         // LOGO 辅助网格同款收敛：LOGO 页开/关（含被其它模式顶掉）、切房间都在这里收口
     var g = document.getElementById('dg');
     if (!s.rf) {
         g.innerHTML = '<div class="empty">请选择或创建房间</div><button class="btn btn-primary" style="margin-top:10px" onclick="createRoom()">+ 新建房间</button>';
