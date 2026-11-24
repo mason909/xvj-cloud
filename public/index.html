@@ -4588,6 +4588,8 @@ function renderLogoEditor() {
 // Phase2: 多窗口配置编辑器
 // ============================================================================
 var _canvasScale = 1, _canvasOffsetX = 0, _canvasOffsetY = 0;
+// 画布可见区（设计坐标）：一般就是整块输出基准；副屏关时缩到主屏那半，_canvasOffset* 与所有换算都以它为原点
+var _viewX = 0, _viewY = 0, _viewW = 1920, _viewH = 1080;
 var _dragging = null;
 
 // ============================================================================
@@ -4639,6 +4641,32 @@ function _deviceScreens() {
         out.push({ w: w, h: h, name: d.name || d.model || '设备' });
     });
     return out;
+}
+
+/**
+ * 本房间已授权设备的副屏状态是否全部明确为「关」（心跳 secondary_display → GET /api/devices 的 d.secondary_display）。
+ * 只要有一台开着、或有一台没上报（null = 老版本/无这条显示链），都不算——宁可整屏也别画错区域。
+ */
+function _auxAllOff() {
+    var seen = false;
+    var anyOn = (s.ds || []).some(function (d) {
+        if (d.room_id !== s.rf || d.authorized !== 1) return false;
+        seen = true;
+        return d.secondary_display !== false;
+    });
+    return seen && !anyOn;
+}
+
+/**
+ * 画布可见区（设计坐标）。双屏合一的输出基准（宽高比 ≥ 2.4，单屏 16:9/21:9 都到不了）
+ * 且本房间设备全部报告副屏关闭时，只画主屏那半（右半 w/2 × h）：窗口框按两倍大小铺满容器，左半空白不再占位。
+ * 其余情况整屏——单屏房间副屏本来就无所谓，不能因为设备报 false 就把画面切掉一半。
+ */
+function _canvasView() {
+    if (_designW / _designH >= 2.4 && _auxAllOff()) {
+        return { x: _designW / 2, y: 0, w: _designW / 2, h: _designH };
+    }
+    return { x: 0, y: 0, w: _designW, h: _designH };
 }
 
 /** 输出基准那一行的 HTML（画布右下角）；设备屏不是 16:9 而基准还没设时，把拉伸这句风险提示带上 */
@@ -4892,8 +4920,9 @@ function renderWinEditorFull() {
 
 // 画布：把当前幕的 windows 铺成可拖/可缩的矩形。
 // 设计空间 = 这间房的输出基准（config.output，没设时 1920×1080 设计稿），与 APK 端 windowGeom 的分母同一把尺；
+// 可见区一般等于整块基准，副屏关时缩到主屏那半（_canvasView），窗口框按「设计坐标 − 可见区原点」落位。
 // _canvasScale/_canvasOffset* 是本模块共用的屏幕坐标↔设计坐标换算量，所以每次重绘都要按容器尺寸先重算；
-// 空白血框 winDeviceFrame 表示整屏边界。
+// 空白血框 winDeviceFrame 表示可见区边界。
 // 拖拽/缩放的 document mousemove/mouseup 监听在这里先 remove 再 add，避免每次重绘都叠一层。
 function renderWinCanvas(wins) {
     var area = document.getElementById('winCanvasArea');
@@ -4911,13 +4940,19 @@ function renderWinCanvas(wins) {
     var _dz = _roomDesign();
     _designW = _dz.w; _designH = _dz.h;
     var deviceW = _designW, deviceH = _designH;
+    // 可见区可能只是整块输出的一截（副屏关 → 主屏那半），缩放与偏移全按可见区算，窗口框用设计坐标减 _viewX/_viewY
+    var _vw = _canvasView();
+    _viewX = _vw.x; _viewY = _vw.y; _viewW = _vw.w; _viewH = _vw.h;
+    var cropped = _viewW < deviceW || _viewH < deviceH;
     var AW = area.clientWidth || 600, AH = area.clientHeight || 400;
-    _canvasScale = Math.min(AW / deviceW, AH / deviceH) * 0.92;
-    _canvasOffsetX = (AW - deviceW * _canvasScale) / 2;
-    _canvasOffsetY = (AH - deviceH * _canvasScale) / 2;
-    canvas.style.width = (deviceW * _canvasScale) + 'px';
-    canvas.style.height = (deviceH * _canvasScale) + 'px';
-    if (df) { df.style.left = _canvasOffsetX + 'px'; df.style.top = _canvasOffsetY + 'px'; df.style.width = (deviceW * _canvasScale) + 'px'; df.style.height = (deviceH * _canvasScale) + 'px'; }
+    _canvasScale = Math.min(AW / _viewW, AH / _viewH) * 0.92;
+    _canvasOffsetX = (AW - _viewW * _canvasScale) / 2;
+    _canvasOffsetY = (AH - _viewH * _canvasScale) / 2;
+    canvas.style.width = (_viewW * _canvasScale) + 'px';
+    canvas.style.height = (_viewH * _canvasScale) + 'px';
+    // 缩放后的窗口框可能落到可见区外（副屏那半的窗），裁掉而不是溢到画布外的留白上
+    canvas.style.overflow = cropped ? 'hidden' : 'visible';
+    if (df) { df.style.left = _canvasOffsetX + 'px'; df.style.top = _canvasOffsetY + 'px'; df.style.width = (_viewW * _canvasScale) + 'px'; df.style.height = (_viewH * _canvasScale) + 'px'; }
     canvas.innerHTML = '';
     var selWinId = s._selWin ? s._selWin.id : null;
     // 另一张卡的窗口留在画布上只当位置参照：压暗、不接收指针也进不了 Tab 焦点，
@@ -4925,8 +4960,8 @@ function renderWinCanvas(wins) {
     var curTab = _curWinTab();
     wins.forEach(function(w) {
         var dim = _winKind(w) !== curTab;
-        var rx = _canvasOffsetX + (w.x||0) * _canvasScale;
-        var ry = _canvasOffsetY + (w.y||0) * _canvasScale;
+        var rx = _canvasOffsetX + ((w.x||0) - _viewX) * _canvasScale;
+        var ry = _canvasOffsetY + ((w.y||0) - _viewY) * _canvasScale;
         var rw = (w.width||320) * _canvasScale;
         var rh = (w.height||180) * _canvasScale;
         var sel = w.id === selWinId;
@@ -4976,7 +5011,13 @@ function renderWinCanvas(wins) {
     document.addEventListener('mousemove', winCanvasMouseMove);
     document.addEventListener('mouseup', winCanvasMouseUp);
     var info = document.getElementById('winCanvasInfo');
-    if (info) info.textContent = deviceW + ' × ' + deviceH + ' (×' + _canvasScale.toFixed(2) + ')';
+    if (info) {
+        info.textContent = (cropped ? _viewW + ' × ' + _viewH + ' · 主屏' : deviceW + ' × ' + deviceH)
+            + ' (×' + _canvasScale.toFixed(2) + ')';
+        info.title = cropped
+            ? '副屏已关，只画主屏（输出右半 ' + _viewW + '×' + _viewH + '，整块输出 ' + deviceW + '×' + deviceH + '）'
+            : '画布 = 本房间输出基准整屏';
+    }
 }
 
 // ============================================================================
@@ -4991,17 +5032,19 @@ var _snapGuides = { v: [], h: [] };
 
 /** 画布自身的线排在窗口线之前时，等距离要优先吸它（比"贴住某扇窗的边"更正） */
 function _isCanvasSnapLine(line) {
-    // 画布边/中心按当前那把尺算（1920×1080 设计稿下与旧的字面值 0/960/1920/540/1080 逐字相同）
-    return line === 0 || line === _designW || line === _designH ||
-        line === _designW / 2 || line === _designH / 2;
+    // 画布边/中心按当前可见区算（整屏时与旧的 0/960/1920/540/1080 逐字相同，副屏关时改为主屏那半的四边和中心）
+    return line === _viewX || line === _viewY || line === _viewX + _viewW || line === _viewY + _viewH ||
+        line === _viewX + _viewW / 2 || line === _viewY + _viewH / 2;
 }
 
-/** 吸附候选竖线/横线：画布边与中心 + 其余窗口的边与中心（排除自己，否则一动就贴着自己） */
+/** 吸附候选竖线/横线：画布可见区边与中心 + 其余窗口的边与中心（排除自己，否则一动就贴着自己） */
 function _snapLines(excludeId) {
-    var v = [0, _designW / 2, _designW], h = [0, _designH / 2, _designH];
+    var v = [_viewX, _viewX + _viewW / 2, _viewX + _viewW], h = [_viewY, _viewY + _viewH / 2, _viewY + _viewH];
     (s._winCache || []).forEach(function(o) {
         if (o.id === excludeId) return;
         var x = o.x || 0, y = o.y || 0, ww = o.width || 0, hh = o.height || 0;
+        // 可见区外的窗（副屏关时左半留下的）画布上看不见，别让它们的边把可见窗吸走
+        if (x + ww < _viewX || x > _viewX + _viewW || y + hh < _viewY || y > _viewY + _viewH) return;
         v.push(x, x + ww / 2, x + ww);
         h.push(y, y + hh / 2, y + hh);
     });
@@ -5042,13 +5085,13 @@ function _paintSnapGuides() {
     var canvas = document.getElementById('winCanvas');
     if (!canvas) return;
     canvas.querySelectorAll('.win-guide').forEach(function(el) { el.parentNode.removeChild(el); });
-    // 落点算法与窗口框、winDeviceFrame 完全一致（偏移 + 设计坐标×缩放）：画布盒子只有设备尺寸那么大、
+    // 落点算法与窗口框、winDeviceFrame 完全一致（偏移 + (设计坐标 − 可见区原点)×缩放）：画布盒子只有可见区那么大、
     // 却停在 area 的原点上，只按 x*scale 画线会整体偏掉一个 _canvasOffset
-    var dw = Math.round(_designW * _canvasScale), dh = Math.round(_designH * _canvasScale);
+    var dw = Math.round(_viewW * _canvasScale), dh = Math.round(_viewH * _canvasScale);
     _snapGuides.v.forEach(function(x) {
         var el = document.createElement('div');
         el.className = 'win-guide vg';
-        el.style.left = Math.round(_canvasOffsetX + x * _canvasScale) + 'px';
+        el.style.left = Math.round(_canvasOffsetX + (x - _viewX) * _canvasScale) + 'px';
         el.style.top = Math.round(_canvasOffsetY) + 'px';
         el.style.height = dh + 'px';
         canvas.appendChild(el);
@@ -5056,7 +5099,7 @@ function _paintSnapGuides() {
     _snapGuides.h.forEach(function(y) {
         var el = document.createElement('div');
         el.className = 'win-guide hg';
-        el.style.top = Math.round(_canvasOffsetY + y * _canvasScale) + 'px';
+        el.style.top = Math.round(_canvasOffsetY + (y - _viewY) * _canvasScale) + 'px';
         el.style.left = Math.round(_canvasOffsetX) + 'px';
         el.style.width = dw + 'px';
         canvas.appendChild(el);
@@ -5092,6 +5135,8 @@ function winCanvasMouseMove(e) {
     var snapOn = s._snap && !e.shiftKey;
     var tol = snapOn ? SNAP_SCREEN_PX / _canvasScale : 0;
     var lines = snapOn ? _snapLines(id) : null;
+    // 副屏关（可见区只是输出的一截）时把落点收在可见区内：画布外的框看不见也拖不回来，等于丢窗
+    var cropView = _viewW < _designW || _viewH < _designH;
     if (_dragging.mode === 'move') {
         var newX = Math.max(0, Math.round(sW.x + dx / _canvasScale));
         var newY = Math.max(0, Math.round(sW.y + dy / _canvasScale));
@@ -5104,10 +5149,18 @@ function winCanvasMouseMove(e) {
             newX = Math.max(0, Math.round(newX));
             newY = Math.max(0, Math.round(newY));
         }
+        if (cropView) {
+            newX = Math.min(Math.max(newX, _viewX), Math.max(_viewX, _viewX + _viewW - w.width));
+            newY = Math.min(Math.max(newY, _viewY), Math.max(_viewY, _viewY + _viewH - w.height));
+        }
         w.x = newX; w.y = newY;
     } else {
         var newW = Math.max(64, Math.round(sW.width + dx / _canvasScale));
         var newH = Math.max(64, Math.round(sW.height + dy / _canvasScale));
+        if (cropView) {
+            newW = Math.min(newW, Math.max(64, Math.round(_viewX + _viewW - sW.x)));
+            newH = Math.min(newH, Math.max(64, Math.round(_viewY + _viewH - sW.y)));
+        }
         if (tol) {
             // 拖角时对边钉住不动，能吸的只有"正在被拖的这两条边"；吸上后反算宽高
             var r = sW.x + newW, b = sW.y + newH;
@@ -5158,8 +5211,8 @@ function _renderWinRects(wins) {
     wins.forEach(function(w) {
         var el = document.querySelector('[data-win-id="' + w.id + '"]');
         if (!el) return;
-        el.style.left = (_canvasOffsetX + (w.x||0) * _canvasScale) + 'px';
-        el.style.top = (_canvasOffsetY + (w.y||0) * _canvasScale) + 'px';
+        el.style.left = (_canvasOffsetX + ((w.x||0) - _viewX) * _canvasScale) + 'px';
+        el.style.top = (_canvasOffsetY + ((w.y||0) - _viewY) * _canvasScale) + 'px';
         el.style.width = ((w.width||320) * _canvasScale) + 'px';
         el.style.height = ((w.height||180) * _canvasScale) + 'px';
         _applyWinTransform(el, w);
@@ -5593,6 +5646,11 @@ function nudgeSelWin(dx, dy) {
     } else {
         w.x = Math.max(0, (w.x || 0) + dx);
         w.y = Math.max(0, (w.y || 0) + dy);
+        // 副屏关时同拖拽一样把框收在可见区内：推到画布外就再也点不回来
+        if (_viewW < _designW || _viewH < _designH) {
+            w.x = Math.min(Math.max(w.x, _viewX), Math.max(_viewX, _viewX + _viewW - (w.width || 0)));
+            w.y = Math.min(Math.max(w.y, _viewY), Math.max(_viewY, _viewY + _viewH - (w.height || 0)));
+        }
         s._selWin.x = w.x; s._selWin.y = w.y;
         var v = { wpX: w.x, wpY: w.y };
         Object.keys(v).forEach(function(k) { var el = document.getElementById(k); if (el && el !== document.activeElement) el.value = v[k]; });
@@ -5702,7 +5760,9 @@ function addWin() {
         var m = nameRe.exec(String(w.name == null ? '' : w.name).trim());
         if (m) maxNo = Math.max(maxNo, parseInt(m[1], 10));
     });
-    wins.push({ id: newId, name: namePrefix + (maxNo + 1), x: 0, y: 0, width: Math.round(_designW / 3), height: Math.round(_designH / 3), aspectRatio: '16:9', content: tab === 'video' ? { type: 'HDMI', mode: 1 } : { type: winType, follow: true }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
+    // 新窗口铺在可见区里（副屏关时可见区只是主屏那半，沿用 0,0 会被裁到画布外看不见）
+    var newW = Math.max(64, Math.round(_viewW / 3)), newH = Math.max(64, Math.round(_viewH / 3));
+    wins.push({ id: newId, name: namePrefix + (maxNo + 1), x: Math.round(_viewX + (_viewW - newW) / 2), y: Math.round(_viewY + (_viewH - newH) / 2), width: newW, height: newH, aspectRatio: '16:9', content: tab === 'video' ? { type: 'HDMI', mode: 1 } : { type: winType, follow: true }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
 
     // 双向隔离：A 的操作不动 B，反之亦然
     cfg.scenes[curS].windows = wins; // 当前场景：用含新窗口的拷贝覆盖回去
