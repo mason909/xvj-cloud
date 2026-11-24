@@ -2000,26 +2000,15 @@ function rmDevice() {
             // 只是把画面交还给原厂桌面，MQTT 与心跳照常，所以云端随时唤得回；
             // 设备本机也可以用鼠标左键连点 5 下退出（连点只在 XVJ 前台时收得到，回来靠 HOME 键或本按钮）。
             // 「实时截图」不在这对动作里，它是取回一帧画面看（deviceScreenshot，见【S-15】），不改设备任何状态。
-            // 副屏（1080/eDP）开关：状态来自设备心跳 secondary_display（服务端内存缓存 → GET /api/devices）。
-            // null = 老 APK 没上报或本机没有这条显示链，按钮禁用 —— 点了也没人执行，只会白等一轮轮询。
-            // 开机默认关由设备上的 vendor init rc 保证，这里只管运行时切换，重启后会回到"关"。
-            var aux = d.secondary_display;
-            var auxKnown = (aux === true || aux === false);
-            var auxLabel = aux === true ? '副屏：开' : (aux === false ? '副屏：关' : '副屏：—');
-            var auxTitle = auxKnown
-                ? (aux === true
-                    ? '副屏（1080/eDP）当前开着，点一下关掉。设备需 root，关后约 10 秒收回'
-                    : '副屏（1080/eDP）当前关着，点一下开启。设备需 root，开约 4 秒后多出一块 1920×1080 扩展屏')
-                : '设备还没上报副屏状态：APK 未升级或本机没有 1080/eDP 显示链，暂不可用';
+            // 副屏（1080/eDP）开关已停用：显示改造为单口全幅后，1080 口由设备启动看护常关，
+            // 开了也没有内容、几秒内还会被看护改回去（白闪一下），所以按钮置灰并标注。
+            // 心跳 secondary_display 仍照常上报、继续供画布可见区判定（_auxAllOff）使用。
             h += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="停止该设备全部窗口的播放（不改配置，下次同步会恢复）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'stop\',\'停止播放\',' + (isOnline ? 'true' : 'false') + ')">停止</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="退出到桌面：释放全部窗口，把系统桌面顶到身前。设备仍在线，配置与素材都不动，进程与 MQTT 保持（本机鼠标左键连点 5 下是同一个动作）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'exit_desktop\',\'退出到桌面\',' + (isOnline ? 'true' : 'false') + ')">退出到桌面</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="唤回画面：设备用 root 把自己顶回前台，按本机那份配置缓存重建画面。没有 root 时只放开闸门，需要现场按 HOME 键或点桌面图标。不在退出态则无变化" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'reopen_desktop\',\'唤回画面\',' + (isOnline ? 'true' : 'false') + ')">唤回画面</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="实时截图：让设备把此刻落屏的画面抓回来显示在这里（不是实时视频，是点一次拿一张）。设备需要在线；没等到图去设备日志页看原因" onclick="deviceScreenshot(\'' + escJsA(d.id) + '\',' + (isOnline ? 'true' : 'false') + ')">实时截图</button>';
-            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)"'
-                + (auxKnown ? '' : ' disabled')
-                + ' title="' + escA(auxTitle) + '"'
-                + ' onclick="deviceSecondaryDisplay(\'' + escJsA(d.id) + '\',' + (isOnline ? 'true' : 'false') + ',' + (aux === true ? 'false' : 'true') + ')">' + auxLabel + '</button>';
+            h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" disabled title="副屏（1080/eDP）暂不启用：显示改造为单口全幅后，1080 口由设备启动看护常关，开启也没有内容">副屏：停用</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="不看 rev 强制整房重新同步（素材清单 + 窗口 + 映射全量下发，会重建播放器）" onclick="sendDeviceCommand(\'' + escJsA(d.id) + '\',\'sync\',\'强制同步\',' + (isOnline ? 'true' : 'false') + ')">强制同步</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="把版本管理里的最新版推给这台设备（OTA）" onclick="pushUpdate(\'' + escJsA(d.id) + '\')">推最新版</button>';
             h += '<button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--fs-micro)" title="重启整台设备（root reboot，不是重启 APK）：画面会中断，约 30~60 秒后开机自启回到播放。无 root 的机器会拒绝并在设备日志留一行" onclick="rebootDevice(\'' + escJsA(d.id) + '\',' + (isOnline ? 'true' : 'false') + ')">重启设备</button>';
@@ -6894,57 +6883,6 @@ async function sendDeviceCommand(id, action, label, online) {
     } catch (e) {
         alert(label + ' 下发失败: ' + e.message);
     }
-}
-
-// 【F-04f】 副屏开关（设备卡片上的「副屏」按钮，设备侧 APK【A-17】）
-/**
- * 与 sendDeviceCommand 的差别：下发后必须等设备回报"实际状态" —— 写 DRM 状态要 root，
- * 没 root 的机器命令会 200（broker 收下了）但设备只记一行拒绝，开关的最终落点以心跳为准。
- * 设备执行成功会补一跳心跳（secondary_display），这里 1 秒一轮询 GET /api/devices，
- * 看到目标值就停；20 秒没变就提示去设备日志看 DISPLAY 一行。
- */
-var _auxTimer = null;
-function auxPollStop() { if (_auxTimer) { clearTimeout(_auxTimer); _auxTimer = null; } }
-async function deviceSecondaryDisplay(id, online, on) {
-    auxPollStop();
-    if (!online) {
-        openModal('<div style="padding:30px;text-align:center;color:#ffb74d">设备离线，副屏开关收发不到（不补发），先让现场把机器开机联网</div>');
-        autoCloseModal(2600);
-        return;
-    }
-    var label = on ? '开启副屏' : '关闭副屏';
-    try {
-        await apiPost('/api/devices/' + encodeURIComponent(id) + '/command', { command: { action: 'secondary_display', on: on } });
-    } catch (e) {
-        alert(label + ' 下发失败: ' + e.message);
-        return;
-    }
-    openModal('<div style="padding:30px;text-align:center;color:#aaa">⏳ ' + label + '命令已下发，等设备回报…<br>'
-        + '<span style="font-size:var(--fs-micro)">设备需 root；开约 4 秒、关约 10 秒生效，状态以设备心跳为准</span></div>');
-    var deadline = Date.now() + 20000;
-    var tick = async function () {
-        _auxTimer = null;
-        var box = document.getElementById('m');
-        if (!box || !box.classList.contains('show')) return;   // 弹层被关掉，别再问了
-        if (Date.now() > deadline) {
-            setMc('<div style="padding:30px;text-align:center;color:#ffb74d">20 秒内没等到状态变化<br>'
-                + '<span style="font-size:var(--fs-micro)">常见原因：APK 未升级、本机没有 1080/eDP 显示链、或没有 root —— 设备日志里有一行 DISPLAY</span></div>');
-            return;
-        }
-        try {
-            var list = await apiGet('/api/devices');
-            s.ds = asList(list);
-            var d = (s.ds || []).find(function (x) { return x.id === id; });
-            if (d && d.secondary_display === on) {
-                if (s.rf && !s._windowEditorActive && !s._wpMode && !s._psMode) rmDevice();
-                setMc('<div style="padding:30px;text-align:center;color:#4caf50">✅ 副屏已' + (on ? '开启' : '关闭') + '</div>');
-                autoCloseModal(1200);
-                return;
-            }
-        } catch (e) { /* 单次轮询失败下一轮再试 */ }
-        _auxTimer = setTimeout(tick, 1000);
-    };
-    _auxTimer = setTimeout(tick, 1000);
 }
 
 // 【F-04e】 重启设备（设备卡片上的「重启设备」按钮，设备侧 root reboot）
