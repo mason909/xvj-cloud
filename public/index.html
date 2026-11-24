@@ -1876,8 +1876,8 @@ function _syncWindowOverlays() {
     });
 }
 /**
- * LOGO 设置辅助网格（config.logo_grid）：LOGO 页开着时让包厢屏的每扇素材窗里各垫一块等像素方格
- * （跟着窗口走，不铺满画布），帮人肉眼判断 LOGO 在每扇窗里有没有被拉变形。与编辑器浮层同一套收敛法：
+ * LOGO 设置辅助网格（config.logo_grid）：LOGO 页开着时让包厢屏的每扇素材窗里各垫一块 12×12 等分方格
+ * （格子随窗口形状拉伸，点歌窗不出），每格=8.33% 窗宽/窗高，LOGO 的百分比几何可直接数格核对。与编辑器浮层同一套收敛法：
  * 意图 = LOGO 页开着且选了房间；只在意图变化时 PUT，失败下次重绘补。
  */
 function _putLogoGrid(roomId, on) {
