@@ -127,6 +127,10 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 - ⚠️ 改基准是**重排**不是**倒带**：已存在的窗口坐标不会被换算，原来 1920×1080 铺满整屏的窗，
   换成 2400×1080 的尺后只占画布左边一截，要手动拉大或删了重画。旧版 APK 不认这个字段（仍按 1920×1080
   理解坐标），给没升级的设备设基准反而更宽出截——前端在按钮上写明了。
+- **画布可见区**（前端 `_canvasView()`）：输出基准宽高比 ≥ 2.4（双屏合一，如 7680×2160）**且**本房已授权设备
+  心跳 `secondary_display` 全部为 `false` 时，画布只画主屏（右半 `w/2×h`），窗口框按两倍铺满容器；
+  任一台为 true / null（老 APK 或无 eDP 链）/ 房间无设备时仍画整屏，单屏房间不受影响。缩放、吸附、
+  拖拽/缩放/方向键与新建窗口一律按可见区换算并收在可见区内；副屏关时信息条显示「W×H · 主屏」。
 
 ---
 
@@ -172,7 +176,7 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
 | F-09c | 画布吸附（纯编辑辅助） | `_snapLines()` / `toggleSnap()` |
 | F-09d | 自动同步 | `autoSyncWinConfig()` / `flushAutoSync()` |
 | F-09e | 输入截取取景画板 | `renderCropEditor()` |
-| F-09f | 房间输出基准（画布那把尺） | `_designOf()` / `_roomDesign()` / `saveOutputBase()`（§二.4） |
+| F-09f | 房间输出基准（画布那把尺） | `_designOf()` / `_roomDesign()` / `saveOutputBase()` / 画布可见区 `_auxAllOff()` / `_canvasView()`（§二.4） |
 | F-10 | 设备日志页 | `loadDeviceLogs()` |
 | F-11 | 客户/店铺两级 Tab | `rd()`（`sd`/`as`/`ds`/`rs`/`rr`） |
 | F-12 | 版本管理页 | `lv()` / `lvd()` / `uv()` / `dv()` / `pushUpdate()` / `pushVersionToAll()` |
