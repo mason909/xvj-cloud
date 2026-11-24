@@ -4948,10 +4948,14 @@ function renderWinCanvas(wins) {
     _canvasScale = Math.min(AW / _viewW, AH / _viewH) * 0.92;
     _canvasOffsetX = (AW - _viewW * _canvasScale) / 2;
     _canvasOffsetY = (AH - _viewH * _canvasScale) / 2;
+    // 画布盒子本身对准可见区（不是容器原点）：窗口框坐标改为可见区内相对值，裁剪边 = 可见框边
+    canvas.style.left = _canvasOffsetX + 'px';
+    canvas.style.top = _canvasOffsetY + 'px';
     canvas.style.width = (_viewW * _canvasScale) + 'px';
     canvas.style.height = (_viewH * _canvasScale) + 'px';
-    // 缩放后的窗口框可能落到可见区外（副屏那半的窗），裁掉而不是溢到画布外的留白上
-    canvas.style.overflow = cropped ? 'hidden' : 'visible';
+    // 画布盒子就是屏上那块画面：超出可见区的窗口框（副屏关时落在副屏那半的窗）一律裁掉，
+    // 与设备端「整块输出之外画不到」同一口径
+    canvas.style.overflow = 'hidden';
     if (df) { df.style.left = _canvasOffsetX + 'px'; df.style.top = _canvasOffsetY + 'px'; df.style.width = (_viewW * _canvasScale) + 'px'; df.style.height = (_viewH * _canvasScale) + 'px'; }
     canvas.innerHTML = '';
     var selWinId = s._selWin ? s._selWin.id : null;
@@ -4960,8 +4964,8 @@ function renderWinCanvas(wins) {
     var curTab = _curWinTab();
     wins.forEach(function(w) {
         var dim = _winKind(w) !== curTab;
-        var rx = _canvasOffsetX + ((w.x||0) - _viewX) * _canvasScale;
-        var ry = _canvasOffsetY + ((w.y||0) - _viewY) * _canvasScale;
+        var rx = ((w.x||0) - _viewX) * _canvasScale;
+        var ry = ((w.y||0) - _viewY) * _canvasScale;
         var rw = (w.width||320) * _canvasScale;
         var rh = (w.height||180) * _canvasScale;
         var sel = w.id === selWinId;
@@ -5085,22 +5089,21 @@ function _paintSnapGuides() {
     var canvas = document.getElementById('winCanvas');
     if (!canvas) return;
     canvas.querySelectorAll('.win-guide').forEach(function(el) { el.parentNode.removeChild(el); });
-    // 落点算法与窗口框、winDeviceFrame 完全一致（偏移 + (设计坐标 − 可见区原点)×缩放）：画布盒子只有可见区那么大、
-    // 却停在 area 的原点上，只按 x*scale 画线会整体偏掉一个 _canvasOffset
+    // 画布盒子就在可见区上，窗口框/辅助线一律用「设计坐标 − 可见区原点」落位，与 _renderWinRects 同式
     var dw = Math.round(_viewW * _canvasScale), dh = Math.round(_viewH * _canvasScale);
     _snapGuides.v.forEach(function(x) {
         var el = document.createElement('div');
         el.className = 'win-guide vg';
-        el.style.left = Math.round(_canvasOffsetX + (x - _viewX) * _canvasScale) + 'px';
-        el.style.top = Math.round(_canvasOffsetY) + 'px';
+        el.style.left = Math.round((x - _viewX) * _canvasScale) + 'px';
+        el.style.top = '0px';
         el.style.height = dh + 'px';
         canvas.appendChild(el);
     });
     _snapGuides.h.forEach(function(y) {
         var el = document.createElement('div');
         el.className = 'win-guide hg';
-        el.style.top = Math.round(_canvasOffsetY + (y - _viewY) * _canvasScale) + 'px';
-        el.style.left = Math.round(_canvasOffsetX) + 'px';
+        el.style.top = Math.round((y - _viewY) * _canvasScale) + 'px';
+        el.style.left = '0px';
         el.style.width = dw + 'px';
         canvas.appendChild(el);
     });
@@ -5211,8 +5214,8 @@ function _renderWinRects(wins) {
     wins.forEach(function(w) {
         var el = document.querySelector('[data-win-id="' + w.id + '"]');
         if (!el) return;
-        el.style.left = (_canvasOffsetX + ((w.x||0) - _viewX) * _canvasScale) + 'px';
-        el.style.top = (_canvasOffsetY + ((w.y||0) - _viewY) * _canvasScale) + 'px';
+        el.style.left = (((w.x||0) - _viewX) * _canvasScale) + 'px';
+        el.style.top = (((w.y||0) - _viewY) * _canvasScale) + 'px';
         el.style.width = ((w.width||320) * _canvasScale) + 'px';
         el.style.height = ((w.height||180) * _canvasScale) + 'px';
         _applyWinTransform(el, w);
