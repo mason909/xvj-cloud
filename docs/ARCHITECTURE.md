@@ -133,9 +133,9 @@ DB 里存**未加前缀**的两位编号 `"01"`；凡经 `buildPrefixedScenes` �
   心跳 `secondary_display` 全部为 `false` 时，画布只画主屏（右半 `w/2×h`），窗口框按两倍铺满容器；
   任一台为 true / null（老 APK 或无 eDP 链）/ 房间无设备时仍画整屏，单屏房间不受影响。缩放、吸附、
   拖拽/缩放/方向键与新建窗口一律按可见区换算并收在可见区内；副屏关时信息条显示「W×H · 主屏」。
-- **设备端同一口径**（APK `canvasView()`/`windowGeom()`，2026-11-24）：基准比 ≥ 2.4、本机 eDP 链由看护常关
-  （`false`）、且屏本身不是宽屏时，窗口几何先减右半原点再按屏/半宽换算 —— 台架 8K 口一块 3840×2160
-  正好 1:1，左半窗保持在屏外；副屏开着 / 无 eDP 链（null）/ 原生宽屏（如 7680×2160）时照旧整幅。
+- **设备端同一口径**（APK `canvasView()`/`windowGeom()`，2026-11-24）：基准比 ≥ 2.4、本机 eDP 链关着
+  （`false`，默认或管理台关了副屏）、且屏本身不是宽屏时，窗口几何先减右半原点再按屏/半宽换算 ——
+  台架 8K 口一块 3840×2160 正好 1:1，左半窗保持在屏外；副屏开着 / 无 eDP 链（null）/ 原生宽屏（如 7680×2160）时照旧整幅。
   自检 `window-map-selftest.js`（Kotlin 纯函数逐行移植，台架/原生宽屏/副屏开与未知/单屏基准样本）。
 
 ---
@@ -471,7 +471,7 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 | `exit_desktop` | 退出到桌面：停播 + 释放窗口 + 显式把原厂桌面（HOME 候选里非本包那个）顶到身前，进程/MQTT/心跳全活着；镜像里没有别的桌面就退化成一层黑布（APK【A-15】；本机另有鼠标左键连点 5 下同一入口，但连点只管"退出"这一个方向） |
 | `reopen_desktop` | 唤回画面：设备侧用 root `am start` 把自己顶回前台，回到前台那次按 `scenes_json` 缓存重建；无 root 就只放开闸门，等现场按 HOME 键或点桌面图标。已非授权态则改播欢迎视频 |
 | `screenshot` | 实时截图：服务端补 `upload_url` + 一次性 `token`，设备 root `screencap` 出 PNG、压到 ≤1280 宽 JPEG 后 POST 回来；只读一帧画面，不动播放与配置（APK【A-16】/ 云端【S-15】） |
-| `secondary_display` | 副屏（1080/eDP）运行时开关：载荷 `{action:'secondary_display', on:true|false}`（服务端强制布尔）。设备 root 写 `/sys/class/drm/card0-eDP-1/status` + `uevent change`，开约 4 秒 / 关约 10 秒生效；无 root 只记一行拒绝。实际状态随心跳 `secondary_display` 回传，管理台设备卡按它渲染（APK【A-18】） |
+| `secondary_display` | 副屏（1080/eDP）运行时开关：载荷 `{action:'secondary_display', on:true|false}`（服务端强制布尔）。设备 root 写 `/data/xvj-edp.on` 标记 + `/sys/class/drm/card0-eDP-1/status` + `uevent change`；之后由看护 `xvj-edp-guard.sh` 每 5 秒按标记保持（HWC 会热插拔重探改回 off）。无 root 只记一行拒绝。实际状态随心跳 `secondary_display` 回传，管理台设备卡按它渲染（APK【A-18】） |
 
 **【A-15】收口（2026-11-16，#324 台架真机全验）**：退出 → 桌面交接 → HOME 键回来 → 云端唤回四条路验通，`exit_desktop` 后前台是 `com.android.launcher3`、`reopen_desktop` 后按缓存重建并首帧就绪。两处配套约束记在这里，改 APK 别绕过：
 ① 清单必须有 `<queries><intent>MAIN + HOME</intent></queries>`，否则 targetSdk 34 的包可见性会把 HOME 查询过滤成只剩自己，明明装着 launcher3 也判成"没有桌面"而退化成黑屏（#322 真机事故）。
@@ -485,10 +485,11 @@ JSON 合法性 → scenes 脏键过滤 → 顶层键「incoming 覆盖、其余�
 - 设备侧（APK【A-16】）：`su -c "screencap -p"` 从 stdout 收 PNG（不落设备磁盘）→ `BitmapFactory` 按 2 的幂采样再精确缩到 ≤1280 宽 → JPEG 质量 55（一帧几十 KB）→ POST，令牌放 `x-shot-token` 头里而不是 URL（URL 会进日志）。整段跑在独立的单线程 `shotExecutor` 上：素材同步占满 4 个下载坑时这一发不排队，同时全局也只可能有一张 screencap 在跑。**抓屏不看前台**：命令从 MQTT 线程进来、screencap 由 su 起的独立进程做整块屏的合成，所以应用被 HOME 键最小化、或已退出到桌面时照样截得到，截到的正是当时屏上的原厂桌面 —— 同理**不吃 `exited` 闸门**。唯一前提是进程还活着，否则命令收不到。任何一步失败只留一行 `SYNC/SCREENSHOT` 日志，不碰播放器、不改状态；管理台 25 秒等不到 ts 变新就给"去看设备日志页"的提示。
 - 自检：`screenshot-selftest.js`（108 条：令牌生命周期、阅后即焚过期、上传口边界、两段缩放比例、前端判新与超时，外加三份源码锚点）。
 
-**【A-18】副屏（1080/eDP）——开关已停用，只读状态（2026-11-24）**：显示改造为单口 3840 全幅后，1080 口由启动看护 `xvj-edp-guard.sh` 常关（vendor overlay，见记忆 `xvj-bench-cx3588-board` / `xvj-mass-production-display`）。开着也没有内容、几秒内还会被看护改回去，所以管理台按钮置灰为「副屏：停用」。
-- 命令：`secondary_display` 仍在服务端白名单（历史兼容），但 APK 收到只记一行 `MQTT/DISPLAY` 拒绝日志、不写 DRM，避免和看护打架（旧实现会写 status/uevent，已删）。
-- 回传：心跳照常带 `secondary_display`（读 sysfs status，`connected`=true）。**这个字段现在唯一用途是画布可见区判定**（§2.4 `_auxAllOff` 与 APK `canvasView`）；null = 老 APK 或本机没有这条链。
-- 将来要恢复副屏内容时：先撤看护（或让看护认「显式开启」标记）、恢复 APK 的写入路径与前端按钮，再考虑第二块屏的 Presentation 内容；在没有内容之前不要开，开了就是一块空屏。
+**【A-18】副屏（1080/eDP）开关（2026-11-24 恢复）**：显示改造成单口 3840 全幅后，1080 口默认关，但**用户/管理台可以显式开启**，链路由启动看护 `xvj-edp-guard.sh`（vendor overlay，见记忆 `xvj-bench-cx3588-board` / `xvj-mass-production-display`）按标记文件保持。
+- 标记契约：`/data/xvj-edp.on` 存在 = 要保持 `connected`，不存在 = 要保持 `disconnected`；看护每 5 秒比对 sysfs status，被 HWC 热插拔重探改回就再写一次。开机 rc 不再无条件写 off，交给看护首轮按标记落（开着副屏的机器重启不掉一下）。
+- 设备侧（APK `applySecondaryDisplay()`）：先落/删标记，再写 `/sys/class/drm/card0-eDP-1/status` + `uevent change`（顺序反了会在两步之间被看护按旧标记拉回）；成功后补一跳心跳让管理台立即看到。20 秒内状态没变，前端提示去看设备日志的 `MQTT/DISPLAY` 一行（常见原因：无 root、没有 eDP 链）。
+- 映射联动：副屏开 → 主屏退回整幅显示（7680 画布压到 3840，横向压扁）；副屏关 → 主屏只取右半 1:1。编辑器 `_canvasView()` 与设备 `canvasView()` 同一判据（心跳 `secondary_display`，§2.4）。
+- 内容现状：第二块屏（displayId=4，1920×1080）**没有 APK 的 Presentation 内容**，开着出来的是系统桌面/扩展屏。要点歌屏之类的内容，需要另做第二屏渲染，不要指望开开关就有画面。
 
 **【A-17】画面保活（2026-11-16，台架记）**：现场症状是"进程一死，MQTT 跟着死，远程连 `reopen_desktop` 都发不进来，只能人到箱子前点图标"。
 - 进程结构：`KeepAliveService` 跑在独立 `:keepalive` 进程（同进程的 Service 跟 MainActivity 一起死，等于没做），`START_STICKY` 前台服务；targetSdk 34 必须带 `FOREGROUND_SERVICE_SPECIAL_USE` 权限 + manifest `foregroundServiceType="specialUse"` + 子类型 property，后台重启可能抛 `ForegroundServiceStartNotAllowedException`，调用处 try/catch 退化。
