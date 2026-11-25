@@ -247,6 +247,21 @@ body.nav-off .menu li{padding:12px 4px;text-align:center;font-size:var(--fs-meta
 .wb-sw .sl{position:absolute;cursor:pointer;inset:0;background:#444;border-radius:24px;transition:.2s}
 .wb-sw .kb{position:absolute;cursor:pointer;width:18px;height:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;pointer-events:none}
 .wb-sw input:focus-visible+.sl{outline:2px solid #e94560;outline-offset:2px}
+/* ===== PAD 设置（工作台「PAD设置」模式）=====
+   一房一 PAD：这张面板只表达"绑没绑、在不在线、解绑"，配对码是唯一会离开服务端的秘密，只显示一次 */
+.pad-wrap{margin-top:10px;background:#2a2a2a;border-radius:8px;padding:14px 16px;border:1px solid #333}
+.pad-hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pad-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.pad-title{font-weight:bold;color:#eee;font-size:var(--fs-body)}
+.pad-sub{color:#8d8d8d;font-size:var(--fs-meta)}
+.pad-grid{display:grid;grid-template-columns:84px 1fr;gap:8px 14px;margin-top:12px;font-size:var(--fs-dense)}
+.pad-k{color:#8d8d8d}
+.pad-v{color:#ddd;word-break:break-all}
+.pad-code{margin:14px 0 4px;font-family:ui-monospace,Consolas,monospace;font-size:calc(30px * var(--u));letter-spacing:.28em;color:#ffd166;padding:10px 14px 10px calc(14px + .28em);border:1px dashed #6b5a2a;border-radius:6px;display:inline-block;background:#241f12;user-select:all}
+.pad-note{color:#8d8d8d;font-size:var(--fs-meta);line-height:1.7;margin-top:10px}
+.pad-warn{color:#f5a623;font-size:var(--fs-meta);margin-top:8px}
+.pad-err{color:#e94560;font-size:var(--fs-meta);margin-top:8px}
+.pad-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 /* ===== 墙板配置表（工作台「墙板配置」模式）===== */
 /* 码值表要一眼看全每格学过没有，所以是一张 30 行的表，不是散在文件夹列表里的控件 */
 .wp-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#252525;border:1px solid #333;border-radius:6px;padding:8px 10px;margin-top:10px}
@@ -932,6 +947,7 @@ function createPlayer(url, type, container, poster) {
  *         【F-06g】播放设置表 renderPsEditor()/psSave()（每格随机/顺序循环与点歌屏模式、DMX512 开关，改动即自动保存；轮播交接硬切）
  *         【F-06h】墙板学习 _wpCodeCellHtml()/wpLearnCell()/wpLearnDone()/wpSetCode()
  *                 （码值框可直接敲键盘改/删；开「墙板学习」后点框 → 按键 → 码值填入并自动保存）
+ *         【F-06k】PAD 设置 renderPadEditor()/sfPad()（一房一 PAD：配对码 → PAD 换 token → 心跳报到；解绑即吊销）
  * 【F-07】素材推送 showPushDialog() & doPushToRoom()
  * 【F-08】房间内素材删除 rmRoomMat()（只调一次 DELETE /materials，设备通知由服务端收敛点发；
  *         doSyncRoom() 现在只服务手工「🔄 同步当前房间」按钮）
@@ -996,6 +1012,8 @@ var s = {
     _logoUploading: false, // LOGO 上传中（防连点/重复拖拽）
     _logoSaveQ: null,      // LOGO 写库的串行队列（同播放设置：连改数值时不能拿旧 config PUT）
     _logoTimer: null,      // 数值/窗口开关的自动保存防抖句柄
+    _padMode: false,       // 工作台「PAD设置」编辑模式（纯前端态，与其它模式互斥）
+    _pad: null,            // PAD 面板状态 {roomId, bound, pad, device, pending, pair:{code,expires_at}, err}，只跟当前房间绑定
     _snap: localStorage.getItem('xsnap') !== '0',   // 窗口画布吸附开关（纯编辑辅助，本地偏好，默认开）
     fs: [],
     ms: [],
@@ -1787,11 +1805,14 @@ async function sr(id) {
         s._logoDraft = null;      // LOGO 设置草稿同样按房间隔离
         s._logoErr = '';
         s._logoNote = '';
+        s._pad = null;            // PAD 面板状态同样按房间隔离（配对码/绑定状态不能串房）
+        _padStopPoll();
     }
     s.rf = id;
     localStorage.setItem('xroom', id);
     // 默认选中第一幕
     s._curScene = 'A';
+    if (s._padMode) _padBegin();   // PAD 设置开着切房间：立刻按新房拉绑定状态并续上轮询
     // 先用缓存立即高亮反馈，详情回来后再刷新设备区
     rd();
     rmDevice();
@@ -1963,7 +1984,7 @@ function rmDevice() {
     var roomDevices = s.ds.filter(function(d) { return d.room_id === s.rf && d.authorized === 1; });
     
     var h = '<h3 style="color:#e94560">' + esc(r.name || '') + ' (' + esc(r.store_name || '') + ')</h3>';
-    // 工作台：调试模式 / 窗口配置 / 输入截取 / 墙板配置 / 播放设置 / LOGO 设置 六个开关并排
+    // 工作台：调试模式 / 窗口配置 / 输入截取 / 墙板配置 / 播放设置 / LOGO 设置 / PAD 设置 七个开关并排
     h += '<div class="wb-panel"><div class="wb-cap">工作台</div><div class="wb-row">';
     h += _wbSw('调试模式', ['roomDebugToggle', 'roomDebugSlider', 'roomDebugKnob'], _roomDebugOn(), '#4caf50', 'toggleRoomDebug()');
     h += _wbSw('窗口配置', ['winToggle', 'winSlider', 'winKnob'], s._windowEditorActive, '#e94560', 'sfW()');
@@ -1975,6 +1996,8 @@ function rmDevice() {
     h += _wbSw('播放设置', ['psToggle', 'psSlider', 'psKnob'], s._psMode, '#4aa3df', 'sfPS()');
     // LOGO 设置：房间级一份黑底 LOGO 视频 + 相对素材窗口的几何 + 哪些窗口叠加它
     h += _wbSw('LOGO设置', ['logoToggle', 'logoSlider', 'logoKnob'], s._logoMode, '#9b59b6', 'sfLogo()');
+    // PAD 设置：一房一 PAD 的签权/解绑。配对码与 token 的收发都在服务端【S-16】，这里只是入口与状态面
+    h += _wbSw('PAD设置', ['padToggle', 'padSlider', 'padKnob'], s._padMode, '#00bcd4', 'sfPad()');
     h += '</div></div>';
 
     // 显示房间设备列表
@@ -2034,7 +2057,7 @@ function rmDevice() {
     }
     
     // 墙板表/播放设置表把 01~30 摊成行、A/B 摊成列，文件夹 tab 和场景切换在这两屏上是重复入口
-    var hideTabs = (s._windowEditorActive || s._wpMode || s._psMode || s._logoMode) ? 'display:none' : '';
+    var hideTabs = (s._windowEditorActive || s._wpMode || s._psMode || s._logoMode || s._padMode) ? 'display:none' : '';
 
     // 场景选择器（第一幕/第二幕）
     var curS = s._curScene || 'A';
@@ -2087,6 +2110,14 @@ function rmDevice() {
         g.innerHTML = h;
         updateRoomDebugToggle();
         renderLogoEditor();
+        return;
+    }
+
+    // PAD 设置模式：不读写 config，独占工作区只是为了把配对/解绑/报到状态摆在一屏（服务端【S-16】）
+    if (s._padMode) {
+        g.innerHTML = h;
+        updateRoomDebugToggle();
+        renderPadEditor();
         return;
     }
     
@@ -3775,6 +3806,7 @@ function _exitPsMode() {
 function _exitTableModes() {
     _exitWpMode();
     _exitPsMode();
+    _exitPadMode();
 }
 
 /**
@@ -4285,6 +4317,34 @@ async function sfLogo() {
     rmDevice();
 }
 
+function _exitPadMode() {
+    s._padMode = false;
+    s._pad = null;
+    _padStopPoll();
+}
+
+/**
+ * 「PAD设置」开关：打开 → 整块工作台换成 PAD 绑定面板（一房一 PAD）。
+ * 这里不读写房间 config，与其它模式的互斥只为了同屏不摆两套东西；关掉即停轮询，
+ * 但服务端绑定不受影响（心跳照常，PAD 不会因为管理台退出这个页面而掉线）。
+ */
+async function sfPad() {
+    var pt = document.getElementById('padToggle');
+    if (!pt) return;
+    if (pt.checked) { _exitTableModes(); _exitLogoMode(); }
+    await flushAutoSync();
+    s._padMode = !!pt.checked;
+    if (s._padMode) {
+        s._windowEditorActive = false;
+        _exitCropMode();
+        s._selWin = null;
+        _padBegin();
+    } else {
+        _exitPadMode();
+    }
+    rmDevice();
+}
+
 /** 草稿：只认当前房间（切房间在 sr 里作废），数据取 s.rooms 缓存；落库时才现读云端最新 config */
 function _logoDraftOf() {
     if (s._logoDraft && s._logoDraft.roomId === s.rf) return s._logoDraft;
@@ -4761,6 +4821,204 @@ function renderLogoEditor() {
     else g.insertAdjacentHTML('beforeend', html);
 }
 
+
+// ============================================================================
+// 【F-06k】PAD 设置（工作台「PAD设置」模式）
+//   一房一 PAD：管理台生成一次性配对码 → PAD 用码换长期 token（服务端【S-16】）→
+//   PAD 每 15 秒向房间报到；这里只显示绑定/在线/执行器盒子，并提供解绑。
+//   三条不变量：一间房最多 1 台 PAD；一台 PAD 最多绑 1 间房（换房先解绑）；token 只在 PAD 手里，本页永远看不到。
+//   轮询只在本模式打开时跑，3 秒一次；切房间/关开关/换模式都会停掉，不留后台请求。
+// ============================================================================
+var _padPoll = null;
+var _padPollMs = 3000;
+var _padBusy = false;
+
+function _padStopPoll() {
+    if (_padPoll) { clearInterval(_padPoll); _padPoll = null; }
+}
+
+function _padStartPoll() {
+    _padStopPoll();
+    _padPoll = setInterval(function () {
+        if (!s._padMode || !s.rf) { _padStopPoll(); return; }
+        _padLoad(true);
+    }, _padPollMs);
+}
+
+function _padBegin() {
+    if (!s.rf) return;
+    if (!s._pad || s._pad.roomId !== s.rf) {
+        s._pad = { roomId: s.rf, loading: true, bound: false, pad: null, device: null, pending: null, pair: null, err: '' };
+    }
+    _padLoad(true);
+    _padStartPoll();
+}
+
+async function _padLoad(silent) {
+    var roomId = s.rf;
+    if (!roomId || !s._padMode || _padBusy) return;
+    _padBusy = true;
+    if (!s._pad || s._pad.roomId !== roomId) s._pad = { roomId: roomId, loading: true };
+    var sigBefore = _padSig();
+    try {
+        var d = await apiGet('/api/rooms/' + encodeURIComponent(roomId) + '/pad');
+        if (roomId !== s.rf || !s._padMode) return;
+        if (!s._pad || s._pad.roomId !== roomId) s._pad = { roomId: roomId };
+        s._pad.loading = false;
+        s._pad.bound = !!d.bound;
+        s._pad.pad = d.pad || null;
+        s._pad.device = d.device || null;
+        s._pad.pending = d.pending_pair || null;
+        s._pad.err = '';
+        if (s._pad.bound) s._pad.pair = null;   // 已绑上就不再显示配对码
+    } catch (e) {
+        if (s._pad && s._pad.roomId === roomId) {
+            s._pad.loading = false;
+            s._pad.err = '读取 PAD 状态失败: ' + e.message;
+        }
+    } finally {
+        _padBusy = false;
+        if (roomId === s.rf && s._padMode) {
+            // 内容没变就不整块重画：配对码要能被选中复制，3 秒一次 innerHTML 会一直打断选区
+            if (_padSig() !== sigBefore) _padPaint(); else _padTick();
+        }
+    }
+}
+
+/** 影响整块重绘的字段；last_seen 只在离线时展示，在线心跳不触发重绘 */
+function _padSig() {
+    var st = s._pad;
+    if (!st) return '';
+    var p = st.pad || {}, d = st.device || {};
+    return JSON.stringify([
+        st.roomId, st.loading ? 1 : 0, !!st.bound, p.id, p.name, !!p.online, p.online ? '' : (p.last_seen || ''),
+        d.id, !!d.online, st.pending && st.pending.expires_at, st.pair && st.pair.code, st.err
+    ]);
+}
+
+/** 轮询间只刷新倒计时文字；码过期了再整块重画换文案 */
+function _padTick() {
+    var el = document.getElementById('padPairLeft');
+    if (!el || !s._pad || !s._pad.pair) return;
+    var left = _padLeft(s._pad.pair.expires_at);
+    if (!left) { _padPaint(); return; }
+    el.textContent = '约 ' + left + ' 后过期';
+}
+
+function _padPaint() {
+    var wrap = document.getElementById('padWrap');
+    if (wrap) wrap.innerHTML = _padHtml();
+}
+
+function renderPadEditor() {
+    var g = document.getElementById('dg');
+    if (!g) return;
+    var old = document.getElementById('padWrap');
+    if (old) { old.innerHTML = _padHtml(); return; }
+    g.insertAdjacentHTML('beforeend', '<div id="padWrap">' + _padHtml() + '</div>');
+}
+
+/** ISO/Date → 本地时间（秒级）；认不出就原样摆出来，别显示 Invalid Date */
+function _padFmt(v) {
+    if (!v) return '—';
+    var d = new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' '
+        + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+/** 配对码剩余时间 mm:ss；过期回空串（按"已过期，请重新生成"处理） */
+function _padLeft(exp) {
+    var ms = new Date(exp).getTime() - Date.now();
+    if (!(ms > 0)) return '';
+    var sec = Math.ceil(ms / 1000);
+    return Math.floor(sec / 60) + ':' + (sec % 60 < 10 ? '0' : '') + (sec % 60);
+}
+
+function _padHtml() {
+    var st = (s._pad && s._pad.roomId === s.rf) ? s._pad : null;
+    var h = '';
+    if (!st || st.loading) {
+        h = '<div class="pad-wrap"><div class="pad-hd"><span class="pad-title">PAD 设置</span>'
+            + '<span class="pad-sub">读取中…</span></div></div>';
+        return h;
+    }
+    if (st.bound) {
+        var p = st.pad || {};
+        var dev = st.device;
+        var on = !!p.online;
+        h += '<div class="pad-wrap">';
+        h += '<div class="pad-hd"><span class="pad-dot" style="background:' + (on ? '#4caf50' : '#666') + '"></span>'
+            + '<span class="pad-title">' + esc(p.name || 'PAD') + '</span>'
+            + '<span class="pad-sub">' + (on ? '在线 · 正在向本房盒子报到' : '离线 · 最近报到 ' + esc(_padFmt(p.last_seen))) + '</span></div>';
+        h += '<div class="pad-grid">';
+        h += '<span class="pad-k">PAD 编号</span><span class="pad-v">' + esc(p.id || '') + '</span>';
+        h += '<span class="pad-k">执行器盒子</span><span class="pad-v">'
+            + (dev
+                ? esc(String(dev.id || '').slice(0, 8)) + (dev.name ? ' · ' + esc(dev.name) : '') + ' · ' + (dev.online ? '在线' : '离线')
+                : '<span class="pad-warn">本房还没有已授权盒子（盒子绑好后心跳会自动跟上）</span>')
+            + '</span>';
+        h += '<span class="pad-k">绑定时间</span><span class="pad-v">' + esc(_padFmt(p.bound_at)) + '</span>';
+        h += '<span class="pad-k">最近报到</span><span class="pad-v">' + esc(_padFmt(p.last_seen))
+            + (p.last_ip ? ' · ' + esc(p.last_ip) : '') + '</span>';
+        h += '</div>';
+        h += '<div class="pad-actions"><button class="btn btn-secondary" style="background:#7a2e2e;color:#fff" onclick="padUnbind()">解绑 PAD</button></div>';
+        h += '<div class="pad-note">解绑立即吊销 token：PAD 下一次报到（15 秒内）会被拒绝，必须重新配对才能再控本房。'
+            + '盒子换代不用解绑——PAD 心跳会自动改认本房当前授权的盒子。</div>';
+    } else {
+        var pair = st.pair;
+        var left = pair ? _padLeft(pair.expires_at) : '';
+        h += '<div class="pad-wrap">';
+        h += '<div class="pad-hd"><span class="pad-dot" style="background:#666"></span>'
+            + '<span class="pad-title">未绑定 PAD</span>'
+            + '<span class="pad-sub">一房一 PAD · 换房须先解绑</span></div>';
+        if (pair && left) {
+            h += '<div class="pad-code">' + esc(pair.code) + '</div>';
+            h += '<div class="pad-note">在 PAD 端输入这 8 位配对码换取本房执行权限。一次有效，<span id="padPairLeft">约 ' + esc(left) + ' 后过期</span>。</div>';
+            h += '<div class="pad-actions"><button class="btn btn-secondary" onclick="padStartPair()">重新生成</button></div>';
+        } else if (st.pending) {
+            h += '<div class="pad-note">已生成配对码，但本页刷新后不再显示明文。需要新码请重新生成（旧码同时作废）。</div>';
+            h += '<div class="pad-actions"><button class="btn btn-primary" onclick="padStartPair()">重新生成配对码</button></div>';
+        } else {
+            h += '<div class="pad-note">PAD 绑定后成为本房盒子的瘦客户端执行器：只拿到本房身份，向 XVJ 盒子报到，'
+                + '不能读写房间配置。<br>一间房只能绑 1 台；同一台 PAD 同时只能属于 1 间房——串房会在绑定这一步被拒绝。</div>';
+            h += '<div class="pad-actions"><button class="btn btn-primary" onclick="padStartPair()">发起配对</button></div>';
+        }
+    }
+    if (st.err) h += '<div class="pad-err">' + esc(st.err) + '</div>';
+    h += '<div class="pad-note">通路：配对码 → 长期 token → 每 15 秒报到（心跳经云端登记）。'
+        + '控制指令走云命令通道；局域网直连盒子、PAD 端配对界面在后续版本接入。</div>';
+    h += '</div>';
+    return h;
+}
+
+async function padStartPair() {
+    if (!s.rf) return;
+    var roomId = s.rf;
+    try {
+        var d = await apiPost('/api/rooms/' + encodeURIComponent(roomId) + '/pad/pair');
+        if (!s._pad || s._pad.roomId !== roomId) s._pad = { roomId: roomId };
+        s._pad.pair = { code: d.code, expires_at: d.expires_at };
+        s._pad.pending = { expires_at: d.expires_at };
+        s._pad.err = '';
+        _padPaint();
+    } catch (e) {
+        if (!s._pad || s._pad.roomId !== roomId) s._pad = { roomId: roomId };
+        s._pad.err = '发起配对失败: ' + e.message;
+        _padPaint();
+    }
+}
+
+async function padUnbind() {
+    if (!s.rf) return;
+    if (!confirm('解除本房 PAD 绑定？解绑后该 PAD 立即失去本房执行权限，需重新配对。')) return;
+    var roomId = s.rf;
+    try { await apiCall('/api/rooms/' + encodeURIComponent(roomId) + '/pad', { method: 'DELETE' }); }
+    catch (e) { alert('解绑失败: ' + e.message); return; }
+    if (s._pad && s._pad.roomId === roomId) { s._pad.pair = null; s._pad.pending = null; }
+    _padLoad(true);
+}
 
 // ============================================================================
 // Phase2: 多窗口配置编辑器

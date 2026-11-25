@@ -1,7 +1,7 @@
 # XVJ 系统架构文档
 
-> 最后更新：2026-11-13
-> 代码规模：前端 `public/index.html` **5365 行** · 后端 `server.js` **4014 行** · APK `MainActivity.kt` **4266 行**
+> 最后更新：2026-11-25
+> 代码规模：前端 `public/index.html` **7744 行** · 后端 `server.js` **4883 行** · APK `MainActivity.kt` **4266 行**
 > （另：`ShareCanvasView.kt` 511 行、`serial/WallPanelLink.kt` 272 行、`serial/WallPanelFrames.kt` 147 行、`serial/WallPanelParser.kt` 156 行）
 >
 > **本文是导览，不是契约。** 三端源码头部注释才是权威口径：
@@ -293,6 +293,7 @@ const { v4: uuidv4 } = require('uuid');
 | S-12 | 版本管理 & OTA |
 | S-13 | 配置 & 默认素材 & 未注册设备 |
 | S-14 | 会话鉴权（口令换 cookie） |
+| S-16 | PAD 签权（`room_pads`：一房一 PAD、一次性配对码、token 哈希、报到心跳，见 §6.5） |
 
 ### 4.2 API 路由全表
 
@@ -310,6 +311,7 @@ GET / OPTIONS / HEAD 开放（设备端只做 GET）。前端由【F-00】负责
 | 客户 | `GET/POST /api/stores` · `PUT/DELETE /api/stores/:name` |
 | 房间 | `GET/POST /api/rooms` · `GET/PUT/DELETE /api/rooms/:id` · `PUT /api/rooms/:id/windows` |
 | 房间素材 | `GET /api/room-materials-v2/:roomId`（设备清单出口） · `POST /api/rooms/:id/sync` · `DELETE /api/rooms/:roomId/materials/:materialId` |
+| PAD 签权 | `POST /api/pad/bind` · `POST /api/pad/heartbeat`（**免管理凭据，凭配对码/token**，注册在写接口闸门前） · `GET /api/rooms/:id/pad` · `POST /api/rooms/:id/pad/pair` · `DELETE /api/rooms/:id/pad` |
 | 试播 | `POST /api/rooms/:id/preview` · `POST /api/rooms/:id/preview/stop` |
 | 设备 | `GET /api/devices` · `DELETE /api/devices/:id` · `POST /api/devices/:id/block` · `POST /api/devices/:id/command` · `POST /api/devices/:id/authorize` · `POST /api/devices/:id/deauthorize` · `POST /api/devices/:id/bind-room` · `GET /api/unregistered` |
 | 版本/OTA | `GET /api/versions` · `GET /api/version/latest` · `POST /api/versions/upload` · `DELETE /api/versions/:id` · `POST /api/device/version` · `GET /api/device/versions` · `POST /api/devices/:id/push-update` · `POST /api/versions/:id/push-to-all` |
@@ -857,6 +859,35 @@ doRoomMaterialSync：拆成「计划 + 执行」两段
   就地替换要提醒强刷（`/uploads/` 带 24h 强缓存）。
 - 上传类型判定**只认扩展名白名单**，没有 mimetype 兜底（否则 `evil.html` + `Content-Type: video/mp4`
   就能在无鉴权的 `/uploads/` 下写出同源 HTML = 存储型 XSS）。
+
+### 6.5 PAD 签权（`room_pads`，【S-16】）
+
+PAD 是房间的**瘦客户端执行器**：只拿本房间身份，不碰素材/窗口配置。签权在云端完成登记。
+
+| 列 | 说明 |
+|---|---|
+| `id` | `pad_<ts>_<rand>` |
+| `room_id` | **UNIQUE**：一间房最多 1 台 PAD |
+| `pad_key` | PAD 安装后生成的稳定标识，**UNIQUE**：一台 PAD 最多 1 间房（换房先解绑） |
+| `token_hash` | `sha256('xvj-pad-token:' + token)`，明文只在 bind 响应出现一次 |
+| `device_id` | 报到目标（本房当前授权盒子，心跳时重新解析，换机自动跟上） |
+| `name` / `bound_at` / `last_seen` / `last_ip` | 展示与在线判定（60s 无心跳 = 离线） |
+
+流程：
+
+```
+工作台「PAD设置」 --POST /api/rooms/:id/pad/pair--> 8 位配对码（10 分钟、一次有效、库里只存哈希）
+PAD --POST /api/pad/bind {code, pad_key, name}--> {token, room, device}（占用冲突回 409）
+PAD --POST /api/pad/heartbeat (Bearer token)--> {room, device}，同时刷新 last_seen/last_ip
+工作台 --DELETE /api/rooms/:id/pad--> 删行即吊销；PAD 下次心跳 401 PAD_REVOKED
+```
+
+- `bind` / `heartbeat` 注册在 `app.use('/api', 写闸门)` **之前**：PAD 没有管理台凭据，只认配对码/token。
+- 试错节流：同一来源 10 分钟内 20 次失败即 429（配对码 8 位 hex = 32 bit，配合 TTL 不可枚举）。
+- 已绑定房间再点配对 → 409；同一 `pad_key` 绑别房 → 409，提示先解绑。
+- 删房间级联删 `room_pads` 与未用配对码。token 不随 GET 出服务端（`padPublicView` 只挑公开字段）。
+
+**尚未接入**：APK 侧还没有 PAD 直连/登记入口（PAD 目前只向云端报到）；平板端配对界面与命令通道在后续版本。
 
 ---
 

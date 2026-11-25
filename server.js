@@ -1553,6 +1553,202 @@ app.post('/api/device/:id/screenshot', shotUploadBody, (req, res) => {
   res.json({ success: true, bytes: buf.length, ts: ts });
 });
 
+// ========== 【S-16】PAD 签权：一房一 PAD，PAD 是瘦客户端执行器 ==========
+// 房间工作台「PAD设置」生成一次性配对码 → PAD 用码换取长期 token → 每 15 秒报到（心跳）。
+// 三条硬约束：① 一间房最多 1 台 PAD（room_pads.room_id UNIQUE）；
+//            ② 一台 PAD（pad_key，设备侧稳定标识）最多绑 1 间房（pad_key UNIQUE），换房必须先解绑；
+//            ③ 库里只存 token 的 sha256，明文只在 bind 响应里出现一次。
+// PAD 没有管理台口令，bind/heartbeat 两条口必须注册在下面的写接口闸门之前（同 screenshot 回传口）。
+// 这里的 db 在文件后段才创建：路由注册时可以引用，真正执行时早已初始化。
+const PAD_ONLINE_MS = 60 * 1000;              // 报到间隔 15s，60s 没报到就算离线
+const PAD_CODE_TTL_MS = 10 * 60 * 1000;       // 配对码有效期
+const PAD_BIND_MAX_FAILS = 20;                // 同一来源 10 分钟内最多试错次数（配对码 8 位 hex）
+const PAD_BIND_LOCK_MS = 10 * 60 * 1000;
+const PAD_KEY_RE = /^[A-Za-z0-9:._-]{8,64}$/;
+const PAD_CODE_RE = /^[A-F0-9]{8}$/;
+const PAD_TOKEN_RE = /^[A-Fa-f0-9]{32,128}$/;
+const padPairCodes = new Map();               // room_id → { hash, exp }
+const padBindFails = new Map();               // 来源 IP → { n, at }
+
+function sha256Hex(v) {
+  return crypto.createHash('sha256').update(String(v == null ? '' : v)).digest('hex');
+}
+/** 配对码哈希：大小写/首尾空格不敏感（PAD 上常被手输成小写） */
+function padCodeHash(code) {
+  return sha256Hex('xvj-pad-code:' + String(code == null ? '' : code).trim().toUpperCase());
+}
+/** token 哈希：token 一律按小写归一（十六进制大小写不改变熵） */
+function padTokenHash(token) {
+  return sha256Hex('xvj-pad-token:' + String(token == null ? '' : token).trim().toLowerCase());
+}
+function normalizePadKey(v) {
+  var s = typeof v === 'string' ? v.trim() : '';
+  return PAD_KEY_RE.test(s) ? s : null;
+}
+/** PAD 显示名：只做长度/控制字符收敛，允许中文；空值给个可辨认的默认名 */
+function normalizePadName(v) {
+  var s = typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
+  if (!s) return '未命名 PAD';
+  return s.length > 64 ? s.slice(0, 64) : s;
+}
+/** 从 Authorization: Bearer 或 body.token 取 PAD token；格式不对一律当没带 */
+function padTokenOf(req) {
+  var h = String((req.headers && req.headers['authorization']) || '');
+  var m = /^Bearer\s+(\S+)$/.exec(h);
+  var t = m ? m[1] : ((req.body && req.body.token) || '');
+  t = typeof t === 'string' ? t.trim() : '';
+  return PAD_TOKEN_RE.test(t) ? t.toLowerCase() : '';
+}
+/** DATETIME / ISO / 'YYYY-MM-DD HH:mm:ss' → 毫秒；认不出回 0（按从未报到处理） */
+function padLastSeenMs(v) {
+  if (!v) return 0;
+  if (v instanceof Date) return v.getTime();
+  var t = Date.parse(String(v).replace(' ', 'T'));
+  return Number.isFinite(t) ? t : 0;
+}
+function padOnline(lastSeen, now) {
+  var t = padLastSeenMs(lastSeen);
+  if (!t) return false;
+  var at = typeof now === 'number' ? now : Date.now();
+  return at - t < PAD_ONLINE_MS;
+}
+/** 只把可公开字段给前端：token_hash / pad_key 永不出这个函数 */
+function padPublicView(row, now) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    bound_at: row.bound_at,
+    last_seen: row.last_seen,
+    last_ip: row.last_ip || '',
+    online: padOnline(row.last_seen, now)
+  };
+}
+function padDeviceBrief(row) {
+  if (!row) return null;
+  return { id: row.id, name: row.name || '', status: row.status || 'offline', online: row.status === 'online' };
+}
+function padFindPairRoom(codeHash, now) {
+  var hit = null;
+  padPairCodes.forEach(function (v, roomId) {
+    if (v.exp <= now) { padPairCodes.delete(roomId); return; }
+    if (!hit && v.hash === codeHash) hit = roomId;
+  });
+  return hit;
+}
+function padBindFail(src, now) {
+  var rec = padBindFails.get(src);
+  if (!rec || now - rec.at > PAD_BIND_LOCK_MS) rec = { n: 0, at: now };
+  rec.n += 1;
+  padBindFails.set(src, rec);
+}
+function padBindLocked(src, now) {
+  var rec = padBindFails.get(src);
+  if (!rec) return false;
+  if (now - rec.at > PAD_BIND_LOCK_MS) { padBindFails.delete(src); return false; }
+  return rec.n >= PAD_BIND_MAX_FAILS;
+}
+/** 房间当前的主执行器（优先在线）：PAD 报到目标就是它，换机后心跳会重新解析 */
+function padRoomDevice(roomId, cb) {
+  db.query("SELECT id, name, status FROM devices WHERE room_id = ? AND authorized = 1 ORDER BY (status = 'online') DESC, online_time DESC LIMIT 1",
+    [roomId], function (err, rows) {
+      if (err) return cb(err);
+      cb(null, (rows && rows[0]) || null);
+    });
+}
+
+// PAD 用一次性码换 token。这是 PAD 唯一的"登录"：没有配对码就没有任何权限。
+app.post('/api/pad/bind', (req, res) => {
+  var now = Date.now();
+  var src = loginSource(req);
+  if (padBindLocked(src, now)) return res.status(429).json({ error: '配对尝试过多，10 分钟后再试', code: 'PAD_RATE_LIMITED' });
+  var code = String((req.body && req.body.code) || '').trim().toUpperCase();
+  var padKey = normalizePadKey(req.body && req.body.pad_key);
+  if (!PAD_CODE_RE.test(code)) { padBindFail(src, now); return res.status(400).json({ error: '配对码格式不对（8 位十六进制）' }); }
+  if (!padKey) { padBindFail(src, now); return res.status(400).json({ error: 'pad_key 不合法（8~64 位字母数字与 : . _ -）' }); }
+  var name = normalizePadName(req.body && req.body.name);
+  var roomId = padFindPairRoom(padCodeHash(code), now);
+  if (!roomId) { padBindFail(src, now); return res.status(400).json({ error: '配对码无效或已过期，请在房间工作台重新生成' }); }
+
+  db.query('SELECT p.id, p.name, p.room_id, r.name AS room_name FROM room_pads p LEFT JOIN rooms r ON r.id = p.room_id WHERE p.pad_key = ? LIMIT 1',
+    [padKey], function (errKey, keyRows) {
+      if (errKey) return res.status(500).json({ error: errKey.message });
+      if (keyRows && keyRows.length && keyRows[0].id) {
+        var other = keyRows[0].room_id === roomId ? '本房间' : ('房间「' + (keyRows[0].room_name || keyRows[0].room_id) + '」');
+        padBindFail(src, now);
+        return res.status(409).json({ error: '这台 PAD 已绑定到' + other + '，请先解绑', code: 'PAD_KEY_TAKEN' });
+      }
+      db.query('SELECT p.id FROM room_pads p WHERE p.room_id = ? LIMIT 1', [roomId], function (errRoom, padRows) {
+        if (errRoom) return res.status(500).json({ error: errRoom.message });
+        if (padRows && padRows.length) {
+          padBindFail(src, now);
+          return res.status(409).json({ error: '该房间已绑定 PAD，请先在工作台解绑', code: 'PAD_ROOM_TAKEN' });
+        }
+        db.query('SELECT id, name, store_name FROM rooms WHERE id = ? LIMIT 1', [roomId], function (errR, roomRows) {
+          if (errR) return res.status(500).json({ error: errR.message });
+          if (!roomRows || !roomRows.length) return res.status(404).json({ error: '房间不存在' });
+          padRoomDevice(roomId, function (errD, dev) {
+            if (errD) return res.status(500).json({ error: errD.message });
+            var token = crypto.randomBytes(24).toString('hex');
+            var padId = 'pad_' + now + '_' + crypto.randomBytes(3).toString('hex');
+            db.query('INSERT INTO room_pads (id, room_id, device_id, name, pad_key, token_hash, bound_at, last_seen, last_ip) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)',
+              [padId, roomId, dev ? dev.id : null, name, padKey, padTokenHash(token), src], function (errI) {
+                if (errI) {
+                  if (errI.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: '房间或这台 PAD 刚刚已被占用，请重试', code: 'PAD_ROOM_TAKEN' });
+                  return res.status(500).json({ error: errI.message });
+                }
+                padPairCodes.delete(roomId);      // 一次有效：绑定成功即作废，重放同一码换不到第二个 token
+                padBindFails.delete(src);
+                logAction('bind', 'pad', { room_id: roomId, pad_id: padId, pad_name: name, device_id: dev ? dev.id : null, ip: src });
+                res.json({
+                  success: true,
+                  token: token,
+                  pad: { id: padId, name: name },
+                  room: { id: roomRows[0].id, name: roomRows[0].name, store_name: roomRows[0].store_name },
+                  device: padDeviceBrief(dev),
+                  server_time: new Date(now).toISOString()
+                });
+              });
+          });
+        });
+      });
+    });
+});
+
+// PAD 报到：只认 token。每次心跳刷新 last_seen 并重新解析本房执行器（盒子换代/解绑会自动跟着变）。
+app.post('/api/pad/heartbeat', (req, res) => {
+  var token = padTokenOf(req);
+  if (!token) return res.status(401).json({ error: '缺少 PAD token', code: 'PAD_UNAUTHORIZED' });
+  var now = Date.now();
+  db.query('SELECT p.*, r.name AS room_name, r.store_name AS store_name FROM room_pads p LEFT JOIN rooms r ON r.id = p.room_id WHERE p.token_hash = ? LIMIT 1',
+    [padTokenHash(token)], function (err, rows) {
+      if (err) return res.status(500).json({ error: err.message });
+      var pad = rows && rows[0];
+      if (!pad) return res.status(401).json({ error: 'PAD 未绑定或已解绑，请重新配对', code: 'PAD_REVOKED' });
+      if (!pad.room_id || pad.room_name == null) {
+        return res.status(409).json({ error: 'PAD 所属房间已不存在，请重新配对', code: 'PAD_ROOM_GONE' });
+      }
+      var ip = loginSource(req);
+      db.query('UPDATE room_pads SET last_seen = NOW(), last_ip = ? WHERE id = ?', [ip, pad.id], function (errU) {
+        if (errU) return res.status(500).json({ error: errU.message });
+        padRoomDevice(pad.room_id, function (errD, dev) {
+          if (errD) return res.status(500).json({ error: errD.message });
+          var devId = dev ? dev.id : null;
+          if (pad.device_id !== devId) {
+            db.query('UPDATE room_pads SET device_id = ? WHERE id = ?', [devId, pad.id], function () {});
+          }
+          res.json({
+            success: true,
+            pad: { id: pad.id, name: pad.name, bound_at: pad.bound_at },
+            room: { id: pad.room_id, name: pad.room_name, store_name: pad.store_name },
+            device: padDeviceBrief(dev),
+            server_time: new Date(now).toISOString()
+          });
+        });
+      });
+    });
+});
+
 // 写操作统一要求凭据（会话 cookie 或 x-api-key）；GET/OPTIONS/HEAD 全开放。
 // 设备侧确实只做 GET（/api/config、/api/room-materials-v2），其余通信全走 MQTT；
 // 但 POST /api/device/version 与 POST /api/log 也是写接口，同样要带 key —— 现有 APK 不调它们
@@ -4100,12 +4296,83 @@ app.delete('/api/rooms/:id', (req, res) => {
       });
       db.query('UPDATE devices SET room_id = NULL WHERE room_id = ?', [id], (errU) => {
         if (errU) return res.status(500).json({error: errU.message});
-        db.query('DELETE FROM rooms WHERE id = ?', [id], (err2) => {
-          if (err2) return res.status(500).json({error: err2.message});
-          logAction('delete', 'room', { id, name: room ? room.name : null, store_name: room ? room.store_name : null, devices_unbound: bound.length });
-          res.json({success:true, devices_unbound: bound.length});
+        // 房间没了，PAD 绑定与未用的配对码一并作废（PAD 下次心跳会收到 PAD_REVOKED）
+        padPairCodes.delete(id);
+        db.query('DELETE FROM room_pads WHERE room_id = ?', [id], (errP) => {
+          if (errP) return res.status(500).json({error: errP.message});
+          db.query('DELETE FROM rooms WHERE id = ?', [id], (err2) => {
+            if (err2) return res.status(500).json({error: err2.message});
+            logAction('delete', 'room', { id, name: room ? room.name : null, store_name: room ? room.store_name : null, devices_unbound: bound.length });
+            res.json({success:true, devices_unbound: bound.length});
+          });
         });
       });
+    });
+  });
+});
+
+// 【S-16a】房间 PAD 绑定状态（工作台「PAD设置」）。只回可公开字段：token_hash / pad_key 不出服务端。
+// 执行器现查 devices，不信 room_pads.device_id（盒子可以被解绑/换机，心跳会自己重新解析）。
+app.get('/api/rooms/:id/pad', requireAuth, (req, res) => {
+  var id = req.params.id;
+  var now = Date.now();
+  db.query('SELECT id, name, store_name FROM rooms WHERE id = ? LIMIT 1', [id], function (err, rooms) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!rooms || !rooms.length) return res.status(404).json({ error: '房间不存在' });
+    db.query('SELECT id, room_id, device_id, name, bound_at, last_seen, last_ip FROM room_pads WHERE room_id = ? LIMIT 1', [id], function (err2, rows) {
+      if (err2) return res.status(500).json({ error: err2.message });
+      var pad = rows && rows[0];
+      var pc = padPairCodes.get(id);
+      var pending = (pc && pc.exp > now) ? { expires_at: new Date(pc.exp).toISOString() } : null;
+      var reply = function (dev) {
+        res.json({
+          success: true,
+          bound: !!pad,
+          pad: padPublicView(pad, now),
+          device: padDeviceBrief(dev),
+          pending_pair: pending,
+          server_time: new Date(now).toISOString()
+        });
+      };
+      if (!pad) return reply(null);
+      padRoomDevice(id, function (err3, dev) {
+        if (err3) return res.status(500).json({ error: err3.message });
+        reply(dev);
+      });
+    });
+  });
+});
+
+// 【S-16b】生成一次性配对码（10 分钟、一次有效）。已绑定的房间必须先解绑再配对。
+app.post('/api/rooms/:id/pad/pair', (req, res) => {
+  var id = req.params.id;
+  db.query('SELECT id, name FROM rooms WHERE id = ? LIMIT 1', [id], function (err, rooms) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!rooms || !rooms.length) return res.status(404).json({ error: '房间不存在' });
+    db.query('SELECT id FROM room_pads WHERE room_id = ? LIMIT 1', [id], function (err2, rows) {
+      if (err2) return res.status(500).json({ error: err2.message });
+      if (rows && rows.length) return res.status(409).json({ error: '该房间已绑定 PAD，请先解绑' });
+      var code = crypto.randomBytes(4).toString('hex').toUpperCase();
+      var exp = Date.now() + PAD_CODE_TTL_MS;
+      padPairCodes.set(id, { hash: padCodeHash(code), exp: exp });
+      logAction('pair', 'pad', { room_id: id, room_name: rooms[0].name, expires_at: new Date(exp).toISOString() });
+      res.json({ success: true, code: code, expires_at: new Date(exp).toISOString(), ttl_s: Math.floor(PAD_CODE_TTL_MS / 1000) });
+    });
+  });
+});
+
+// 【S-16c】解绑：删行即吊销 token —— PAD 下一次心跳收到 401 PAD_REVOKED，必须重新配对。
+app.delete('/api/rooms/:id/pad', (req, res) => {
+  var id = req.params.id;
+  db.query('SELECT id, name FROM room_pads WHERE room_id = ? LIMIT 1', [id], function (err, rows) {
+    if (err) return res.status(500).json({ error: err.message });
+    var pad = rows && rows[0];
+    if (!pad) return res.status(404).json({ error: '该房间没有绑定 PAD' });
+    db.query('DELETE FROM room_pads WHERE id = ?', [pad.id], function (err2) {
+      if (err2) return res.status(500).json({ error: err2.message });
+      padPairCodes.delete(id);
+      logAction('unbind', 'pad', { room_id: id, pad_id: pad.id, pad_name: pad.name });
+      res.json({ success: true, removed: pad.id });
     });
   });
 });
@@ -4237,8 +4504,8 @@ app.listen(PORT, () => {
 });
 
 /**
- * 【S-01】数据库初始化 —— app.listen 之后才调用，建 7 张表：
- *   devices / materials / preset_materials / folder_notes / operation_logs / apk_versions / device_versions
+ * 【S-01】数据库初始化 —— app.listen 之后才调用，建 8 张表：
+ *   devices / materials / preset_materials / folder_notes / operation_logs / apk_versions / device_versions / room_pads
  * 幂等性说明：
  *   - CREATE TABLE IF NOT EXISTS 对"表已存在、但缺新列"毫无作用，所以加列一律靠显式
  *     ALTER TABLE ... ADD COLUMN，靠 catch 掉 ER_DUP_FIELDNAME 来幂等（见下面 apk_versions.md5）。
@@ -4357,6 +4624,25 @@ function initDatabase() {
     )
   `);
   
+  // PAD 签权表（【S-16】）：一房一 PAD、一 PAD 一房；token 只存 sha256。
+  // pad_key 是 PAD 侧安装后生成的稳定标识，换房必须先解绑，否则 bind 回 409。
+  db.query(`
+    CREATE TABLE IF NOT EXISTS room_pads (
+      id VARCHAR(36) PRIMARY KEY,
+      room_id VARCHAR(36) NOT NULL,
+      device_id VARCHAR(64) DEFAULT NULL,
+      name VARCHAR(100) NOT NULL,
+      pad_key CHAR(64) COLLATE utf8mb4_bin NOT NULL,
+      token_hash CHAR(64) COLLATE utf8mb4_bin NOT NULL,
+      bound_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_seen DATETIME DEFAULT NULL,
+      last_ip VARCHAR(45) DEFAULT NULL,
+      UNIQUE KEY unique_room_pad (room_id),
+      UNIQUE KEY unique_pad_key (pad_key),
+      UNIQUE KEY unique_pad_token (token_hash)
+    )
+  `);
+
   console.log('✅ 数据库初始化完成');
 }
 
