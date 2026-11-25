@@ -887,7 +887,7 @@ PAD --POST /api/pad/heartbeat (Bearer token)--> {room, device}，同时刷新 la
 - 已绑定房间再点配对 → 409；同一 `pad_key` 绑别房 → 409，提示先解绑。
 - 删房间级联删 `room_pads` 与未用配对码。token 不随 GET 出服务端（`padPublicView` 只挑公开字段）。
 
-**尚未接入**：APK 侧还没有 PAD 直连/登记入口（PAD 目前只向云端报到）；平板端配对界面与命令通道在后续版本。
+**接入状态**：PAD 端（`xvj-pad` 0.1.x）已实现配对界面与 15s 报到——本地有 token 即进控制台，心跳失败只打灰「云端」标记，只有 401 `PAD_REVOKED` / 409 `PAD_ROOM_GONE` 才清凭据退回配对（离线口径见 `xvj-pad/docs/pad-binding.md`）。执行链仍是 PAD 本地演算；盒子侧 PAD 登记与局域网命令通道待做。
 
 ---
 
