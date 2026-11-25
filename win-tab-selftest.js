@@ -37,11 +37,17 @@ function mkEnv(winTab, curScene, wins) {
     alert: function (m) { throw new Error('不该弹窗: ' + m); },
     window: {},
     _designW: 1920,
-    _designH: 1080
+    _designH: 1080,
+    // addWin 新建窗口按「取景区」（页面全局 _view*，默认等于设计基准）摆默认矩形
+    _viewX: 0,
+    _viewY: 0,
+    _viewW: 1920,
+    _viewH: 1080
   };
-  new Function('s', '_loadRoomCfg', '_setWinCache', 'renderWinEditorFull', 'fetch', 'alert', 'window', '_designW', '_designH', 'box',
+  new Function('s', '_loadRoomCfg', '_setWinCache', 'renderWinEditorFull', 'fetch', 'alert', 'window', '_designW', '_designH', '_viewX', '_viewY', '_viewW', '_viewH', 'box',
     'var _winTab;\n' + code + '\nObject.assign(box,{kind:_winKind,setTab:setWinTab,add:addWin});')
-    (env.s, env._loadRoomCfg, env._setWinCache, env.renderWinEditorFull, env.fetch, env.alert, env.window, env._designW, env._designH, box);
+    (env.s, env._loadRoomCfg, env._setWinCache, env.renderWinEditorFull, env.fetch, env.alert, env.window, env._designW, env._designH,
+     env._viewX, env._viewY, env._viewW, env._viewH, box);
   box.s = s; box.cfg = cfg;
   return box;
 }

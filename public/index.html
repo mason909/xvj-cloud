@@ -2126,7 +2126,7 @@ function rmDevice() {
         + '<span id="pvBar" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _pvBarHtml() + '</span>'
         + '<button class="btn btn-sync" style="padding:5px 12px;font-size:var(--fs-meta);flex:0 0 auto" onclick="syncCurrentRoom()" title="让设备照着当前清单重新下一遍。配置改动一般会自己下发，这颗是手工补一次。">🔄 同步当前房间</button>'
         + '<button class="btn btn-primary" style="padding:5px 15px;font-size:var(--fs-meta);flex:0 0 auto" title="只映射上方当前选中的 ' + esc(s.f || '') + ' 文件夹" onclick="mapPreset()">映射本文件夹预设</button>'
-        + '<button class="btn btn-sync" id="folderCopyBtn" style="padding:5px 10px;font-size:var(--fs-meta);flex:0 0 auto" title="把当前场景、当前文件夹 ' + esc(s.f || '') + ' 的素材清单覆盖到本店所有房间的同名文件夹（完全同步：多删少补、顺序一致；目标多出的素材会被移除）" onclick="copyFolderAll()">全局复制</button>'
+        + '<button class="btn btn-sync" id="folderCopyBtn" style="padding:5px 10px;font-size:var(--fs-meta);flex:0 0 auto" title="把当前场景、当前文件夹 ' + esc(s.f || '') + ' 的素材清单复制到本店其它房间的同名文件夹——弹窗里勾选目标房间，没勾的一概不动（完全同步：多删少补、顺序一致；目标多出的素材会被移除）" onclick="copyFolderAll()">复制到房间</button>'
         + '<button class="btn" style="padding:5px 10px;font-size:var(--fs-meta);background:#6c757d;color:#fff;flex:0 0 auto" title="把预设库 01-30 全部映射进当前场景，设备会照着清单整个下一遍（量大，会重建播放器）" onclick="mapPreset(\'ALL\')">映射整库</button>'
         + '</span></div>';
     h2 += '<div class="mm-grid">';
@@ -6159,7 +6159,8 @@ async function mapPreset(scope) {
     updateRoomDebugToggle();
 }
 
-// 文件夹级「全局复制」：把当前房间、当前幕、当前文件夹的素材清单覆盖到本店其余房间的同名文件夹。
+// 文件夹级「复制到房间」：把当前房间、当前幕、当前文件夹的素材清单覆盖到本店其它房间的同名文件夹。
+// 目标房间在弹窗里勾选（默认一个都不勾），没勾中的一概不动。
 // 完全同步 = 目标这一格整体替换（多删少补、顺序一致）；当前清单为空则删掉目标该键。
 // 只动 scenes[curS].folder_mappings[fid]，窗口/墙板/播放设置与其它店铺一概不碰。
 async function copyFolderAll() {
@@ -6184,16 +6185,27 @@ async function copyFolderAll() {
         list = asList(await apiGet('/api/rooms?store=' + encodeURIComponent(store)));
     } catch (e) { alert('读取房间配置失败: ' + e.message); return; }
     var others = list.filter(function (r) { return r && r.id !== s.rf; });
-    if (!others.length) { alert('本店没有其它房间可覆盖。'); return; }
-    if (!confirm('把当前房间「' + (curS === 'A' ? '第一幕' : '第二幕') + ' / ' + fid + '」的 ' + src.length + ' 条素材清单覆盖到「' + store + '」的其余 ' + others.length + ' 间房？\n\n完全同步：同名文件夹整体替换，目标多出的素材会被移除（设备下次同步会删文件），当前清单为空则清空目标。其它文件夹、其它幕与其它店铺不受影响。')) return;
+    if (!others.length) { alert('本店没有其它房间可复制。'); return; }
+    var note = '源：' + esc((cur && cur.name) || s.rf) + ' · ' + (curS === 'A' ? '第一幕' : '第二幕')
+        + ' / ' + esc(fid) + ' · ' + src.length + ' 条素材。<br>'
+        + '勾中的房间：同名文件夹整体替换（多删少补、顺序一致），目标多出的素材会被移除；当前清单为空则清空目标。<br>'
+        + '没勾的房间、其它文件夹、其它幕与其它店铺一概不动。';
+    pickRoomsModal('复制到房间', others, note, '开始复制', function (targets) {
+        _runFolderCopy(targets, src, fid, curS, store, cur);
+    });
+}
+
+// 勾选完之后的落库：逐房间独立，一间读/写失败（404、断网、config 是脏 JSON）不带走后面的，
+// 也不把没落地的报成成功。
+async function _runFolderCopy(targets, src, fid, curS, store, cur) {
     s._folderCopying = true;
     var btn = document.getElementById('folderCopyBtn');
     if (btn) btn.disabled = true;
     var ok = 0, bad = [];
     try {
-        for (var i = 0; i < others.length; i++) {
-            var r = others[i];
-            if (btn) btn.textContent = '复制中 ' + (i + 1) + '/' + others.length + '…';
+        for (var i = 0; i < targets.length; i++) {
+            var r = targets[i];
+            if (btn) btn.textContent = '复制中 ' + (i + 1) + '/' + targets.length + '…';
             try {
                 var roomObj = await apiGet('/api/rooms/' + encodeURIComponent(r.id));
                 if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
@@ -6211,13 +6223,14 @@ async function copyFolderAll() {
     } finally {
         s._folderCopying = false;
         var btn2 = document.getElementById('folderCopyBtn');
-        if (btn2) { btn2.disabled = false; btn2.textContent = '全局复制'; }
+        if (btn2) { btn2.disabled = false; btn2.textContent = '复制到房间'; }
     }
-    alert('已把 ' + fid + ' 文件夹（' + (curS === 'A' ? '第一幕' : '第二幕') + '）同步到本店 ' + ok + ' 间房'
+    alert('已把 ' + fid + ' 文件夹（' + (curS === 'A' ? '第一幕' : '第二幕') + '）同步到 ' + ok + ' 间房'
         + (bad.length ? '，' + bad.length + ' 间失败：\n' + bad.join('\n') : ''));
     logAction('folder_copy_all', 'room', {
         room_id: s.rf, room_name: cur && cur.name, store_name: store,
-        scene: curS, folder: fid, count: src.length, ok: ok, failed: bad.length
+        scene: curS, folder: fid, count: src.length, ok: ok, failed: bad.length,
+        targets: targets.map(function (t) { return t.name || t.id; })
     });
     lr();
 }
@@ -6744,6 +6757,52 @@ function confirmModal(title, bodyHtml, okText, cb) {
         closeModal();
         cb();
     };
+}
+
+/**
+ * 房间勾选弹窗：凡是「拿当前房间的某一份配置去覆盖别的房间」的操作，都先在这里点名目标。
+ * 默认一个都不勾 —— 覆盖是不可逆的（目标多出来的素材会跟着被删），勾中才算数；
+ * 真需要整店铺开时点「全选」，行为回到老样子。Esc / 点遮罩 / 取消都不回调。
+ * @param rooms 候选房间数组（{id,name}），调用方负责排除源房间
+ * @param noteHtml 说明行，**里面的变量得调用方自己 esc()**（与 confirmModal 同一条规矩）
+ * @param cb 回调收到勾选后的房间数组（至少一个）
+ */
+function pickRoomsModal(title, rooms, noteHtml, okText, cb) {
+    var h = '<div style="padding:24px;min-width:420px;max-width:620px"><h3 style="font-size:var(--fs-h2);margin-bottom:10px">' + esc(title) + '</h3>';
+    h += '<div style="font-size:var(--fs-dense);color:#ccc;line-height:1.75">' + noteHtml + '</div>';
+    h += '<div style="display:flex;gap:8px;align-items:center;margin:14px 0 4px">';
+    h += '<button class="btn" id="prmAll" style="padding:4px 12px;font-size:var(--fs-meta)">全选</button>';
+    h += '<button class="btn" id="prmNone" style="padding:4px 12px;font-size:var(--fs-meta)">清空</button>';
+    h += '<span id="prmCount" style="color:#888;font-size:var(--fs-meta)"></span></div>';
+    h += '<div style="max-height:320px;overflow:auto;margin-top:6px">';
+    rooms.forEach(function(r) {
+        h += '<label style="display:block;padding:10px 12px;border:1px solid #444;margin:6px 0;border-radius:4px;cursor:pointer;background:#2a2a2a;font-size:var(--fs-body)">';
+        h += '<input type="checkbox" class="prm-check" value="' + escA(r.id) + '" style="margin-right:10px;width:16px;height:16px">';
+        h += '<span>' + esc(r.name || r.id) + '</span></label>';
+    });
+    h += '</div>';
+    h += '<div style="margin-top:16px;text-align:right"><button class="btn" onclick="closeModal()">取消</button> <button class="btn btn-primary" id="prmOk">' + esc(okText || '确定') + '</button></div></div>';
+    openModal(h);
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('.prm-check'));
+    var okBtn = document.getElementById('prmOk');
+    var upd = function() {
+        var n = boxes.filter(function(c) { return c.checked; }).length;
+        document.getElementById('prmCount').textContent = '已选 ' + n + ' / ' + boxes.length + ' 间';
+        okBtn.textContent = (okText || '确定') + (n ? '（' + n + ' 间）' : '');
+        okBtn.disabled = n === 0;
+    };
+    boxes.forEach(function(c) { c.onchange = upd; });
+    document.getElementById('prmAll').onclick = function() { boxes.forEach(function(c) { c.checked = true; }); upd(); };
+    document.getElementById('prmNone').onclick = function() { boxes.forEach(function(c) { c.checked = false; }); upd(); };
+    var done = false;
+    okBtn.onclick = function() {
+        var picked = boxes.filter(function(c) { return c.checked; }).map(function(c) { return c.value; });
+        if (!picked.length || done) return;
+        done = true;
+        closeModal();
+        cb(rooms.filter(function(r) { return picked.indexOf(r.id) >= 0; }));
+    };
+    upd();
 }
 
 // 重命名店铺（右键）
