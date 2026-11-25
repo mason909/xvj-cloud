@@ -4589,7 +4589,7 @@ function renderLogoEditor() {
 // Phase2: 多窗口配置编辑器
 // ============================================================================
 var _canvasScale = 1, _canvasOffsetX = 0, _canvasOffsetY = 0;
-// 画布可见区（设计坐标）：一般就是整块输出基准；副屏关时缩到主屏那半，_canvasOffset* 与所有换算都以它为原点
+// 画布可见区（设计坐标）：一般就是整块输出基准；副屏关时缩到主屏那一块（_canvasView），_canvasOffset* 与所有换算都以它为原点
 var _viewX = 0, _viewY = 0, _viewW = 1920, _viewH = 1080;
 var _dragging = null;
 
@@ -4659,13 +4659,16 @@ function _auxAllOff() {
 }
 
 /**
- * 画布可见区（设计坐标）。双屏合一的输出基准（宽高比 ≥ 2.4，单屏 16:9/21:9 都到不了）
- * 且本房间设备全部报告副屏关闭时，只画主屏那半（右半 w/2 × h）：窗口框按两倍大小铺满容器，左半空白不再占位。
+ * 画布可见区（设计坐标）。与 APK 端 MainActivity.canvasView() 同一把尺：
+ * 组合画布（宽 ≥ 高×2.4，单屏 16:9/21:9 都到不了）且本房间设备全部报告副屏关闭时，只画主屏那一块 ——
+ * 主屏取左起 16:9 主区（宽 designH×16/9，5760×2160 → 3840×2160），右边那条带子本来就归副屏；
+ * 唯一例外是 7680×2160 切片档（宽 ≥ 高×3），那台主口物理扫的是右半，仍取右半。
  * 其余情况整屏——单屏房间副屏本来就无所谓，不能因为设备报 false 就把画面切掉一半。
  */
 function _canvasView() {
-    if (_designW / _designH >= 2.4 && _auxAllOff()) {
-        return { x: _designW / 2, y: 0, w: _designW / 2, h: _designH };
+    if (_designW >= _designH * 2.4 && _auxAllOff()) {
+        if (_designW >= _designH * 3) return { x: _designW / 2, y: 0, w: _designW / 2, h: _designH };
+        return { x: 0, y: 0, w: Math.round(_designH * 16 / 9), h: _designH };
     }
     return { x: 0, y: 0, w: _designW, h: _designH };
 }
@@ -4921,7 +4924,7 @@ function renderWinEditorFull() {
 
 // 画布：把当前幕的 windows 铺成可拖/可缩的矩形。
 // 设计空间 = 这间房的输出基准（config.output，没设时 1920×1080 设计稿），与 APK 端 windowGeom 的分母同一把尺；
-// 可见区一般等于整块基准，副屏关时缩到主屏那半（_canvasView），窗口框按「设计坐标 − 可见区原点」落位。
+// 可见区一般等于整块基准，副屏关时缩到主屏那块（_canvasView），窗口框按「设计坐标 − 可见区原点」落位。
 // _canvasScale/_canvasOffset* 是本模块共用的屏幕坐标↔设计坐标换算量，所以每次重绘都要按容器尺寸先重算；
 // 空白血框 winDeviceFrame 表示可见区边界。
 // 拖拽/缩放的 document mousemove/mouseup 监听在这里先 remove 再 add，避免每次重绘都叠一层。
@@ -4941,7 +4944,7 @@ function renderWinCanvas(wins) {
     var _dz = _roomDesign();
     _designW = _dz.w; _designH = _dz.h;
     var deviceW = _designW, deviceH = _designH;
-    // 可见区可能只是整块输出的一截（副屏关 → 主屏那半），缩放与偏移全按可见区算，窗口框用设计坐标减 _viewX/_viewY
+    // 可见区可能只是整块输出的一截（副屏关 → 主屏那块），缩放与偏移全按可见区算，窗口框用设计坐标减 _viewX/_viewY
     var _vw = _canvasView();
     _viewX = _vw.x; _viewY = _vw.y; _viewW = _vw.w; _viewH = _vw.h;
     var cropped = _viewW < deviceW || _viewH < deviceH;
@@ -4954,7 +4957,7 @@ function renderWinCanvas(wins) {
     canvas.style.top = _canvasOffsetY + 'px';
     canvas.style.width = (_viewW * _canvasScale) + 'px';
     canvas.style.height = (_viewH * _canvasScale) + 'px';
-    // 画布盒子就是屏上那块画面：超出可见区的窗口框（副屏关时落在副屏那半的窗）一律裁掉，
+    // 画布盒子就是屏上那块画面：超出可见区的窗口框（副屏关时落在副屏带上的窗，设备端本就不渲染）一律裁掉，
     // 与设备端「整块输出之外画不到」同一口径
     canvas.style.overflow = 'hidden';
     if (df) { df.style.left = _canvasOffsetX + 'px'; df.style.top = _canvasOffsetY + 'px'; df.style.width = (_viewW * _canvasScale) + 'px'; df.style.height = (_viewH * _canvasScale) + 'px'; }
@@ -5020,7 +5023,8 @@ function renderWinCanvas(wins) {
         info.textContent = (cropped ? _viewW + ' × ' + _viewH + ' · 主屏' : deviceW + ' × ' + deviceH)
             + ' (×' + _canvasScale.toFixed(2) + ')';
         info.title = cropped
-            ? '副屏已关，只画主屏（输出右半 ' + _viewW + '×' + _viewH + '，整块输出 ' + deviceW + '×' + deviceH + '）'
+            ? '副屏已关，只画主屏（' + (_viewX ? '切片档取输出右半' : '左起 16:9 主区') + ' ' + _viewW + '×' + _viewH
+              + '，整块输出 ' + deviceW + '×' + deviceH + '）；副屏带上的窗口设备端不渲染，这里也不显示'
             : '画布 = 本房间输出基准整屏';
     }
 }
@@ -5037,7 +5041,7 @@ var _snapGuides = { v: [], h: [] };
 
 /** 画布自身的线排在窗口线之前时，等距离要优先吸它（比"贴住某扇窗的边"更正） */
 function _isCanvasSnapLine(line) {
-    // 画布边/中心按当前可见区算（整屏时与旧的 0/960/1920/540/1080 逐字相同，副屏关时改为主屏那半的四边和中心）
+    // 画布边/中心按当前可见区算（整屏时与旧的 0/960/1920/540/1080 逐字相同，副屏关时改为主屏可见区的四边和中心）
     return line === _viewX || line === _viewY || line === _viewX + _viewW || line === _viewY + _viewH ||
         line === _viewX + _viewW / 2 || line === _viewY + _viewH / 2;
 }
@@ -5048,7 +5052,7 @@ function _snapLines(excludeId) {
     (s._winCache || []).forEach(function(o) {
         if (o.id === excludeId) return;
         var x = o.x || 0, y = o.y || 0, ww = o.width || 0, hh = o.height || 0;
-        // 可见区外的窗（副屏关时左半留下的）画布上看不见，别让它们的边把可见窗吸走
+        // 可见区外的窗（副屏关时留在副屏带上的）画布上看不见，别让它们的边把可见窗吸走
         if (x + ww < _viewX || x > _viewX + _viewW || y + hh < _viewY || y > _viewY + _viewH) return;
         v.push(x, x + ww / 2, x + ww);
         h.push(y, y + hh / 2, y + hh);
@@ -5764,7 +5768,7 @@ function addWin() {
         var m = nameRe.exec(String(w.name == null ? '' : w.name).trim());
         if (m) maxNo = Math.max(maxNo, parseInt(m[1], 10));
     });
-    // 新窗口铺在可见区里（副屏关时可见区只是主屏那半，沿用 0,0 会被裁到画布外看不见）
+    // 新窗口铺在可见区里（副屏关时可见区只是主屏那一块，切片档甚至是右半截；按整屏居中会把窗建到画布外看不见）
     var newW = Math.max(64, Math.round(_viewW / 3)), newH = Math.max(64, Math.round(_viewH / 3));
     wins.push({ id: newId, name: namePrefix + (maxNo + 1), x: Math.round(_viewX + (_viewW - newW) / 2), y: Math.round(_viewY + (_viewH - newH) / 2), width: newW, height: newH, aspectRatio: '16:9', content: tab === 'video' ? { type: 'HDMI', mode: 1 } : { type: winType, follow: true }, zIndex: wins.length + 1, opacity: 1, brightness: 1, enabled: true, flip: 'none', rotation: 0, crop: { x: 0, y: 0, w: 1, h: 1 } });
 
