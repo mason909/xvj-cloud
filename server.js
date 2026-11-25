@@ -1749,6 +1749,116 @@ app.post('/api/pad/heartbeat', (req, res) => {
     });
 });
 
+// ============================================================================
+// PAD 受控 VJ 动作（2026-11-25）
+// PAD → 云端 REST（token + 房间 ACL）→ MQTT command → 盒子 → ack → 同一条 HTTP 响应。
+// 契约见 xvj-apk/docs/control-actions.md。PAD 只发动作，最终状态以设备 rev 为准。
+// 这条路由必须注册在下面那道写接口闸门之前（PAD 没有管理会话/API key）。
+// ============================================================================
+const PAD_ACTION_ALLOW = ['apply_material', 'gift_play', 'fx', 'fx_clear',
+                          'pause_all', 'resume_all', 'stop_all'];
+const PAD_FX_KINDS = ['BLACKOUT', 'STROBE', 'ROTATE', 'ZOOM', 'LOOP', 'SPEED'];
+const PAD_CMD_ACK_MS = 2000;
+const padCmdPending = new Map();   // cmd_id -> { res, timer, pad_id, device_id }
+const padCmdRate = new Map();      // pad_id -> { n, at }，1s 窗口
+
+/** XY 垫按 30Hz 合并发送，留到 45 次/秒；超了回 RATE_LIMITED，不排队 */
+function padCmdRateOk(padId, now) {
+  var rec = padCmdRate.get(padId);
+  if (!rec || now - rec.at > 1000) { rec = { n: 0, at: now }; padCmdRate.set(padId, rec); }
+  rec.n += 1;
+  return rec.n <= 45;
+}
+
+/** 素材文件名：只认单段名字，挡路径穿越与控制字符；真实存在与否由设备按本地目录判 */
+function padMaterialName(v) {
+  var s = typeof v === 'string' ? v.trim() : '';
+  if (!s || s.length > 255 || /[\/\\\u0000-\u001f]/.test(s)) return '';
+  return s;
+}
+
+function finishPadCmd(cmdId) {
+  var p = padCmdPending.get(cmdId);
+  if (!p) return null;
+  padCmdPending.delete(cmdId);
+  if (p.timer) clearTimeout(p.timer);
+  return p;
+}
+function settlePadCmd(cmdId, body, status) {
+  var p = finishPadCmd(cmdId);
+  if (!p) return;
+  try { p.res.status(status || 200).json(body); } catch (e) { /* 客户端已断开 */ }
+}
+
+app.post('/api/pad/command', (req, res) => {
+  var token = padTokenOf(req);
+  if (!token) return res.status(401).json({ error: '缺少 PAD token', code: 'PAD_UNAUTHORIZED' });
+  var now = Date.now();
+  var body = req.body || {};
+  var action = String(body.action || '');
+  if (PAD_ACTION_ALLOW.indexOf(action) === -1) {
+    return res.status(400).json({ error: '不支持的 PAD 动作: ' + action, code: 'ACL' });
+  }
+  var scene = String(body.scene || '').toUpperCase();
+  var folder = parseInt(body.folder, 10);
+  var material = padMaterialName(body.material);
+  var fxKind = String(body.kind || '').toUpperCase();
+  var target = String(body.window || 'main').toLowerCase();
+  if (action === 'apply_material' || action === 'gift_play') {
+    if (scene !== 'A' && scene !== 'B') return res.status(400).json({ error: 'scene 只能是 A/B', code: 'CONFLICT' });
+    if (!(folder >= 1 && folder <= 99)) return res.status(400).json({ error: 'folder 越界（1~99）', code: 'CONFLICT' });
+    if (!material) return res.status(400).json({ error: 'material 文件名不合法', code: 'CONFLICT' });
+  }
+  if (action === 'apply_material' && target !== 'main' && target !== 'second') {
+    return res.status(400).json({ error: 'window 只能是 main/second', code: 'CONFLICT' });
+  }
+  var fxValue = 0;
+  if (action === 'fx') {
+    if (PAD_FX_KINDS.indexOf(fxKind) === -1) return res.status(400).json({ error: 'fx.kind 不支持', code: 'CONFLICT' });
+    fxValue = Number(body.value);
+    if (!Number.isFinite(fxValue)) return res.status(400).json({ error: 'fx.value 必须是数字', code: 'CONFLICT' });
+  }
+
+  db.query('SELECT p.id, p.room_id, p.name FROM room_pads p JOIN rooms r ON r.id = p.room_id WHERE p.token_hash = ? LIMIT 1',
+    [padTokenHash(token)], function (err, rows) {
+      if (err) return res.status(500).json({ error: err.message });
+      var pad = rows && rows[0];
+      if (!pad) return res.status(401).json({ error: 'PAD 未绑定或已解绑，请重新配对', code: 'PAD_REVOKED' });
+      if (!padCmdRateOk(pad.id, now)) return res.status(429).json({ error: '操作太快，稍后再试', code: 'RATE_LIMITED' });
+      db.query('UPDATE room_pads SET last_seen = NOW() WHERE id = ?', [pad.id], function () {});
+      padRoomDevice(pad.room_id, function (errD, dev) {
+        if (errD) return res.status(500).json({ error: errD.message });
+        if (!dev) return res.status(503).json({ error: '房间还没有执行盒', code: 'OFFLINE' });
+        if (dev.status !== 'online') return res.status(503).json({ error: '执行盒不在线', code: 'OFFLINE' });
+        var cmdId = 'pc_' + now.toString(36) + '_' + crypto.randomBytes(3).toString('hex');
+        var cmd = { cmd_id: cmdId, room_id: pad.room_id, src: 'tablet', action: action, ts: now, ttl_ms: 1500 };
+        if (action === 'apply_material') {
+          cmd.scene = scene; cmd.folder = folder; cmd.material = material; cmd.window = target;
+        } else if (action === 'gift_play') {
+          cmd.scene = scene; cmd.folder = folder; cmd.material = material;
+        } else if (action === 'fx') {
+          cmd.kind = fxKind; cmd.value = fxValue;
+        }
+        var timer = setTimeout(function () {
+          settlePadCmd(cmdId, { ok: false, err: 'TIMEOUT', cmd_id: cmdId, rev: null }, 200);
+        }, PAD_CMD_ACK_MS);
+        padCmdPending.set(cmdId, { res: res, timer: timer, pad_id: pad.id, device_id: dev.id });
+        db.query('SELECT id, fingerprint FROM devices WHERE id = ?', [dev.id], function (errQ, drows) {
+          if (errQ || !drows || !drows.length) {
+            settlePadCmd(cmdId, { ok: false, err: 'CONFLICT', cmd_id: cmdId, rev: null }, 409);
+            return;
+          }
+          publishToDeviceCommand(drows[0], cmd);
+          logAction('pad_command', 'pad', {
+            pad_id: pad.id, pad_name: pad.name, room_id: pad.room_id, device_id: dev.id,
+            cmd_id: cmdId, action: action,
+            params: { scene: scene, folder: folder, material: material, window: target, kind: fxKind, value: fxValue }
+          });
+        });
+      });
+    });
+});
+
 // 写操作统一要求凭据（会话 cookie 或 x-api-key）；GET/OPTIONS/HEAD 全开放。
 // 设备侧确实只做 GET（/api/config、/api/room-materials-v2），其余通信全走 MQTT；
 // 但 POST /api/device/version 与 POST /api/log 也是写接口，同样要带 key —— 现有 APK 不调它们
@@ -2045,6 +2155,29 @@ function handleMqttMessage(topic, message) {
         if (!data) break;
         console.log('📨 设备命令: ' + deviceId + ' -> ' + JSON.stringify(data));
         break;
+      // 受控 VJ 动作回执（PAD 路径）：按 cmd_id 找到挂起的 HTTP 请求，把 ok/err/rev 原样带回 PAD。
+      // 不做去重记账 —— 回执就是这一次命令的答案，消费一次即作废（PAD 重发会用新的 cmd_id）。
+      case 'ack': {
+        if (!data || !data.cmd_id) break;
+        var ackId = String(data.cmd_id);
+        var pending = padCmdPending.get(ackId);
+        if (!pending) break;
+        resolveDeviceId(deviceId, function (canonId) {
+          var p = padCmdPending.get(ackId);
+          if (!p) return;
+          // 双发 topic（id + fingerprint）会收到两份回执：第二份到这里时挂起项已被消费，自然丢掉；
+          // 设备 id 对不上（别的盒子在同一个 broker 上）也丢弃
+          if (p.device_id && p.device_id !== canonId && p.device_id !== deviceId) return;
+          settlePadCmd(ackId, {
+            ok: data.ok === true,
+            err: data.ok === true ? null : (data.err || 'UNKNOWN'),
+            cmd_id: ackId,
+            rev: data.rev == null ? null : String(data.rev),
+            device_id: p.device_id
+          }, 200);
+        });
+        break;
+      }
     }
   } catch (e) {
     console.error('消息解析失败:', e);
@@ -2509,7 +2642,11 @@ const DEVICE_ACTIONS = ['sync', 'stop', 'config', 'sync_room_materials',
                         'screenshot',
                         // 副屏（1080/eDP）运行时开关：载荷只有布尔 on，设备侧 root 写 DRM 状态（APK【A-18】），
                         // 实际状态随心跳 secondary_display 回传。开机默认关由设备上的 vendor init rc 保证
-                        'secondary_display'];
+                        'secondary_display',
+                        // 受控 VJ 动作（PAD 走 POST /api/pad/command；这里留着给管理台脚本直测设备，
+                        // 载荷口径见 xvj-apk/docs/control-actions.md）
+                        'apply_material', 'gift_play', 'fx', 'fx_clear',
+                        'pause_all', 'resume_all', 'stop_all'];
 app.post('/api/devices/:id/command', (req, res) => {
   const { command } = req.body;
   const deviceId = req.params.id;
