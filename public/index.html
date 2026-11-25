@@ -2648,6 +2648,80 @@ function _wpCodeFields(d) {
     };
 }
 
+/**
+ * 码值表 → 扁平格子 { '01|player': 'D3', 'ON|panel': ..., 'OFF|panel': ... }。
+ * 合并与比对按这一份走：一格一列一枚码，脏值当场不算码（与 _wpFrame 同一把闸）。
+ * 全开/全关用伪格名 ON/OFF，跟学习链那两条口径一致。
+ */
+function _wpFlat(code, allOn, allOff) {
+    var out = {};
+    Object.keys(code || {}).forEach(function (fid) {
+        WP_SOURCES.forEach(function (x) {
+            var f = _wpFrame((code[fid] || {})[x.v]);
+            if (f) out[fid + '|' + x.v] = f;
+        });
+    });
+    var on = _wpFrame(allOn), off = _wpFrame(allOff);
+    if (on) out['ON|panel'] = on;
+    if (off) out['OFF|panel'] = off;
+    return out;
+}
+
+/** 草稿的同一份扁平视图 */
+function _wpFlatOfDraft(d) { return _wpFlat(d.code, d.allOn, d.allOff); }
+
+/** 云端 config 的同一份扁平视图（脏规则/重复码在 _wpRulesOf 那关已经丢干净） */
+function _wpFlatOfCfg(cfg) { return _wpFlat(_wpCodeOf(cfg), cfg.wallpanel_on_frame, cfg.wallpanel_off_frame); }
+
+/** 扁平格子 → _wpCodeFields 直接吃的形状 */
+function _wpFromFlat(flat) {
+    var code = {}, allOn = '', allOff = '';
+    Object.keys(flat).forEach(function (k) {
+        var p = k.split('|');
+        if (p[0] === 'ON') allOn = flat[k];
+        else if (p[0] === 'OFF') allOff = flat[k];
+        else (code[p[0]] || (code[p[0]] = {}))[p[1]] = flat[k];
+    });
+    return { code: code, allOn: allOn, allOff: allOff };
+}
+
+/**
+ * 三方合并码值表，口径同 _psMergeScene：本处相对基线没动过的格子取云端真值，动过的以本处为准。
+ * 于是别处刚录的码不会被这份旧草稿整表覆盖抹掉（抹掉等于那面墙板的键白学）。
+ * kept = 与整表覆盖相比多保住的码数（只在内容真的换了时计数，供提示用）。
+ */
+function _wpMergeCodes(base, mine, cloud) {
+    var keys = {}, flat = {}, kept = 0;
+    [base, mine, cloud].forEach(function (m) { Object.keys(m || {}).forEach(function (k) { keys[k] = 1; }); });
+    Object.keys(keys).sort().forEach(function (k) {
+        var b = base[k] || '', c = cloud[k] || '', n = mine[k] || '';
+        if (n === b && c !== n) { kept++; n = c; }
+        if (n) flat[k] = n;
+    });
+    return { flat: flat, kept: kept };
+}
+
+/**
+ * 落库之后把草稿的码值表对齐到合并结果（= 云端真值）。
+ * 快照之后又被改动的框保持不动：那一笔不在这次的快照里，「保存中…」该继续亮，下一次自动保存再落。
+ * 基线（baseCodes/baseCode）一律按落库真值记，比对才说的是「云端现在是什么样」。
+ */
+function _wpAdoptCodes(cur, snap, merged) {
+    var was = snap.mineCodes || {}, now = _wpFlatOfDraft(cur), keys = {};
+    Object.keys(now).concat(Object.keys(merged.flat)).forEach(function (k) { keys[k] = 1; });
+    var flat = {};
+    Object.keys(keys).forEach(function (k) {
+        var v = (now[k] || '') === (was[k] || '') ? merged.flat[k] : now[k];
+        if (v) flat[k] = v;
+    });
+    var shape = _wpFromFlat(flat);
+    cur.code = shape.code;
+    cur.allOn = shape.allOn;
+    cur.allOff = shape.allOff;
+    cur.baseCodes = JSON.parse(JSON.stringify(merged.flat));
+    cur.baseCode = _wpCodeSnap(_wpFromFlat(merged.flat));
+}
+
 /** 一只框当前该显示的值（三种框共用：文件夹各列 + 全开/全关）。全开/全关用伪格名 ON/OFF 走同一套学习链 */
 function _wpCodeValue(d, fid, src) {
     if (fid === 'ON') return (d && d.allOn) || '';
@@ -2682,6 +2756,7 @@ function _wpDraftOf() {
               allOn: _wpFrame(cfg.wallpanel_on_frame), allOff: _wpFrame(cfg.wallpanel_off_frame) };
     d.baseHw = _wpHwSnap(d);
     d.baseCode = _wpCodeSnap(d);
+    d.baseCodes = _wpFlatOfDraft(d);   // 码值的「格子→帧」基线视图，落库前跟云端比（见 _wpMergeCodes）
     s._wpDraft = d;
     return d;
 }
@@ -3209,30 +3284,34 @@ function wpClearCode(fid, src) {
 function _wpAutoSaveCodes(okMsg, soft) {
     var d = _wpDraftOf();
     if (!d || !s.rf) return Promise.resolve();
-    var want = _wpCodeSnap(d), fields = _wpCodeFields(d);
+    var snap = { roomId: s.rf, mineCodes: _wpFlatOfDraft(d), baseCodes: d.baseCodes };
     var job = function () {
+        var merged = null;
         return flushAutoSync()
-            .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(s.rf)); })
+            .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(snap.roomId)); })
             .then(function (roomObj) {
                 if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
                 var cfg = _loadRoomCfg(roomObj);
+                merged = _wpMergeCodes(snap.baseCodes || {}, snap.mineCodes, _wpFlatOfCfg(cfg));
+                var fields = _wpCodeFields(_wpFromFlat(merged.flat));
                 Object.keys(fields).forEach(function (k) { cfg[k] = fields[k]; });
                 delete cfg.wallpanel_default_no;   // 旧字段顺手清掉（设备端已不读）
-                return apiCall('/api/rooms/' + encodeURIComponent(s.rf), {
+                return apiCall('/api/rooms/' + encodeURIComponent(snap.roomId), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ config: JSON.stringify(cfg) })
                 }).then(function () { return cfg; });
             })
             .then(function (cfg) {
-                var idx = s.rooms.findIndex(function (x) { return x.id === s.rf; });
+                var idx = s.rooms.findIndex(function (x) { return x.id === snap.roomId; });
                 if (idx >= 0) {
                     var room = JSON.parse(JSON.stringify(s.rooms[idx]));
                     room.config = JSON.stringify(cfg);
                     s.rooms[idx] = room;
                 }
                 var cur = _wpDraftOf();
-                if (cur) cur.baseCode = want;   // 这一份已落库，"未保存"标记只跟串口/总闸走
+                // 基线跟着云端真值走；路上又敲的框保持不动，由下一笔自动保存再落（"未保存"标记继续亮）
+                if (cur && cur.roomId === snap.roomId) _wpAdoptCodes(cur, snap, merged);
                 if (soft) { _wpPaintCodes(); return; }
                 if (okMsg) s._wpNote = okMsg;
                 renderWpEditor();
@@ -3292,12 +3371,20 @@ function _wpSerialSnap(d) {
  */
 function _wpSaveSnap(snap) {
     var job = function () {
+        var merged = null;
         return flushAutoSync()
             .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(snap.roomId)); })
             .then(function (roomObj) {
                 if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
                 var cfg = _loadRoomCfg(roomObj);
+                // 先取「此刻云端的码值视图」再动 cfg：字段一旦盖上去，合并读到的就是自己那份旧草稿了
+                var cloudCodes = snap.mineCodes ? _wpFlatOfCfg(cfg) : null;
                 Object.keys(snap.fields).forEach(function (k) { cfg[k] = snap.fields[k]; });
+                if (cloudCodes) {   // 这份快照连带写码值表：先按基线合并，别把别处刚录的码整表抹掉
+                    merged = _wpMergeCodes(snap.baseCodes || {}, snap.mineCodes, cloudCodes);
+                    var fields = _wpCodeFields(_wpFromFlat(merged.flat));
+                    Object.keys(fields).forEach(function (k) { cfg[k] = fields[k]; });
+                }
                 delete cfg.wallpanel_default_no;
                 return apiCall('/api/rooms/' + encodeURIComponent(snap.roomId), {
                     method: 'PUT',
@@ -3315,10 +3402,13 @@ function _wpSaveSnap(snap) {
                 var cur = s._wpDraft;
                 if (cur && cur.roomId === snap.roomId) {
                     cur.baseHw = snap.want;
-                    if (snap.wantCode != null) cur.baseCode = snap.wantCode;
+                    if (merged) _wpAdoptCodes(cur, snap, merged);   // 码值基线由合并结果回填
                 }
                 s._wpErr = '';
-                if (s._wpMode && cur) { s._wpNote = '已自动保存'; renderWpEditor(); }
+                if (s._wpMode && cur) {
+                    s._wpNote = merged && merged.kept ? '已自动保存（另保住别处录的 ' + merged.kept + ' 条码）' : '已自动保存';
+                    renderWpEditor();
+                }
                 return null;
             })
             .catch(function (e) {
@@ -3490,7 +3580,8 @@ async function wpSave() {
     if (_wpAutoTimer) { clearTimeout(_wpAutoTimer); _wpAutoTimer = null; }
     var snap = _wpSerialSnap(d);
     Object.assign(snap.fields, _wpCodeFields(d));
-    snap.wantCode = _wpCodeSnap(d);
+    snap.mineCodes = _wpFlatOfDraft(d);   // 「保存」按钮也连带写码值表：基线一起带上，落库前按同一套合并
+    snap.baseCodes = d.baseCodes;
     var btn = document.getElementById('wpSaveBtn');
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
     var err = await _wpSaveSnap(snap);
@@ -3623,12 +3714,54 @@ function _psSnap(d) {
     var srt = function (m) {
         var o = {};
         Object.keys(m).sort().forEach(function (k) {
-            var c = m[k];
-            o[k] = [c.order === 'shuffle' ? 'shuffle' : 'seq', String(_psHdmiModeOf(c)), c.dmx === true ? 'on' : 'off', c.logo === true ? 'on' : 'off'];
+            var n = _psNorm(m[k]);
+            if (n) o[k] = n;
         });
         return o;
     };
     return JSON.stringify([srt(d.A), srt(d.B)]);
+}
+
+/** 一格的规范内容 = 定长四元组（顺序 / 点歌屏模式 / DMX / LOGO）；null（全默认）仍是 null */
+function _psNorm(c) {
+    if (!c) return null;
+    return [c.order === 'shuffle' ? 'shuffle' : 'seq', String(_psHdmiModeOf(c)), c.dmx === true ? 'on' : 'off', c.logo === true ? 'on' : 'off'];
+}
+
+/** 定长四元组 → 落库格子，与 _psCell 同一把尺（模式1 只落 hdmi、全默认 → null 不落键） */
+function _psDenorm(n) {
+    if (!n) return null;
+    var o = {};
+    if (n[0] === 'shuffle') o.order = 'shuffle';
+    if (n[1] !== '0') { o.hdmi = true; if (n[1] !== '1') o.hdmi_mode = Number(n[1]); }
+    if (n[2] === 'on') o.dmx = true;
+    if (n[3] === 'on') o.logo = true;
+    return Object.keys(o).length ? o : null;
+}
+
+/**
+ * 三方合并一幕的播放设置（整表覆盖的替代品）。落库前先拿「草稿建好那一刻的云端视图 = 基线」
+ * 与「此刻云端真值」比一比：本处相对基线没动过的格子一律取云端，动过的以本处为准。
+ * 于是别的编辑页刚改的那几格不会被这份旧草稿当成「用户把它关掉了」抹掉（2026-11-25 LOGO 标记被刷即此坑），
+ * 而单页操作时云端 == 基线，合并结果与草稿整表逐字节相同 —— 守卫对它是恒等的。
+ * kept = 与整表覆盖相比多保住的格子数（只在内容真的换了时计数，供提示用）。
+ */
+function _psMergeScene(base, mine, cloud) {
+    var keys = {}, out = {}, kept = 0;
+    var eq = function (x, y) { return JSON.stringify(x) === JSON.stringify(y); };
+    [base, mine, cloud].forEach(function (m) { Object.keys(m || {}).forEach(function (k) { keys[k] = 1; }); });
+    Object.keys(keys).sort().forEach(function (k) {
+        var b = _psNorm(base[k]), c = _psNorm(cloud[k]), n = _psNorm(mine[k]);
+        if (eq(n, b) && !eq(c, n)) { kept++; n = c; }
+        var cell = _psDenorm(n);
+        if (cell) out[k] = cell;
+    });
+    return { table: out, kept: kept };
+}
+
+/** 云端 config 的播放设置表视图（与草稿同一份规范化，脏格子当场丢掉） */
+function _psTablesOf(cfg) {
+    return { A: _psTableOf(cfg, 'A'), B: _psTableOf(cfg, 'B') };
 }
 
 /** 退出播放设置模式：草稿随模式一起丢，重开时按云端真值重建；还没落库的改动由自动保存的快照兜住 */
@@ -3664,7 +3797,9 @@ async function sfPS() {
     rmDevice();
 }
 
-/** 草稿：只认当前房间（切房间在 sr 里作废），数据取 s.rooms 缓存；落库时才现读云端最新 config */
+/** 草稿：只认当前房间（切房间在 sr 里作废），数据取 s.rooms 缓存；落库时才现读云端最新 config。
+ *  baseA/baseB 是这份草稿对应的「云端视图基线」（建好时 = 缓存那一份，之后每笔落库跟着云端真值走），
+ *  写库前拿它跟现读的 config 比，才知道中间有没有别人插了一笔（见 _psMergeScene）。 */
 function _psDraftOf() {
     if (s._psDraft && s._psDraft.roomId === s.rf) return s._psDraft;
     var r = s.rooms.find(function (x) { return x.id === s.rf; });
@@ -3672,6 +3807,8 @@ function _psDraftOf() {
     var cfg = _loadRoomCfg(r);
     var d = { roomId: s.rf, A: _psTableOf(cfg, 'A'), B: _psTableOf(cfg, 'B') };
     d.base = _psSnap(d);
+    d.baseA = JSON.parse(JSON.stringify(d.A));
+    d.baseB = JSON.parse(JSON.stringify(d.B));
     s._psDraft = d;
     return d;
 }
@@ -3861,12 +3998,12 @@ async function psReload() {
 
 /**
  * 改一格后的自动保存：500ms 防抖落一次库。
- * 快照（房间 + 两幕设置）在改动这一刻取，随后切表/换房间、写还在路上，这一笔照样落在被改的那间房。
+ * 快照（房间 + 两幕设置 + 基线）在改动这一刻取，随后切表/换房间、写还在路上，这一笔照样落在被改的那间房。
  */
 function _psAutoSaveSoon() {
     var d = _psDraftOf();
     if (!d || !s.rf) return;
-    var snap = { roomId: s.rf, want: _psSnap(d), A: JSON.parse(JSON.stringify(d.A)), B: JSON.parse(JSON.stringify(d.B)) };
+    var snap = _psSnapForSave(d);
     if (_psAutoTimer) clearTimeout(_psAutoTimer);
     _psAutoTimer = setTimeout(function () {
         _psAutoTimer = null;
@@ -3874,22 +4011,60 @@ function _psAutoSaveSoon() {
     }, TABLE_AUTO_SAVE_MS);
 }
 
+/** 当前草稿的落库快照：A/B = 本处想落的样子，base* = 这份草稿所依据的云端视图（合并的参照） */
+function _psSnapForSave(d) {
+    return { roomId: d.roomId,
+        A: JSON.parse(JSON.stringify(d.A)), B: JSON.parse(JSON.stringify(d.B)),
+        baseA: JSON.parse(JSON.stringify(d.baseA || {})), baseB: JSON.parse(JSON.stringify(d.baseB || {})) };
+}
+
+/** 两幕一起合并（kept 相加）；「就是要整表替换」的全局复制不走这条路 */
+function _psMergePair(snap, cloud) {
+    var a = _psMergeScene(snap.baseA, snap.A, cloud.A), b = _psMergeScene(snap.baseB, snap.B, cloud.B);
+    return { A: a.table, B: b.table, kept: a.kept + b.kept };
+}
+
+/**
+ * 落库之后把草稿与基线对齐到云端真值（合并结果）。快照之后又被改动的格子保持不动 ——
+ * 它们不在这一笔里，「未保存」标记该继续亮着，下一笔自动保存按同一套合并再落。
+ */
+function _psAdoptMerged(cur, snap, merged) {
+    var eq = function (x, y) { return JSON.stringify(_psNorm(x)) === JSON.stringify(_psNorm(y)); };
+    ['A', 'B'].forEach(function (sk) {
+        var now = cur[sk], was = snap[sk], keys = {};
+        Object.keys(now).concat(Object.keys(merged[sk])).forEach(function (fid) { keys[fid] = 1; });
+        var next = {};
+        Object.keys(keys).sort().forEach(function (fid) {
+            var v = eq(now[fid], was[fid]) ? merged[sk][fid] : now[fid];
+            if (v) next[fid] = v;
+        });
+        cur[sk] = next;
+    });
+    cur.base = _psSnap({ A: merged.A, B: merged.B });
+    cur.baseA = JSON.parse(JSON.stringify(merged.A));
+    cur.baseB = JSON.parse(JSON.stringify(merged.B));
+}
+
 /**
  * 把一份快照落库：串行队列（与全局复制/「保存」按钮共用），先 flushAutoSync 再 GET 最新 config，
  * 只换 scenes.A/B.play_settings 再 PUT。两幕都必须带：服务端 mergeSceneConfig 是「带键即按传入落库、
  * 没带才继承」，少带一幕那一幕的清设置就落不下去；全空带 {} 也安全（不落键、rev 不动）。
+ * PUT 前先按基线跟这份最新 config 做三方合并（_psMergeScene）：这份草稿没动过的格子一律取云端，
+ * 于是别的编辑页刚改的那几格不会被旧草稿抹掉（2026-11-25 那次 play_settings 里 logo 全消失即此坑）。
  * resolve(null) = 成功；resolve(Error) = 失败（红字已更新，调用方决定是否再 alert）。
  */
 function _psSaveSnap(snap) {
     if (!snap || !snap.roomId) return Promise.resolve(null);
     var job = function () {
+        var merged = null;
         return flushAutoSync()
             .then(function () { return apiGet('/api/rooms/' + encodeURIComponent(snap.roomId)); })
             .then(function (roomObj) {
                 if (!roomObj || roomObj.error) throw new Error((roomObj && roomObj.error) || '房间不存在');
                 var cfg = _loadRoomCfg(roomObj);
-                cfg.scenes.A.play_settings = JSON.parse(JSON.stringify(snap.A));
-                cfg.scenes.B.play_settings = JSON.parse(JSON.stringify(snap.B));
+                merged = snap.baseA ? _psMergePair(snap, _psTablesOf(cfg)) : { A: snap.A, B: snap.B, kept: 0 };
+                cfg.scenes.A.play_settings = merged.A;
+                cfg.scenes.B.play_settings = merged.B;
                 return apiCall('/api/rooms/' + encodeURIComponent(snap.roomId), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
@@ -3904,9 +4079,12 @@ function _psSaveSnap(snap) {
                     s.rooms[idx] = room;
                 }
                 var cur = s._psDraft;
-                if (cur && cur.roomId === snap.roomId) cur.base = snap.want;   // 写飞在路上时又改的格不在快照里，标记继续亮
+                if (cur && cur.roomId === snap.roomId) _psAdoptMerged(cur, snap, merged);
                 s._psErr = '';
-                if (s._psMode && cur) { s._psNote = '已自动保存'; renderPsEditor(); }
+                if (s._psMode && cur) {
+                    s._psNote = merged.kept ? '已自动保存（另 ' + merged.kept + ' 格取的是别处刚改的，本处旧草稿没动它）' : '已自动保存';
+                    renderPsEditor();
+                }
                 return null;
             })
             .catch(function (e) {
@@ -3928,8 +4106,7 @@ async function psSave() {
     if (_psAutoTimer) { clearTimeout(_psAutoTimer); _psAutoTimer = null; }
     var btn = document.getElementById('psSaveBtn');
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
-    var err = await _psSaveSnap({ roomId: s.rf, want: _psSnap(d),
-        A: JSON.parse(JSON.stringify(d.A)), B: JSON.parse(JSON.stringify(d.B)) });
+    var err = await _psSaveSnap(_psSnapForSave(d));
     if (btn) { btn.disabled = false; btn.textContent = '保存'; }
     if (err) alert('播放设置保存失败: ' + err.message);
 }

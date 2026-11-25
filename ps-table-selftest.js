@@ -14,10 +14,12 @@ function grab(name) {
   return src.slice(i, j + 2);
 }
 const names = ['_psCell', '_psTableOf', '_psSnap',
+  // 冲突守卫（PUT 前比对基线）：整表覆盖改成了三方合并，这几个纯函数是合并的口径本体
+  '_psNorm', '_psDenorm', '_psMergeScene', '_psTablesOf',
   '_psGroupHtml', '_psSetCell', '_psHdmiModeOf', '_psHdmiSeg', '_psDmxSw', '_psLogoSwh',
   '_psDraftOf', '_psTableHtml', 'psSet', 'psSetHdmi', 'psSetDmx', 'psSetLogo',
-  // 自动保存：psSet 改完就排防抖，_psSaveSnap 才是真正落库的那一段（读后写 + 基线回填）
-  '_psAutoSaveSoon', '_psSaveSnap',
+  // 自动保存：psSet 改完就排防抖，_psSaveSnap 才是真正落库的那一段（读后写 + 合并 + 基线回填）
+  '_psAutoSaveSoon', '_psSnapForSave', '_psMergePair', '_psAdoptMerged', '_psSaveSnap',
   // 切表：四张表都改动即保存，两个退出函数只需把状态与学习清干净，不再弹确认框
   '_exitPsMode', '_wpDirty', '_wpHwSnap', '_wpCodeSnap', '_exitWpMode', '_exitTableModes'];
 const consts = src.match(/^var (PS_ORDERS|WP_SOURCES|TABLE_AUTO_SAVE_MS|_wpAutoTimer|_psAutoTimer) = .*$/gm).join('\n');
